@@ -1,0 +1,6 @@
+{
+  "name": "Inventory & Warehouse Management",
+  "description": "A minimal, clean, modern inventory and warehouse management system with role-based access for Users and Warehouse staff.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

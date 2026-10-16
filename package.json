@@ -1,0 +1,26 @@
+{
+  "name": "hd-warehouse-monorepo",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently -n \"backend,frontend\" -c \"blue,green\" \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "start": "npm --prefix backend run start",
+    "lint": "npm --prefix backend run lint && npm --prefix frontend run lint",
+    "db:push": "npm --prefix backend run db:push",
+    "db:generate": "npm --prefix backend run db:generate"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6",
+    "tsx": "^4.21.0"
+  }
+}
