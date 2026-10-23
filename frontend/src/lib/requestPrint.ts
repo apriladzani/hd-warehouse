@@ -1,5 +1,4 @@
 import { RequestTransaction } from '../types.ts';
-import { OUTLETS } from '../constants/outlets.ts';
 
 type RequestPrintLine = {
   itemId: number;
@@ -43,7 +42,7 @@ export const buildApprovedRequestPrintData = (request: any) => {
   const approvalDates = [...new Set(approvedItems.map((line) => line.approvedAt).filter(Boolean))];
 
   const requesterName = String(request.requesterName || '');
-  const outletName = OUTLETS.find((outlet) => requesterName === outlet || requesterName.startsWith(`${outlet} (`)) || requesterName;
+  const outletName = request.outletName || requesterName;
 
   return {
     ...request,

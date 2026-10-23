@@ -15,6 +15,7 @@ import {
 import { InventoryItem, Vendor } from '../../types.ts';
 import { formatRupiah } from '../../lib/format.ts';
 import { ITEM_CATEGORIES, ItemCategory } from '../../constants/itemCategories.ts';
+import { StockStatusBadge } from '../common/StockStatusBadge.tsx';
 
 interface ItemManagementModalProps {
   isOpen: boolean;
@@ -41,7 +42,6 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
   const [formName, setFormName] = useState('');
   const [formCategory, setFormCategory] = useState<ItemCategory | ''>('');
   const [formPrice, setFormPrice] = useState<number | ''>('');
-  const [formStock, setFormStock] = useState<number | ''>('');
   const [formVendorIds, setFormVendorIds] = useState<number[]>([]);
   const [selectedVendorToAdd, setSelectedVendorToAdd] = useState<number | ''>('');
 
@@ -79,7 +79,6 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
     setFormName('');
     setFormCategory('');
     setFormPrice('');
-    setFormStock(0);
     setFormVendorIds([]);
     setSelectedVendorToAdd('');
     setIsCreating(true);
@@ -92,8 +91,6 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
     setFormName(item.itemName);
     setFormCategory(item.category);
     setFormPrice(item.price);
-    // Explicitly set currentStock (even if 0)
-    setFormStock(item.currentStock !== undefined && item.currentStock !== null ? item.currentStock : 0);
 
     const initialVendorIds =
       item.activeVendors && item.activeVendors.length > 0
@@ -112,7 +109,6 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
     setFormName('');
     setFormCategory('');
     setFormPrice('');
-    setFormStock('');
     setFormVendorIds([]);
     setSelectedVendorToAdd('');
     setMessage(null);
@@ -186,19 +182,10 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
       return;
     }
 
-    // Logic Stok 0:
-    // Nilai 0 adalah VALID.
-    // null, undefined, '', NaN, atau negatif adalah TIDAK VALID.
-    if (formStock === '' || isNaN(Number(formStock)) || Number(formStock) < 0) {
-      setMessage({ type: 'error', text: 'Stok barang harus berupa angka valid (minimal 0)!' });
-      return;
-    }
-
     try {
       setSubmitting(true);
       setMessage(null);
 
-      const parsedStock = Number(formStock);
       const parsedPrice = Number(formPrice);
 
       if (editingItem) {
@@ -210,7 +197,6 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
             itemName: formName.trim(),
             category: formCategory,
             price: parsedPrice,
-            currentStock: parsedStock, // Dapat bernilai 0
             vendorIds: formVendorIds,
           }),
         });
@@ -227,7 +213,6 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
             itemName: formName.trim(),
             category: formCategory,
             price: parsedPrice,
-            currentStock: parsedStock,
             vendorIds: formVendorIds,
             vendorId: formVendorIds[0] || null,
           }),
@@ -275,29 +260,29 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
   const availableVendorsToAdd = vendors.filter((v) => !formVendorIds.includes(v.id));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/55 backdrop-blur-xs overflow-y-auto">
+    <div className="hd-modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/55 backdrop-blur-xs overflow-y-auto">
       <div
-        className="bg-white w-full max-w-4xl rounded-[22px] border border-[#DDE5F0] shadow-2xl overflow-hidden flex flex-col max-h-[92vh]"
+        className="hd-dialog bg-white w-full max-w-3xl rounded-xl border border-[#E2E8F0] overflow-hidden flex flex-col max-h-[92vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-[#DDE5F0] bg-[#F8FAFC]">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-[#E2E8F0] bg-[#F8FAFC]">
           <div className="flex items-center space-x-2.5">
-            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-[10px] bg-[#ED002B]/10 text-[#ED002B] flex items-center justify-center font-bold">
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-[10px] bg-[#F0002B]/10 text-[#F0002B] flex items-center justify-center font-bold">
               <Package className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
             <div>
-              <h2 className="text-sm sm:text-base font-bold text-[#17233D]">
-                Kelola Master Data Barang (CRUD)
+              <h2 className="text-sm sm:text-base font-bold text-[#1E293B]">
+                Kelola Barang
               </h2>
-              <p className="text-[11px] sm:text-xs text-[#60708C]">
-                Kelola harga katalog, stok terkini, dan relasi multi-vendor rekanan.
+              <p className="text-[11px] sm:text-xs text-[#64748B]">
+                Kelola master barang dan vendor. Stok bertambah melalui transaksi penerimaan dari vendor.
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-[#60708C] hover:text-[#17233D] rounded-full hover:bg-gray-200 transition-colors cursor-pointer"
+            className="p-1.5 text-[#64748B] hover:text-[#1E293B] rounded-full hover:bg-gray-200 transition-colors cursor-pointer"
           >
             <X className="w-4 h-4 sm:w-5 sm:h-5" />
           </button>
@@ -325,13 +310,13 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
           {/* Top Actions Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="relative flex-1 max-w-sm">
-              <Search className="w-4 h-4 text-[#60708C] absolute left-3 top-1/2 -translate-y-1/2" />
+              <Search className="w-4 h-4 text-[#64748B] absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Cari nama barang atau vendor..."
-                className="w-full pl-9 pr-3 py-2 bg-[#F8FAFC] border border-[#DDE5F0] rounded-[12px] text-xs text-[#17233D] outline-none focus:border-[#ED002B]"
+                className="w-full pl-9 pr-3 py-2 bg-[#F8FAFC] border border-[#E2E8F0] rounded-[12px] text-xs text-[#1E293B] outline-none focus:border-[#F0002B]"
               />
             </div>
 
@@ -339,7 +324,7 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
               <button
                 id="btn-add-new-item"
                 onClick={startCreate}
-                className="inline-flex items-center justify-center space-x-1.5 px-4 py-2 bg-[#ED002B] hover:bg-[#d60027] text-white text-xs font-bold rounded-[12px] shadow-xs transition-all cursor-pointer min-h-[36px]"
+                className="inline-flex items-center justify-center space-x-1.5 px-4 py-2 bg-[#F0002B] hover:bg-[#D80027] text-white text-xs font-bold rounded-[12px]  transition-all cursor-pointer min-h-[36px]"
               >
                 <Plus className="w-4 h-4" />
                 <span>Tambah Barang Baru</span>
@@ -351,30 +336,30 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
           {(isCreating || editingItem) && (
             <form
               onSubmit={handleSubmit}
-              className="p-4 sm:p-5 bg-[#F8FAFC] border border-[#DDE5F0] rounded-[16px] space-y-4"
+              className="p-4 sm:p-4 bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl space-y-4"
             >
               <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-2.5">
                 <div className="flex items-center space-x-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#ED002B]"></span>
-                  <span className="text-xs sm:text-sm font-bold text-[#17233D]">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#F0002B]"></span>
+                  <span className="text-xs sm:text-sm font-bold text-[#1E293B]">
                     {editingItem ? `Edit Barang: ${editingItem.itemName}` : 'Tambah Barang Baru ke Katalog'}
                   </span>
                 </div>
                 <button
                   type="button"
                   onClick={cancelForm}
-                  className="text-xs text-[#60708C] hover:text-[#17233D] underline cursor-pointer"
+                  className="text-xs text-[#64748B] hover:text-[#1E293B] underline cursor-pointer"
                 >
                   Batal
                 </button>
               </div>
 
               {/* Input Fields */}
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3.5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* 1. Nama Barang */}
                 <div className="sm:col-span-1">
-                  <label className="block text-xs font-bold text-[#17233D] mb-1">
-                    Nama Barang <span className="text-[#ED002B]">*</span>
+                  <label className="block text-xs font-bold text-[#1E293B] mb-1">
+                    Nama Barang <span className="text-[#F0002B]">*</span>
                   </label>
                   <input
                     id="input-item-name"
@@ -382,36 +367,36 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
                     value={formName}
                     onChange={(e) => setFormName(e.target.value)}
                     placeholder="Contoh: Ayam Mentah (kg)"
-                    className="w-full px-3 py-2 bg-white border border-[#DDE5F0] rounded-[12px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B]"
+                    className="w-full px-3 py-2 bg-white border border-[#E2E8F0] rounded-[12px] text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B]"
                     required
                   />
                 </div>
 
                 {/* 2. Kategori & Kode Barang */}
                 <div className="sm:col-span-1">
-                  <label htmlFor="input-item-category" className="block text-xs font-bold text-[#17233D] mb-1">
-                    Kategori <span className="text-[#ED002B]">*</span>
+                  <label htmlFor="input-item-category" className="block text-xs font-bold text-[#1E293B] mb-1">
+                    Kategori <span className="text-[#F0002B]">*</span>
                   </label>
                   <select
                     id="input-item-category"
                     value={formCategory}
                     onChange={(event) => setFormCategory(event.target.value as ItemCategory | '')}
-                    className="w-full px-3 py-2 bg-white border border-[#DDE5F0] rounded-[12px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B]"
+                    className="w-full px-3 py-2 bg-white border border-[#E2E8F0] rounded-[12px] text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B]"
                     required
                   >
                     <option value="">Pilih kategori</option>
                     {ITEM_CATEGORIES.map((category) => <option key={category.code} value={category.name}>{category.name} ({category.code})</option>)}
                   </select>
-                  <p className="mt-1 text-[10px] text-[#60708C]">Kode: <strong className="font-mono text-[#17233D]">{editingItem && formCategory === editingItem.category ? editingItem.itemCode : editingItem ? 'Diperbarui saat disimpan' : 'Dibuat otomatis saat disimpan'}</strong></p>
+                  <p className="mt-1 text-[10px] text-[#64748B]">Kode: <strong className="font-mono text-[#1E293B]">{editingItem && formCategory === editingItem.category ? editingItem.itemCode : editingItem ? 'Diperbarui saat disimpan' : 'Dibuat otomatis saat disimpan'}</strong></p>
                 </div>
 
                 {/* 3. Harga Katalog */}
                 <div className="sm:col-span-1">
-                  <label className="block text-xs font-bold text-[#17233D] mb-1 flex items-center justify-between">
+                  <label className="block text-xs font-bold text-[#1E293B] mb-1 flex items-center justify-between">
                     <span>
-                      Harga Katalog (Rp) <span className="text-[#ED002B]">*</span>
+                      Harga Katalog (Rp) <span className="text-[#F0002B]">*</span>
                     </span>
-                    <span className="text-[10px] text-[#60708C] font-normal">Untuk Request Outlet</span>
+                    <span className="text-[10px] text-[#64748B] font-normal">Untuk Request Outlet</span>
                   </label>
                   <input
                     id="input-item-price"
@@ -421,47 +406,26 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
                     value={formPrice}
                     onChange={(e) => setFormPrice(e.target.value === '' ? '' : Number(e.target.value))}
                     placeholder="Contoh: 38000"
-                    className="w-full px-3 py-2 bg-white border border-[#DDE5F0] rounded-[12px] text-xs font-mono font-bold text-[#17233D] outline-none focus:border-[#ED002B]"
+                    className="w-full px-3 py-2 bg-white border border-[#E2E8F0] rounded-[12px] text-xs font-mono font-bold text-[#1E293B] outline-none focus:border-[#F0002B]"
                     required
                   />
                 </div>
 
-                {/* 4. Stok Terkini (Mendukung Stok = 0) */}
-                <div className="sm:col-span-1">
-                  <label className="block text-xs font-bold text-[#17233D] mb-1 flex items-center justify-between">
-                    <span>
-                      Stok Terkini (pcs/kg) <span className="text-[#ED002B]">*</span>
-                    </span>
-                    <span className="text-[10px] text-emerald-700 bg-emerald-50 px-1 rounded font-normal">
-                      Boleh 0
-                    </span>
-                  </label>
-                  <input
-                    id="input-item-stock"
-                    type="number"
-                    min="0"
-                    value={formStock}
-                    onChange={(e) => setFormStock(e.target.value === '' ? '' : Number(e.target.value))}
-                    placeholder="0"
-                    className="w-full px-3 py-2 bg-white border border-[#DDE5F0] rounded-[12px] text-xs font-mono font-bold text-[#17233D] outline-none focus:border-[#ED002B]"
-                    required
-                  />
-                </div>
               </div>
 
               {/* 4. Vendor Rekanan (Multi-Vendor dengan Chip & Dropdown) */}
-              <div className="bg-white p-3.5 border border-[#DDE5F0] rounded-[14px] space-y-3">
+              <div className="bg-white p-3.5 border border-[#E2E8F0] rounded-xl space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
                   <div>
-                    <label className="block text-xs font-bold text-[#17233D] flex items-center space-x-1.5">
+                    <label className="block text-xs font-bold text-[#1E293B] flex items-center space-x-1.5">
                       <Building2 className="w-3.5 h-3.5 text-[#2563EB]" />
                       <span>Vendor Rekanan</span>
                     </label>
-                    <p className="text-[10px] text-[#60708C]">
+                    <p className="text-[10px] text-[#64748B]">
                       Satu barang dapat memiliki banyak vendor. Vendor yang terhubung akan muncul saat penerimaan barang.
                     </p>
                   </div>
-                  <span className="text-[11px] font-bold text-[#60708C] self-start sm:self-auto">
+                  <span className="text-[11px] font-bold text-[#64748B] self-start sm:self-auto">
                     {formVendorIds.length} Vendor Terhubung
                   </span>
                 </div>
@@ -475,7 +439,7 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
                       return (
                         <span
                           key={vId}
-                          className="inline-flex items-center space-x-1.5 px-2.5 py-1 bg-white border border-[#CBD5E1] rounded-full text-xs font-medium text-[#17233D] shadow-2xs hover:border-[#94A3B8] transition-colors"
+                          className="inline-flex items-center space-x-1.5 px-2.5 py-1 bg-white border border-[#CBD5E1] rounded-full text-xs font-medium text-[#1E293B]  hover:border-[#94A3B8] transition-colors"
                         >
                           <span className="font-mono text-[10px] font-bold text-[#2563EB]">
                             [{vObj.vendorCode}]
@@ -507,7 +471,7 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
                     onChange={(e) =>
                       setSelectedVendorToAdd(e.target.value === '' ? '' : Number(e.target.value))
                     }
-                    className="flex-1 px-3 py-1.5 bg-white border border-[#DDE5F0] rounded-[10px] text-xs font-medium text-[#17233D] outline-none focus:border-[#ED002B]"
+                    className="flex-1 px-3 py-1.5 bg-white border border-[#E2E8F0] rounded-[10px] text-xs font-medium text-[#1E293B] outline-none focus:border-[#F0002B]"
                   >
                     <option value="">-- Pilih Vendor Rekanan untuk Dihubungkan --</option>
                     {availableVendorsToAdd.map((v) => (
@@ -520,7 +484,7 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
                     type="button"
                     onClick={handleAddVendorToForm}
                     disabled={selectedVendorToAdd === ''}
-                    className="inline-flex items-center space-x-1 px-3.5 py-1.5 bg-[#17233D] hover:bg-[#233355] text-white text-xs font-bold rounded-[10px] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0 min-h-[32px]"
+                    className="inline-flex items-center space-x-1 px-3.5 py-1.5 bg-[#1E293B] hover:bg-[#233355] text-white text-xs font-bold rounded-[10px] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0 min-h-[32px]"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>Hubungkan</span>
@@ -533,7 +497,7 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
                 <button
                   type="button"
                   onClick={cancelForm}
-                  className="px-4 py-2 text-xs font-semibold text-[#60708C] hover:bg-gray-200 rounded-[12px] transition-colors cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-[#64748B] hover:bg-gray-200 rounded-[12px] transition-colors cursor-pointer"
                 >
                   Batal
                 </button>
@@ -541,7 +505,7 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
                   id="btn-submit-item-form"
                   type="submit"
                   disabled={submitting}
-                  className="px-5 py-2 bg-[#ED002B] hover:bg-[#d60027] text-white text-xs font-bold rounded-[12px] shadow-xs cursor-pointer disabled:opacity-50 transition-all min-h-[36px]"
+                  className="px-5 py-2 bg-[#F0002B] hover:bg-[#D80027] text-white text-xs font-bold rounded-[12px]  cursor-pointer disabled:opacity-50 transition-all min-h-[36px]"
                 >
                   {submitting ? 'Menyimpan...' : editingItem ? 'Simpan Perubahan' : 'Tambah Barang'}
                 </button>
@@ -550,56 +514,46 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
           )}
 
           {/* Table Items */}
-          <div className="border border-[#DDE5F0] rounded-[16px] overflow-hidden">
+          <div className="border border-[#E2E8F0] rounded-xl overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-left text-xs min-w-[720px]">
+              <table className="w-full border-collapse text-left text-xs min-w-[820px]">
                 <thead>
-                  <tr className="bg-[#F8FAFC] border-b border-[#DDE5F0] text-[#60708C] font-bold">
+                  <tr className="bg-[#F8FAFC] border-b border-[#E2E8F0] text-[#64748B] font-bold">
                     <th className="py-2.5 px-3 w-10 text-center">No</th>
                     <th className="py-2.5 px-3">Nama Barang</th>
                     <th className="py-2.5 px-3 w-28">Kategori</th>
                     <th className="py-2.5 px-3 w-24">Kode Barang</th>
                     <th className="py-2.5 px-3 w-32 text-right">Harga Katalog</th>
-                    <th className="py-2.5 px-3 w-20 text-center">Stok</th>
+                    <th className="py-2.5 px-3 w-20 text-right">Stok</th>
+                    <th className="py-2.5 px-3 w-36">Status</th>
                     <th className="py-2.5 px-3">Vendor Rekanan Aktif</th>
                     <th className="py-2.5 px-3 w-20 text-right">Aksi</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#DDE5F0]">
+                <tbody className="divide-y divide-[#E2E8F0]">
                   {filteredItems.length > 0 ? (
                     filteredItems.map((it, idx) => (
                       <tr key={it.id} className="hover:bg-[#F8FAFC]/80 transition-colors">
-                        <td className="py-2.5 px-3 text-center text-[#60708C] font-mono">
+                        <td className="py-2.5 px-3 text-center text-[#64748B] font-mono">
                           {idx + 1}
                         </td>
-                        <td className="py-2.5 px-3 font-semibold text-[#17233D]">
+                        <td className="py-2.5 px-3 font-semibold text-[#1E293B]">
                           {it.itemName}
                         </td>
-                        <td className="py-2.5 px-3 text-[#60708C]">{it.category}</td>
-                        <td className="py-2.5 px-3 font-mono font-bold text-[#17233D]">{it.itemCode}</td>
-                        <td className="py-2.5 px-3 text-right font-mono text-[#17233D] font-bold">
+                        <td className="py-2.5 px-3 text-[#64748B]">{it.category}</td>
+                        <td className="py-2.5 px-3 font-mono font-bold text-[#1E293B]">{it.itemCode}</td>
+                        <td className="py-2.5 px-3 text-right font-mono text-[#1E293B] font-bold">
                           {formatRupiah(it.price)}
                         </td>
-                        <td className="py-2.5 px-3 text-center font-mono font-bold text-[#17233D]">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[11px] ${
-                              it.currentStock === 0
-                                ? 'bg-red-50 text-red-600 font-bold border border-red-200'
-                                : it.currentStock <= 15
-                                ? 'bg-amber-50 text-amber-700 font-bold'
-                                : 'bg-slate-100 text-[#17233D]'
-                            }`}
-                          >
-                            {it.currentStock}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 text-[#60708C]">
+                        <td className="py-2.5 px-3 text-right font-mono font-bold text-[#1E293B] tabular-nums">{Number(it.currentStock).toLocaleString('id-ID')}</td>
+                        <td className="py-2.5 px-3"><StockStatusBadge currentStock={it.currentStock} /></td>
+                        <td className="py-2.5 px-3 text-[#64748B]">
                           {it.activeVendors && it.activeVendors.length > 0 ? (
                             <div className="flex flex-wrap gap-1">
                               {it.activeVendors.map((av) => (
                                 <span
                                   key={av.id}
-                                  className="inline-flex items-center px-2 py-0.5 bg-slate-100 border border-slate-200 rounded-[6px] text-[10px] text-[#17233D] font-medium"
+                                  className="inline-flex items-center px-2 py-0.5 bg-slate-100 border border-slate-200 rounded-[6px] text-[10px] text-[#1E293B] font-medium"
                                   title={av.vendorName}
                                 >
                                   <span className="font-mono text-[#2563EB] mr-1">[{av.vendorCode}]</span>
@@ -612,7 +566,7 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
                               {it.vendorsSupplied.map((vLabel, i) => (
                                 <span
                                   key={i}
-                                  className="px-2 py-0.5 bg-slate-100 border border-slate-200 rounded-[6px] text-[10px] text-[#17233D]"
+                                  className="px-2 py-0.5 bg-slate-100 border border-slate-200 rounded-[6px] text-[10px] text-[#1E293B]"
                                 >
                                   {vLabel}
                                 </span>
@@ -626,7 +580,7 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
                           <div className="flex items-center justify-end space-x-1">
                             <button
                               onClick={() => startEdit(it)}
-                              className="p-1.5 text-[#60708C] hover:text-[#17233D] hover:bg-slate-100 rounded-[8px] transition-colors cursor-pointer"
+                              className="p-1.5 text-[#64748B] hover:text-[#1E293B] hover:bg-slate-100 rounded-[8px] transition-colors cursor-pointer"
                               title="Edit Barang & Vendor"
                             >
                               <Edit2 className="w-3.5 h-3.5" />
@@ -644,7 +598,7 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={6} className="py-8 text-center text-[#60708C]">
+                      <td colSpan={9} className="py-8 text-center text-[#64748B]">
                         Tidak ada barang ditemukan.
                       </td>
                     </tr>
@@ -656,13 +610,13 @@ export const ItemManagementModal: React.FC<ItemManagementModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="px-4 sm:px-6 py-3 bg-[#F8FAFC] border-t border-[#DDE5F0] flex items-center justify-between">
-          <span className="text-xs text-[#60708C]">
+        <div className="px-4 sm:px-6 py-3 bg-[#F8FAFC] border-t border-[#E2E8F0] flex items-center justify-between">
+          <span className="text-xs text-[#64748B]">
             Total <strong>{items.length}</strong> barang di katalog
           </span>
           <button
             onClick={onClose}
-            className="px-4 py-2 bg-white hover:bg-gray-100 text-[#17233D] text-xs font-bold rounded-[12px] border border-[#DDE5F0] transition-colors cursor-pointer"
+            className="px-4 py-2 bg-white hover:bg-gray-100 text-[#1E293B] text-xs font-bold rounded-[12px] border border-[#E2E8F0] transition-colors cursor-pointer"
           >
             Selesai
           </button>

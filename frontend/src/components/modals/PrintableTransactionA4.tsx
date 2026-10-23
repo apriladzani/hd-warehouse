@@ -64,7 +64,7 @@ export const PrintableTransactionA4: React.FC<PrintableTransactionA4Props> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto">
+    <div className="hd-modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto">
       {/* Print CSS Specific Injection */}
       <style>{`
         @media print {
@@ -156,11 +156,11 @@ export const PrintableTransactionA4: React.FC<PrintableTransactionA4Props> = ({
 
       {/* Modal Container */}
       <div
-        className="bg-white w-full max-w-4xl rounded-[20px] shadow-2xl overflow-hidden flex flex-col max-h-[96vh]"
+        className="hd-print-dialog bg-white w-full max-w-4xl rounded-xl overflow-hidden flex flex-col max-h-[96vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Top Control Bar (Hidden in Print) */}
-        <div className="no-print flex items-center justify-between px-5 py-3.5 bg-[#17233D] text-white">
+        <div className="no-print hd-print-toolbar flex items-center justify-between px-4 py-3 bg-white text-[#1E293B] border-b border-[#E2E8F0]">
           <div className="flex items-center space-x-2">
             <FileText className="w-4 h-4 text-[#FFB800]" />
             <span className="text-xs sm:text-sm font-bold tracking-wide">
@@ -172,7 +172,7 @@ export const PrintableTransactionA4: React.FC<PrintableTransactionA4Props> = ({
             <button
               id="btn-trigger-print"
               onClick={handlePrint}
-              className="inline-flex items-center space-x-1.5 px-4 py-2 bg-[#ED002B] hover:bg-[#d60027] text-white text-xs font-bold rounded-[14px] shadow-xs transition-all cursor-pointer"
+              className="hd-button hd-button--primary"
             >
               <Printer className="w-3.5 h-3.5" />
               <span>Cetak Kertas A4 Sekarang</span>
@@ -180,7 +180,7 @@ export const PrintableTransactionA4: React.FC<PrintableTransactionA4Props> = ({
 
             <button
               onClick={onClose}
-              className="p-1.5 text-gray-300 hover:text-white rounded-[10px] hover:bg-white/10 transition-colors"
+              className="hd-button hd-button--ghost hd-icon-button"
               title="Tutup"
             >
               <X className="w-4 h-4" />
@@ -442,14 +442,14 @@ export const PrintableTransactionA4: React.FC<PrintableTransactionA4Props> = ({
           <div className="flex items-center space-x-2">
             <button
               onClick={onClose}
-              className="px-4 py-2 bg-white hover:bg-gray-100 text-[#17233D] font-bold text-xs rounded-[14px] border border-[#DDE5F0] transition-colors"
+              className="hd-button hd-button--secondary"
             >
               Tutup
             </button>
             <button
               id="btn-bottom-print"
               onClick={handlePrint}
-              className="inline-flex items-center space-x-1.5 px-5 py-2 bg-[#ED002B] hover:bg-[#d60027] text-white text-xs font-bold rounded-[14px] shadow-sm transition-all"
+              className="hd-button hd-button--primary"
             >
               <Printer className="w-3.5 h-3.5" />
               <span>Cetak Kertas A4</span>

@@ -9,16 +9,32 @@ export function formatRupiah(amount: number): string {
 export function formatDateIndo(dateStr?: string): string {
   if (!dateStr) return '-';
   try {
-    const d = new Date(dateStr);
+    // Parse SQL/HTML date-only values as calendar dates, not UTC instants.
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+    const d = match
+      ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12))
+      : new Date(dateStr);
     if (isNaN(d.getTime())) return dateStr;
-    return d.toLocaleDateString('id-ID', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    });
+    let dateFormat = 'DD MMM YYYY';
+    try { dateFormat = JSON.parse(localStorage.getItem('hd_system_settings') || '{}').dateFormat || dateFormat; } catch {}
+    const timeZone = 'Asia/Jakarta';
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
+    const part = (type: string) => parts.find((entry) => entry.type === type)?.value || '';
+    const year = part('year'); const monthNumber = part('month'); const day = part('day');
+    if (dateFormat === 'YYYY-MM-DD') return `${year}-${monthNumber}-${day}`;
+    if (dateFormat === 'DD/MM/YYYY') return `${day}/${monthNumber}/${year}`;
+    const month = new Intl.DateTimeFormat('id-ID', { timeZone, month: 'short' }).format(d);
+    return `${Number(day)} ${month} ${year}`;
   } catch {
     return dateStr;
   }
+}
+
+export function localDateInputValue(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 export function terbilangRupiah(nilai: number): string {

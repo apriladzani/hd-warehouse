@@ -1,4 +1,4 @@
-export type Role = 'OUTLET' | 'WAREHOUSE';
+export type Role = 'ADMIN' | 'OUTLET' | 'WAREHOUSE' | 'FINANCE';
 
 export interface User {
   id: number;
@@ -49,6 +49,7 @@ export interface RequestTransaction {
   id: number;
   requestCode: string;
   userId?: number;
+  outletId?: number | null;
   requesterName: string;
   paymentMethod: string;
   requestDate: string;
@@ -109,7 +110,8 @@ export interface WarehouseItemProfitability {
   totalPurchaseAmount: number;
   catalogPrice: number;
   totalSellingAmount: number;
-  totalProfit: number;
+  totalProfit: number | null;
+  missingCostQuantity?: number;
 }
 
 export interface WarehouseStats {
@@ -121,17 +123,27 @@ export interface WarehouseStats {
     id: number;
     itemName: string;
     quantity: number;
-    movementType: 'IN' | 'OUT';
+    movementType: 'IN' | 'OUT' | 'STOCK_OPNAME_ADJUSTMENT';
     typeLabel: string;
     date: string;
     referenceId: string;
   }>;
   totalPurchaseAmount?: number;
   totalSellingAmount?: number;
-  totalProfit?: number;
+  totalProfit?: number | null;
   totalQuantity?: number;
   totalIncomingAmount?: number;
   totalCogsAmount?: number;
   itemProfitability?: WarehouseItemProfitability[];
   itemList?: Array<{ id: number; itemName: string }>;
+  missingCostQuantity?: number;
+  hasMissingCostData?: boolean;
+  shrinkageAmount?: number | null;
+  hasMissingShrinkageData?: boolean;
+  contributionMargin?: number | null;
+  contributionIncome?: number | null;
+  directCosts?: number;
+  depreciationAmortization?: number;
+  ebitda?: number | null;
+  ebit?: number | null;
 }

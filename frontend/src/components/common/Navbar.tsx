@@ -1,146 +1,120 @@
-import React from 'react';
-import { User, LogOut, Layers, FileText, Clock, PackageCheck, Boxes } from 'lucide-react';
-import { User as UserType } from '../../types.ts';
+import React, { useEffect, useRef, useState } from 'react';
+import { Activity, Boxes, ChevronRight, Clock3, FileText, LayoutDashboard, LockKeyhole, LogOut, Menu, PackageCheck, PanelLeftClose, Palette, Settings, Store, Users, X, CircleDollarSign } from 'lucide-react';
+import type { User } from '../../types.ts';
+import { Button, IconButton } from './UI.tsx';
+import { useBranding } from './BrandingContext.tsx';
 
 interface NavbarProps {
-  currentUser: UserType;
+  currentUser: User;
   activeNav: string;
   onNavigate: (tab: string) => void;
   onLogout: () => void;
+  children: React.ReactNode;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({
-  currentUser,
-  activeNav,
-  onNavigate,
-  onLogout,
-}) => {
-  const isWarehouse = currentUser.role === 'WAREHOUSE';
+const roleLabels = { ADMIN: 'Admin', WAREHOUSE: 'Warehouse', OUTLET: 'Outlet', FINANCE: 'Finance' };
 
-  const userTabs = [
-    { id: 'dashboard', label: 'Dashboard', icon: Layers },
-    { id: 'request', label: 'HD Request', icon: FileText },
-    { id: 'history', label: 'Riwayat', icon: Clock },
-  ];
+export const Navbar: React.FC<NavbarProps> = ({ currentUser, activeNav, onNavigate, onLogout, children }) => {
+  const { branding } = useBranding();
+  const [collapsed, setCollapsed] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const menuRef = useRef<HTMLButtonElement>(null);
+  const roleLabel = roleLabels[currentUser.role];
+  const dashboard = { id: 'dashboard', label: currentUser.role === 'ADMIN' ? 'Overview' : 'Dashboard', icon: LayoutDashboard };
+  const history = { id: 'history', label: 'Riwayat', icon: Clock3 };
+  const navItems = currentUser.role === 'ADMIN'
+    ? [dashboard, { id: 'users', label: 'User Management', icon: Users }, { id: 'outlets', label: 'Outlet Management', icon: Store }, { id: 'branding', label: 'Branding Settings', icon: Palette }, { id: 'settings', label: 'System Settings', icon: Settings }, { id: 'financeSecurity', label: 'Finance Security', icon: LockKeyhole }, { id: 'activity', label: 'Activity Logs', icon: Activity }]
+    : currentUser.role === 'WAREHOUSE'
+    ? [dashboard, { id: 'inventory', label: 'Inventory', icon: Boxes }, { id: 'requests', label: 'Request Outlet', icon: PackageCheck }, history, { id: 'finance', label: 'Finance', icon: CircleDollarSign }]
+    : currentUser.role === 'FINANCE'
+      ? [{ id: 'finance', label: 'Finance', icon: CircleDollarSign }]
+      : [dashboard, { id: 'request', label: 'HD Request', icon: FileText }, history];
+  const title = navItems.find((item) => item.id === activeNav)?.label || 'Dashboard';
+  const initials = currentUser.name.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('');
 
-  const warehouseTabs = [
-    { id: 'dashboard', label: 'Dashboard', icon: Layers },
-    { id: 'inventory', label: 'Inventory', icon: Boxes },
-    { id: 'requests', label: 'Request', icon: PackageCheck },
-    { id: 'history', label: 'Riwayat', icon: Clock },
-  ];
+  useEffect(() => {
+    const desktop = window.matchMedia('(min-width: 1024px)');
+    const closeOnDesktop = () => { if (desktop.matches) setDrawerOpen(false); };
+    desktop.addEventListener('change', closeOnDesktop);
+    return () => desktop.removeEventListener('change', closeOnDesktop);
+  }, []);
 
-  const navItems = isWarehouse ? warehouseTabs : userTabs;
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    sidebarRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDrawerOpen(false);
+      if (event.key !== 'Tab') return;
+      const focusable = sidebarRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])');
+      const visible = focusable ? Array.from(focusable).filter((element) => element.getClientRects().length) : [];
+      if (!visible.length) return;
+      const first = visible[0];
+      const last = visible[visible.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', onKeyDown);
+      menuRef.current?.focus();
+    };
+  }, [drawerOpen]);
+
+  const navigate = (tab: string) => {
+    onNavigate(tab);
+    setDrawerOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   return (
-    <>
-      {/* Top Header */}
-      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-[#DDE5F0]">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-14 sm:h-16">
-            {/* Brand Logo & Name */}
-            <div className="flex items-center space-x-2 sm:space-x-3">
-              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-[#ED002B] flex items-center justify-center text-white font-black text-base sm:text-lg shadow-sm shrink-0">
-                I
-              </div>
-              <div>
-                <span className="font-bold text-[#17233D] text-sm sm:text-lg tracking-tight block leading-tight">
-                  Warehouse &amp; HD
-                </span>
-                <span className="text-[10px] sm:text-xs text-[#60708C] block -mt-0.5 sm:-mt-1 truncate max-w-[140px] sm:max-w-none">
-                  Inventory System
-                </span>
-              </div>
-            </div>
-
-            {/* Nav items for desktop */}
-            <nav className="hidden md:flex items-center space-x-1">
-              {navItems.map((tab) => {
-                const Icon = tab.icon;
-                const isActive = activeNav === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    id={`nav-${tab.id}`}
-                    onClick={() => onNavigate(tab.id)}
-                    className={`flex items-center space-x-2 px-4 py-2 text-sm font-semibold transition-colors ${
-                      isActive
-                        ? 'bg-[#F8FAFC] text-[#ED002B] border-b-2 border-[#ED002B] rounded-t-lg'
-                        : 'text-[#60708C] hover:text-[#17233D] hover:bg-[#F8FAFC] rounded-lg'
-                    }`}
-                  >
-                    <Icon className="w-4 h-4" />
-                    <span>{tab.label}</span>
-                  </button>
-                );
-              })}
-            </nav>
-
-            {/* User Profile & Actions */}
-            <div className="flex items-center space-x-1.5 sm:space-x-3">
-              {/* Role indicator */}
-              <div className="flex items-center space-x-1.5 sm:space-x-2 bg-[#F8FAFC] px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full border border-[#DDE5F0]">
-                <User className="w-3 sm:w-3.5 h-3 sm:h-3.5 text-[#60708C] shrink-0" />
-                <div className="text-left">
-                  <span className="text-[11px] sm:text-xs font-bold text-[#17233D] block leading-none truncate max-w-[70px] sm:max-w-[120px]">
-                    {currentUser.name}
-                  </span>
-                  <span className="text-[9px] sm:text-[10px] uppercase font-black text-[#ED002B] tracking-wider block">
-                    {currentUser.role === 'WAREHOUSE' ? 'Warehouse' : 'Outlet'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Logout button */}
-              <button
-                id="logout-btn"
-                onClick={onLogout}
-                title="Keluar"
-                className="p-2 text-[#60708C] hover:text-[#ED002B] hover:bg-[#F8FAFC] rounded-full transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
+    <div className={`hd-ui hd-app ${collapsed ? 'hd-app--collapsed' : ''} ${drawerOpen ? 'hd-app--drawer-open' : ''}`} data-role={currentUser.role}>
+      <a href="#main-content" className="hd-skip-link">Lewati navigasi</a>
+      {drawerOpen && <button className="hd-drawer-overlay" tabIndex={-1} aria-label="Tutup navigasi" onClick={() => setDrawerOpen(false)} />}
+      <aside id="app-sidebar" ref={sidebarRef} className="hd-sidebar" role={drawerOpen ? 'dialog' : undefined} aria-modal={drawerOpen || undefined} aria-label={`Workspace ${roleLabel}`}>
+        <div className="hd-brand-row">
+          <div className="hd-brand-mark" aria-hidden="true">{branding.sidebarLogo || branding.mainLogo ? <img src={branding.sidebarLogo || branding.mainLogo} alt="" /> : 'HD'}</div>
+          <div className="hd-sidebar-label hd-brand-copy"><strong>{branding.appName}</strong><span>{branding.subtitle}</span></div>
+          <IconButton className="hd-drawer-close" aria-label="Tutup navigasi" onClick={() => setDrawerOpen(false)}><X size={18} /></IconButton>
         </div>
-      </header>
-
-      {/* Mobile Bottom Navigation Bar (Fixed for phone experience) */}
-      <nav
-        aria-label="Mobile Navigation"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#DDE5F0] px-2 py-1 flex items-center justify-around shadow-[0_-4px_20px_rgba(0,0,0,0.05)] safe-area-inset-bottom"
-      >
-        {navItems.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeNav === tab.id;
-          return (
-            <button
-              key={tab.id}
-              id={`mobile-nav-${tab.id}`}
-              onClick={() => {
-                onNavigate(tab.id);
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }}
-              className={`flex-1 flex flex-col items-center justify-center py-1.5 px-1 min-h-[48px] rounded-xl transition-all ${
-                isActive
-                  ? 'text-[#ED002B] font-bold'
-                  : 'text-[#60708C] hover:text-[#17233D] font-medium'
-              }`}
-            >
-              <div
-                className={`p-1 rounded-lg transition-colors ${
-                  isActive ? 'bg-[#ED002B]/10 text-[#ED002B]' : 'text-[#60708C]'
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-              </div>
-              <span className="text-[10px] tracking-tight mt-0.5 leading-none">
-                {tab.label}
-              </span>
+        <div className="hd-workspace-label"><span className="hd-sidebar-label">{roleLabel} Workspace</span><span className="hd-workspace-dot" /></div>
+        <nav aria-label="Navigasi utama" className="hd-sidebar-nav">
+          {navItems.map((item) => (
+            <button id={`nav-${item.id}`} key={item.id} title={collapsed ? item.label : undefined} aria-label={item.label} aria-current={activeNav === item.id ? 'page' : undefined} onClick={() => navigate(item.id)} className={`hd-nav-item ${activeNav === item.id ? 'hd-nav-item--active' : ''}`}>
+              <item.icon size={18} strokeWidth={1.8} aria-hidden="true" />
+              <span className="hd-sidebar-label">{item.label}</span>
+              {activeNav === item.id && <ChevronRight size={14} className="hd-sidebar-label hd-nav-arrow" aria-hidden="true" />}
             </button>
-          );
-        })}
-      </nav>
-    </>
+          ))}
+        </nav>
+        <div className="hd-sidebar-footer">
+          <div className="hd-sidebar-label hd-footer-copy"><span className="hd-footer-caption">HD MANAGEMENT SYSTEM</span><span>Satu workspace, semua aktivitas.</span></div>
+          <button className="hd-sidebar-collapse" onClick={() => setCollapsed((value) => !value)} aria-label={collapsed ? 'Perluas sidebar' : 'Lipat sidebar'} aria-expanded={!collapsed}>
+            {collapsed ? <ChevronRight size={17} /> : <PanelLeftClose size={17} />}<span className="hd-sidebar-label">Lipat sidebar</span>
+          </button>
+          <Button id="drawer-logout-btn" variant="secondary" className="hd-drawer-logout" onClick={onLogout} aria-label="Keluar dari akun">
+            <LogOut size={17} /><span>Keluar</span>
+          </Button>
+        </div>
+      </aside>
+      <div className="hd-workspace">
+        <header className="hd-topbar">
+          <div className="hd-topbar-heading">
+            <IconButton ref={menuRef} className="hd-mobile-menu" aria-label="Buka navigasi" aria-expanded={drawerOpen} aria-controls="app-sidebar" onClick={() => setDrawerOpen(true)}><Menu size={20} /></IconButton>
+            {currentUser.role === 'OUTLET' && <span className="hd-mobile-brand-mark" aria-hidden="true">HD</span>}
+            <div><div className="hd-breadcrumb">{branding.appName} <ChevronRight size={11} aria-hidden="true" /> {roleLabel}</div><p className="hd-topbar-title">{title}</p></div>
+          </div>
+          <div className="hd-topbar-actions">
+            <span className="hd-role-tag">{roleLabel}</span>
+            <div className="hd-user" title={currentUser.name}><span className="hd-avatar" aria-hidden="true">{initials}</span><span className="hd-user-name">{currentUser.name}</span></div>
+            <Button id="logout-btn" variant="ghost" className="hd-logout" onClick={onLogout} title="Keluar dari akun" aria-label="Keluar dari akun"><LogOut size={16} /><span>Keluar</span></Button>
+          </div>
+        </header>
+        <main id="main-content" className="hd-main" tabIndex={-1}>{children}</main>
+      </div>
+    </div>
   );
 };

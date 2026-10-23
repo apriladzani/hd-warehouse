@@ -161,30 +161,34 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
   if (!isOpen || !requestId) return null;
 
   const pendingItems = request?.items?.filter((it: any) => it.status === 'Pending') || [];
-  const hasPending = pendingItems.length > 0;
+  const hasPending = request?.status === 'Pending' && pendingItems.length > 0;
+  const approvedItems = request?.items?.filter((it: any) => Number(it.approvedQuantity) > 0) || [];
+  const approvedQty = approvedItems.reduce((sum: number, it: any) => sum + Number(it.approvedQuantity || 0), 0);
+  const notApprovedItems = request?.items?.filter((it: any) => Number(it.requestedQuantity) > Number(it.approvedQuantity || 0)) || [];
+  const notApprovedQty = notApprovedItems.reduce((sum: number, it: any) => sum + Math.max(0, Number(it.requestedQuantity) - Number(it.approvedQuantity || 0)), 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/40 backdrop-blur-xs">
+    <div className="hd-modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/40 backdrop-blur-xs">
       <div
-        className="bg-white w-full max-w-2xl rounded-[20px] sm:rounded-[22px] border border-[#DDE5F0] shadow-lg overflow-hidden flex flex-col max-h-[95vh] sm:max-h-[92vh]"
+        className="hd-dialog bg-white w-full max-w-2xl rounded-xl border border-[#E2E8F0] overflow-hidden flex flex-col max-h-[95vh] sm:max-h-[92vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-3 sm:px-6 py-2.5 sm:py-4 border-b border-[#DDE5F0]">
+        <div className="flex items-center justify-between px-3 sm:px-6 py-2.5 sm:py-4 border-b border-[#E2E8F0]">
           <div>
             <div className="flex items-center space-x-1.5 sm:space-x-3">
-              <span className="text-sm sm:text-xl font-bold text-[#17233D] truncate">
+              <span className="text-sm sm:text-xl font-bold text-[#1E293B] truncate">
                 {request?.requestCode || 'REQ-xxx'}
               </span>
               {request && <StatusBadge status={request.status} />}
             </div>
-            <p className="text-[10px] sm:text-xs text-[#60708C] mt-0.5">
+            <p className="text-[10px] sm:text-xs text-[#64748B] mt-0.5">
               Review &amp; Persetujuan Barang Gudang
             </p>
           </div>
           <button
             onClick={onClose}
-            className="p-1 sm:p-1.5 text-[#60708C] hover:text-[#17233D] rounded-full hover:bg-[#F8FAFC]"
+            className="p-1 sm:p-1.5 text-[#64748B] hover:text-[#1E293B] rounded-full hover:bg-[#F8FAFC]"
           >
             <X className="w-4 h-4 sm:w-5 sm:h-5" />
           </button>
@@ -195,7 +199,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
             <button
               type="button"
               onClick={() => setShowPrintA4(true)}
-              className="inline-flex items-center gap-1.5 rounded-[9px] bg-[#17233D] px-3 py-2 text-xs font-bold text-white transition-colors hover:bg-[#263653]"
+              className="inline-flex items-center gap-1.5 rounded-[9px] bg-[#1E293B] px-3 py-2 text-xs font-bold text-white transition-colors hover:bg-[#263653]"
             >
               <Printer className="h-3.5 w-3.5" /> Cetak A4
             </button>
@@ -205,14 +209,14 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
         {/* Content */}
         <div className="p-3 sm:p-6 overflow-y-auto space-y-3 sm:space-y-5">
           {error && (
-            <div className="p-2.5 sm:p-3 bg-[#FDE8EC] border border-[#F8B6C2] rounded-[12px] sm:rounded-[18px] text-[10px] sm:text-xs font-semibold text-[#ED002B] flex items-center space-x-2">
+            <div className="p-2.5 sm:p-3 bg-[#FDE8EC] border border-[#F8B6C2] rounded-[12px] sm:rounded-xl text-[10px] sm:text-xs font-semibold text-[#F0002B] flex items-center space-x-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{error}</span>
             </div>
           )}
 
           {successMsg && (
-            <div className="p-2.5 sm:p-3 bg-[#EAF8F1] border border-[#A7E4C4] rounded-[12px] sm:rounded-[18px] text-[10px] sm:text-xs font-semibold text-[#1B9357] flex items-center space-x-2">
+            <div className="p-2.5 sm:p-3 bg-[#EAF8F1] border border-[#A7E4C4] rounded-[12px] sm:rounded-xl text-[10px] sm:text-xs font-semibold text-[#1B9357] flex items-center space-x-2">
               <CheckCircle2 className="w-4 h-4 shrink-0" />
               <span>{successMsg}</span>
             </div>
@@ -220,37 +224,44 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
 
           {/* Simple Top Request Metadata */}
           {request && (
-            <div className="grid grid-cols-3 gap-1.5 sm:gap-3 p-2.5 sm:p-4 rounded-[14px] sm:rounded-[20px] bg-[#F8FAFC] border border-[#DDE5F0] text-xs">
+            <div className="grid grid-cols-3 gap-1.5 sm:gap-3 p-2.5 sm:p-4 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] text-xs">
               <div>
-                <span className="text-[#60708C] block font-semibold uppercase text-[9px] sm:text-[10px]">
+                <span className="text-[#64748B] block font-semibold uppercase text-[10px] sm:text-[10px]">
                   Kode
                 </span>
-                <span className="font-bold text-[#17233D] text-xs sm:text-sm mt-0.5 block truncate">
+                <span className="font-bold text-[#1E293B] text-xs sm:text-sm mt-0.5 block truncate">
                   {request.requestCode}
                 </span>
               </div>
               <div>
-                <span className="text-[#60708C] block font-semibold uppercase text-[9px] sm:text-[10px]">
+                <span className="text-[#64748B] block font-semibold uppercase text-[10px] sm:text-[10px]">
                   Pemohon
                 </span>
-                <span className="font-bold text-[#17233D] text-xs sm:text-sm mt-0.5 block truncate">
+                <span className="font-bold text-[#1E293B] text-xs sm:text-sm mt-0.5 block truncate">
                   {request.requesterName}
                 </span>
               </div>
               <div>
-                <span className="text-[#60708C] block font-semibold uppercase text-[9px] sm:text-[10px]">
+                <span className="text-[#64748B] block font-semibold uppercase text-[10px] sm:text-[10px]">
                   Tanggal
                 </span>
-                <span className="font-bold text-[#17233D] text-xs sm:text-sm mt-0.5 block truncate">
+                <span className="font-bold text-[#1E293B] text-xs sm:text-sm mt-0.5 block truncate">
                   {formatDateIndo(request.requestDate)}
                 </span>
               </div>
             </div>
           )}
 
+          {request && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-[11px]">
+              <span className="font-semibold text-[#15803D]">Disetujui: {approvedItems.length} barang · {approvedQty} pcs</span>
+              <span className="font-semibold text-[#64748B]">Tidak disetujui: {notApprovedItems.length} barang · {notApprovedQty} pcs</span>
+            </div>
+          )}
+
           {/* Tombol Batch Approve Semua Barang */}
           {hasPending && (
-            <div className="p-3 sm:p-4 rounded-[14px] sm:rounded-[20px] bg-[#EAF8F1] border border-[#A7E4C4] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="p-3 sm:p-4 rounded-xl bg-[#EAF8F1] border border-[#A7E4C4] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
               <div>
                 <span className="font-bold text-xs sm:text-sm text-[#1B9357] flex items-center space-x-1.5">
                   <CheckCheck className="w-4 h-4 text-[#1B9357]" />
@@ -266,7 +277,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                 type="button"
                 onClick={handleApproveAll}
                 disabled={batchLoading}
-                className="px-4 py-2 sm:px-5 sm:py-2.5 bg-[#20B26B] hover:bg-[#1b9a5c] text-white text-xs font-bold rounded-[12px] sm:rounded-[16px] shadow-sm flex items-center justify-center space-x-1.5 transition-all shrink-0 disabled:opacity-50"
+                className="px-4 py-2 sm:px-5 sm:py-2.5 bg-[#20B26B] hover:bg-[#1b9a5c] text-white text-xs font-bold rounded-[12px] sm:rounded-xl  flex items-center justify-center space-x-1.5 transition-all shrink-0 disabled:opacity-50"
               >
                 <Check className="w-4 h-4" />
                 <span>
@@ -281,20 +292,20 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
           {/* Items Approval List (Per item) */}
           <div className="space-y-2 sm:space-y-3">
             <div className="flex items-center justify-between">
-              <h4 className="text-[10px] sm:text-xs font-bold text-[#60708C] uppercase tracking-wider">
+              <h4 className="text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider">
                 Daftar Barang &amp; Keputusan Stok
               </h4>
-              <span className="text-[10px] sm:text-xs text-[#60708C]">
+              <span className="text-[10px] sm:text-xs text-[#64748B]">
                 Total: {request?.items?.length || 0} Barang
               </span>
             </div>
 
             {loading ? (
-              <div className="py-6 text-center text-xs text-[#60708C]">Memuat detail barang...</div>
+              <div className="py-6 text-center text-xs text-[#64748B]">Memuat detail barang...</div>
             ) : request?.items && request.items.length > 0 ? (
               request.items.map((item: any) => {
                 const isItemLoading = actionLoadingId === item.id || batchLoading;
-                const isItemPending = item.status === 'Pending';
+                const isItemPending = request?.status === 'Pending' && item.status === 'Pending';
                 const currentQty =
                   quantities[item.id] !== undefined
                     ? quantities[item.id]
@@ -305,17 +316,17 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                 return (
                   <div
                     key={item.id}
-                    className="p-3 sm:p-4 rounded-[14px] sm:rounded-[20px] border border-[#DDE5F0] bg-white space-y-2.5"
+                    className="p-3 sm:p-4 rounded-xl border border-[#E2E8F0] bg-white space-y-2.5"
                   >
                     {/* Top Row: Item Name, Request, Stock, Price & Status */}
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2">
                       <div>
-                        <h4 className="font-bold text-xs sm:text-sm text-[#17233D]">
+                        <h4 className="font-bold text-xs sm:text-sm text-[#1E293B]">
                           {item.itemName}
                         </h4>
-                        <div className="flex flex-wrap items-center gap-x-2 text-[10px] sm:text-xs text-[#60708C] mt-0.5">
+                        <div className="flex flex-wrap items-center gap-x-2 text-[10px] sm:text-xs text-[#64748B] mt-0.5">
                           <span>
-                            Request: <strong className="text-[#17233D]">{item.requestedQuantity} pcs</strong>
+                            Request: <strong className="text-[#1E293B]">{item.requestedQuantity} pcs</strong>
                           </span>
                           <span>•</span>
                           <span>
@@ -323,8 +334,8 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                             <strong
                               className={
                                 (item.currentStock ?? 0) < item.requestedQuantity
-                                  ? 'text-[#ED002B]'
-                                  : 'text-[#17233D]'
+                                  ? 'text-[#F0002B]'
+                                  : 'text-[#1E293B]'
                               }
                             >
                               {item.currentStock ?? 0} pcs
@@ -342,7 +353,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
 
                     {/* Alert jika stok tidak mencukupi */}
                     {isItemPending && isOutOfStock && (
-                      <div className="flex items-center space-x-1.5 text-[9px] sm:text-[11px] text-[#B27B00] bg-[#FFF8E6] px-2.5 py-1 rounded-[10px] border border-[#FFE699]">
+                      <div className="flex items-center space-x-1.5 text-[10px] sm:text-[11px] text-[#B27B00] bg-[#FFF8E6] px-2.5 py-1 rounded-[10px] border border-[#FFE699]">
                         <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                         <span>
                           Stok gudang ({item.currentStock ?? 0} pcs) kurang dari jumlah disetujui ({currentQty} pcs)! Anda dapat menurunkan kuantitas ke jumlah stok yang tersedia.
@@ -352,20 +363,20 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
 
                     {/* Jika status Pending: Sediakan controller jumlah yang disetujui & tombol approve/reject */}
                     {isItemPending ? (
-                      <div className="pt-2 border-t border-[#DDE5F0] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                      <div className="pt-2 border-t border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                         {/* Stepper Kuantitas Disetujui */}
                         <div className="flex items-center flex-wrap gap-2">
-                          <label className="text-[11px] font-semibold text-[#60708C]">
+                          <label className="text-[11px] font-semibold text-[#64748B]">
                             Qty Disetujui:
                           </label>
-                          <div className="inline-flex items-center bg-[#F8FAFC] border border-[#DDE5F0] rounded-[10px] p-0.5 shadow-2xs">
+                          <div className="inline-flex items-center bg-[#F8FAFC] border border-[#E2E8F0] rounded-[10px] p-0.5 ">
                             <button
                               type="button"
                               onClick={() =>
                                 handleQtyChange(item.id, currentQty - 1, item.requestedQuantity)
                               }
                               disabled={currentQty <= 1 || isItemLoading}
-                              className="w-7 h-7 rounded flex items-center justify-center text-[#60708C] disabled:opacity-30 hover:bg-white active:bg-gray-100"
+                              className="w-7 h-7 rounded flex items-center justify-center text-[#64748B] disabled:opacity-30 hover:bg-white active:bg-gray-100"
                               title="Kurangi kuantitas disetujui"
                             >
                               <Minus className="w-3.5 h-3.5" />
@@ -383,7 +394,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                                 )
                               }
                               disabled={isItemLoading}
-                              className="w-12 text-center text-xs font-bold text-[#17233D] outline-none bg-transparent"
+                              className="w-12 text-center text-xs font-bold text-[#1E293B] outline-none bg-transparent"
                             />
                             <button
                               type="button"
@@ -391,13 +402,13 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                                 handleQtyChange(item.id, currentQty + 1, item.requestedQuantity)
                               }
                               disabled={currentQty >= item.requestedQuantity || isItemLoading}
-                              className="w-7 h-7 rounded flex items-center justify-center text-[#17233D] disabled:opacity-30 hover:bg-white active:bg-gray-100"
+                              className="w-7 h-7 rounded flex items-center justify-center text-[#1E293B] disabled:opacity-30 hover:bg-white active:bg-gray-100"
                               title="Tambah kuantitas disetujui"
                             >
-                              <Plus className="w-3.5 h-3.5 text-[#ED002B]" />
+                              <Plus className="w-3.5 h-3.5 text-[#F0002B]" />
                             </button>
                           </div>
-                          <span className="text-[10px] text-[#60708C]">
+                          <span className="text-[10px] text-[#64748B]">
                             pcs (dari {item.requestedQuantity} pcs)
                           </span>
                           {isPartial && (
@@ -414,7 +425,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                             type="button"
                             onClick={() => handleDecision(item.id, 'Reject')}
                             disabled={isItemLoading}
-                            className="px-2.5 py-1.5 sm:px-3.5 sm:py-1.5 rounded-[8px] sm:rounded-[18px] text-[10px] sm:text-xs font-semibold border transition-colors bg-white hover:bg-[#FDE8EC] text-[#ED002B] border-[#F8B6C2] disabled:opacity-40"
+                            className="px-2.5 py-1.5 sm:px-3.5 sm:py-1.5 rounded-[8px] sm:rounded-xl text-[10px] sm:text-xs font-semibold border transition-colors bg-white hover:bg-[#FDE8EC] text-[#F0002B] border-[#F8B6C2] disabled:opacity-40"
                           >
                             [ Reject ]
                           </button>
@@ -424,7 +435,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                             type="button"
                             onClick={() => handleDecision(item.id, 'Approve')}
                             disabled={isItemLoading || isOutOfStock}
-                            className="px-3.5 py-1.5 sm:px-4 sm:py-1.5 rounded-[8px] sm:rounded-[18px] text-[10px] sm:text-xs font-bold transition-colors bg-[#20B26B] hover:bg-[#1b9a5c] text-white shadow-xs disabled:opacity-40 flex items-center space-x-1"
+                            className="px-3.5 py-1.5 sm:px-4 sm:py-1.5 rounded-[8px] sm:rounded-xl text-[10px] sm:text-xs font-bold transition-colors bg-[#20B26B] hover:bg-[#1b9a5c] text-white  disabled:opacity-40 flex items-center space-x-1"
                           >
                             <Check className="w-3.5 h-3.5" />
                             <span>
@@ -439,29 +450,29 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                       </div>
                     ) : item.status === 'Approved' ? (
                       /* Keterangan jika sudah Approved */
-                      <div className="pt-2 border-t border-[#DDE5F0] text-[11px] text-[#1B9357] font-semibold flex items-center justify-between">
+                      <div className="pt-2 border-t border-[#E2E8F0] text-[11px] text-[#1B9357] font-semibold flex items-center justify-between">
                         <div className="flex items-center space-x-1.5">
                           <CheckCircle2 className="w-3.5 h-3.5 text-[#1B9357]" />
                           <span>
                             Disetujui:{' '}
                             <strong>{item.approvedQuantity} pcs</strong>
                             {item.approvedQuantity < item.requestedQuantity && (
-                              <span className="text-[#60708C] font-normal ml-1">
+                              <span className="text-[#64748B] font-normal ml-1">
                                 (dari total {item.requestedQuantity} pcs diminta)
                               </span>
                             )}
                           </span>
                         </div>
                         {item.approvedBy && (
-                          <span className="text-[10px] text-[#60708C]">
+                          <span className="text-[10px] text-[#64748B]">
                             Oleh: {item.approvedBy}
                           </span>
                         )}
                       </div>
                     ) : (
                       /* Keterangan jika sudah Rejected */
-                      <div className="pt-2 border-t border-[#DDE5F0] text-[11px] text-[#ED002B] font-semibold flex items-center space-x-1.5">
-                        <AlertCircle className="w-3.5 h-3.5 text-[#ED002B]" />
+                      <div className="pt-2 border-t border-[#E2E8F0] text-[11px] text-[#F0002B] font-semibold flex items-center space-x-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-[#F0002B]" />
                         <span>Permintaan barang ini telah ditolak.</span>
                       </div>
                     )}
@@ -469,7 +480,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                 );
               })
             ) : (
-              <div className="py-6 text-center text-xs text-[#60708C]">
+              <div className="py-6 text-center text-xs text-[#64748B]">
                 Tidak ada data barang dalam permintaan ini.
               </div>
             )}
@@ -477,10 +488,10 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-2.5 sm:px-6 sm:py-4 bg-[#F8FAFC] border-t border-[#DDE5F0] flex justify-end">
+        <div className="px-4 py-2.5 sm:px-6 sm:py-4 bg-[#F8FAFC] border-t border-[#E2E8F0] flex justify-end">
           <button
             onClick={onClose}
-            className="px-4 py-1.5 sm:px-5 sm:py-2 bg-white hover:bg-gray-50 text-[#17233D] font-bold text-[10px] sm:text-xs rounded-[10px] sm:rounded-[18px] border border-[#DDE5F0]"
+            className="px-4 py-1.5 sm:px-5 sm:py-2 bg-white hover:bg-gray-50 text-[#1E293B] font-bold text-[10px] sm:text-xs rounded-[10px] sm:rounded-xl border border-[#E2E8F0]"
           >
             Tutup
           </button>

@@ -19,7 +19,8 @@ import {
   Scale,
 } from 'lucide-react';
 import { Vendor, InventoryItem } from '../../types.ts';
-import { formatRupiah } from '../../lib/format.ts';
+import { formatRupiah, localDateInputValue } from '../../lib/format.ts';
+import { getStockStatus } from '../common/StockStatusBadge.tsx';
 
 interface WarehouseBarangMasukModalProps {
   isOpen: boolean;
@@ -62,7 +63,6 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
   const [step2SelectedVendorId, setStep2SelectedVendorId] = useState<number | ''>('');
   const [step2ItemName, setStep2ItemName] = useState('');
   const [step2Price, setStep2Price] = useState<number | ''>('');
-  const [step2InitialStock, setStep2InitialStock] = useState<number>(0);
 
   // --- STEP 3 STATE: Dropdown Pilih Barang & Isi Quantity ---
   const [step3SelectedItemId, setStep3SelectedItemId] = useState<number | ''>('');
@@ -71,13 +71,13 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
   const [step3Quantity, setStep3Quantity] = useState<number>(100);
   const [step3PaymentMethod, setStep3PaymentMethod] = useState<string>('Transfer');
   const [step3TransactionDate, setStep3TransactionDate] = useState<string>(
-    new Date().toISOString().split('T')[0]
+    localDateInputValue()
   );
   const [stagedItems, setStagedItems] = useState<IncomingItemDraft[]>([]);
 
   // --- STEP 4 STATE: HD R&S Receiving List ---
   const [step4Date, setStep4Date] = useState<string>(
-    new Date().toISOString().split('T')[0]
+    localDateInputValue()
   );
   const [step4PaymentMethod, setStep4PaymentMethod] = useState<string>('Transfer');
   const [step4Notes, setStep4Notes] = useState<string>('');
@@ -233,7 +233,6 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
           vendorName: selectedVendor.vendorName,
           itemName: step2ItemName.trim(),
           price: numPrice,
-          initialStock: step2InitialStock || 0,
         }),
       });
       const data = await res.json();
@@ -245,7 +244,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
         ...data.item,
         vendorName: selectedVendor.vendorName,
         vendorCode: selectedVendor.vendorCode,
-        status: data.item.currentStock > 15 ? 'Available' : 'Low Stock',
+        status: getStockStatus(data.item.currentStock),
       };
 
       setItemsList((prev) => {
@@ -545,56 +544,56 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-[#17233D]/40 backdrop-blur-xs animate-in fade-in duration-200">
-      <div className="bg-white w-full max-w-4xl rounded-[20px] sm:rounded-[24px] border border-[#DDE5F0] shadow-xl overflow-hidden flex flex-col max-h-[96vh] sm:max-h-[92vh]">
+    <div className="hd-modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-[#1E293B]/40 backdrop-blur-xs animate-in fade-in duration-200">
+      <div className="hd-dialog bg-white w-full max-w-4xl rounded-xl border border-[#E2E8F0] overflow-hidden flex flex-col max-h-[96vh] sm:max-h-[92vh]">
         {/* Modal Header */}
-        <div className="p-4 sm:p-6 border-b border-[#DDE5F0] flex items-center justify-between bg-white shrink-0">
+        <div className="p-4 sm:p-6 border-b border-[#E2E8F0] flex items-center justify-between bg-white shrink-0">
           <div>
             <div className="flex items-center space-x-2">
-              <span className="px-2.5 py-0.5 bg-[#ED002B]/10 text-[#ED002B] text-[10px] sm:text-[11px] font-extrabold rounded-full tracking-wider uppercase">
+              <span className="px-2.5 py-0.5 bg-[#F0002B]/10 text-[#F0002B] text-[10px] sm:text-[11px] font-bold rounded-full tracking-wider uppercase">
                 Gudang
               </span>
-              <span className="text-[11px] sm:text-xs text-[#60708C] font-semibold truncate">
+              <span className="text-[11px] sm:text-xs text-[#64748B] font-semibold truncate">
                 Penerimaan &amp; Registrasi
               </span>
             </div>
-            <h2 className="text-base sm:text-xl font-bold text-[#17233D] tracking-tight mt-1">
+            <h2 className="text-base sm:text-xl font-bold text-[#1E293B] tracking-tight mt-1">
               HD R&amp;S Penerimaan / Receiving
             </h2>
           </div>
 
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-full flex items-center justify-center text-[#60708C] hover:text-[#17233D] hover:bg-[#F8FAFC] transition-colors"
+            className="w-8 h-8 rounded-full flex items-center justify-center text-[#64748B] hover:text-[#1E293B] hover:bg-[#F8FAFC] transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Tab Navigation (4 Modes) */}
-        <div className="px-3 sm:px-6 pt-2 sm:pt-3 bg-[#F8FAFC] border-b border-[#DDE5F0] shrink-0">
+        <div className="px-3 sm:px-6 pt-2 sm:pt-3 bg-[#F8FAFC] border-b border-[#E2E8F0] shrink-0">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 sm:gap-2 pb-2.5 sm:pb-3">
             {/* Step 4: HD R&S Penerimaan List Mode */}
             <button
               type="button"
               id="step-tab-4"
               onClick={() => setCurrentStep(4)}
-              className={`flex items-center space-x-2 p-2.5 rounded-[16px] text-xs font-bold transition-all border text-left ${
+              className={`flex items-center space-x-2 p-2.5 rounded-xl text-xs font-bold transition-all border text-left ${
                 currentStep === 4
-                  ? 'bg-white text-[#ED002B] border-[#ED002B] shadow-xs'
-                  : 'bg-white/60 text-[#60708C] border-[#DDE5F0] hover:bg-white hover:text-[#17233D]'
+                  ? 'bg-white text-[#F0002B] border-[#F0002B] '
+                  : 'bg-white/60 text-[#64748B] border-[#E2E8F0] hover:bg-white hover:text-[#1E293B]'
               }`}
             >
               <div
-                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black shrink-0 ${
-                  currentStep === 4 ? 'bg-[#ED002B] text-white' : 'bg-[#DDE5F0] text-[#60708C]'
+                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                  currentStep === 4 ? 'bg-[#F0002B] text-white' : 'bg-[#E2E8F0] text-[#64748B]'
                 }`}
               >
                 ★
               </div>
               <div className="truncate">
                 <span className="block leading-none">HD R&amp;S (List Mode)</span>
-                <span className="text-[10px] font-medium text-[#60708C] truncate">Penerimaan Cepat</span>
+                <span className="text-[10px] font-medium text-[#64748B] truncate">Penerimaan Cepat</span>
               </div>
             </button>
 
@@ -603,22 +602,22 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
               type="button"
               id="step-tab-1"
               onClick={() => setCurrentStep(1)}
-              className={`flex items-center space-x-2 p-2.5 rounded-[16px] text-xs font-bold transition-all border text-left ${
+              className={`flex items-center space-x-2 p-2.5 rounded-xl text-xs font-bold transition-all border text-left ${
                 currentStep === 1
-                  ? 'bg-white text-[#ED002B] border-[#ED002B] shadow-xs'
-                  : 'bg-white/60 text-[#60708C] border-[#DDE5F0] hover:bg-white hover:text-[#17233D]'
+                  ? 'bg-white text-[#F0002B] border-[#F0002B] '
+                  : 'bg-white/60 text-[#64748B] border-[#E2E8F0] hover:bg-white hover:text-[#1E293B]'
               }`}
             >
               <div
-                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black shrink-0 ${
-                  currentStep === 1 ? 'bg-[#ED002B] text-white' : 'bg-[#DDE5F0] text-[#60708C]'
+                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                  currentStep === 1 ? 'bg-[#F0002B] text-white' : 'bg-[#E2E8F0] text-[#64748B]'
                 }`}
               >
                 1
               </div>
               <div className="truncate">
                 <span className="block leading-none">1. Input Vendor</span>
-                <span className="text-[10px] font-medium text-[#60708C] truncate">Kode &amp; Nama Vendor</span>
+                <span className="text-[10px] font-medium text-[#64748B] truncate">Kode &amp; Nama Vendor</span>
               </div>
             </button>
 
@@ -627,22 +626,22 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
               type="button"
               id="step-tab-2"
               onClick={() => setCurrentStep(2)}
-              className={`flex items-center space-x-2 p-2.5 rounded-[16px] text-xs font-bold transition-all border text-left ${
+              className={`flex items-center space-x-2 p-2.5 rounded-xl text-xs font-bold transition-all border text-left ${
                 currentStep === 2
-                  ? 'bg-white text-[#ED002B] border-[#ED002B] shadow-xs'
-                  : 'bg-white/60 text-[#60708C] border-[#DDE5F0] hover:bg-white hover:text-[#17233D]'
+                  ? 'bg-white text-[#F0002B] border-[#F0002B] '
+                  : 'bg-white/60 text-[#64748B] border-[#E2E8F0] hover:bg-white hover:text-[#1E293B]'
               }`}
             >
               <div
-                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black shrink-0 ${
-                  currentStep === 2 ? 'bg-[#ED002B] text-white' : 'bg-[#DDE5F0] text-[#60708C]'
+                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                  currentStep === 2 ? 'bg-[#F0002B] text-white' : 'bg-[#E2E8F0] text-[#64748B]'
                 }`}
               >
                 2
               </div>
               <div className="truncate">
                 <span className="block leading-none">2. Input Barang</span>
-                <span className="text-[10px] font-medium text-[#60708C] truncate">Dropdown Vendor</span>
+                <span className="text-[10px] font-medium text-[#64748B] truncate">Dropdown Vendor</span>
               </div>
             </button>
 
@@ -651,22 +650,22 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
               type="button"
               id="step-tab-3"
               onClick={() => setCurrentStep(3)}
-              className={`flex items-center space-x-2 p-2.5 rounded-[16px] text-xs font-bold transition-all border text-left ${
+              className={`flex items-center space-x-2 p-2.5 rounded-xl text-xs font-bold transition-all border text-left ${
                 currentStep === 3
-                  ? 'bg-white text-[#ED002B] border-[#ED002B] shadow-xs'
-                  : 'bg-white/60 text-[#60708C] border-[#DDE5F0] hover:bg-white hover:text-[#17233D]'
+                  ? 'bg-white text-[#F0002B] border-[#F0002B] '
+                  : 'bg-white/60 text-[#64748B] border-[#E2E8F0] hover:bg-white hover:text-[#1E293B]'
               }`}
             >
               <div
-                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black shrink-0 ${
-                  currentStep === 3 ? 'bg-[#ED002B] text-white' : 'bg-[#DDE5F0] text-[#60708C]'
+                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                  currentStep === 3 ? 'bg-[#F0002B] text-white' : 'bg-[#E2E8F0] text-[#64748B]'
                 }`}
               >
                 3
               </div>
               <div className="truncate">
                 <span className="block leading-none">3. Tambah Stok</span>
-                <span className="text-[10px] font-medium text-[#60708C] truncate">Pilih Dropdown</span>
+                <span className="text-[10px] font-medium text-[#64748B] truncate">Pilih Dropdown</span>
               </div>
             </button>
           </div>
@@ -675,14 +674,14 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
         {/* Modal Body Container */}
         <div className="p-6 overflow-y-auto space-y-5">
           {error && (
-            <div className="p-3 bg-[#FDE8EC] border border-[#F8B6C2] rounded-[18px] text-xs font-semibold text-[#ED002B] flex items-center space-x-2">
+            <div className="p-3 bg-[#FDE8EC] border border-[#F8B6C2] rounded-xl text-xs font-semibold text-[#F0002B] flex items-center space-x-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{error}</span>
             </div>
           )}
 
           {successMsg && (
-            <div className="p-3 bg-[#EAF8F1] border border-[#A7E4C4] rounded-[18px] text-xs font-semibold text-[#1B9357] flex items-center space-x-2">
+            <div className="p-3 bg-[#EAF8F1] border border-[#A7E4C4] rounded-xl text-xs font-semibold text-[#1B9357] flex items-center space-x-2">
               <CheckCircle2 className="w-4 h-4 shrink-0" />
               <span>{successMsg}</span>
             </div>
@@ -695,29 +694,29 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
           {currentStep === 4 && (
             <div className="space-y-4">
               {/* Header Details */}
-              <div className="p-4 rounded-[20px] bg-[#F8FAFC] border border-[#DDE5F0] grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+              <div className="p-4 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                 <div>
-                  <label className="block text-[11px] font-bold text-[#17233D] uppercase tracking-wider mb-1 flex items-center space-x-1.5">
-                    <Calendar className="w-3.5 h-3.5 text-[#ED002B]" />
+                  <label className="block text-[11px] font-bold text-[#1E293B] uppercase tracking-wider mb-1 flex items-center space-x-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-[#F0002B]" />
                     <span>Tanggal Penerimaan (Tgl)</span>
                   </label>
                   <input
                     type="date"
                     value={step4Date}
                     onChange={(e) => setStep4Date(e.target.value)}
-                    className="w-full px-3 py-2 bg-white border border-[#DDE5F0] rounded-[14px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B]"
+                    className="w-full px-3 py-2 bg-white border border-[#E2E8F0] rounded-xl text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B]"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-bold text-[#17233D] uppercase tracking-wider mb-1 flex items-center space-x-1.5">
-                    <CreditCard className="w-3.5 h-3.5 text-[#ED002B]" />
+                  <label className="block text-[11px] font-bold text-[#1E293B] uppercase tracking-wider mb-1 flex items-center space-x-1.5">
+                    <CreditCard className="w-3.5 h-3.5 text-[#F0002B]" />
                     <span>Metode Pembayaran</span>
                   </label>
                   <select
                     value={step4PaymentMethod}
                     onChange={(e) => setStep4PaymentMethod(e.target.value)}
-                    className="w-full px-3 py-2 bg-white border border-[#DDE5F0] rounded-[14px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B] cursor-pointer"
+                    className="w-full px-3 py-2 bg-white border border-[#E2E8F0] rounded-xl text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B] cursor-pointer"
                   >
                     <option value="Transfer">Transfer</option>
                     <option value="Tempo">Tempo / Faktur Vendor</option>
@@ -726,8 +725,8 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-bold text-[#17233D] uppercase tracking-wider mb-1 flex items-center space-x-1.5">
-                    <FileText className="w-3.5 h-3.5 text-[#ED002B]" />
+                  <label className="block text-[11px] font-bold text-[#1E293B] uppercase tracking-wider mb-1 flex items-center space-x-1.5">
+                    <FileText className="w-3.5 h-3.5 text-[#F0002B]" />
                     <span>No. Surat Jalan / Catatan</span>
                   </label>
                   <input
@@ -735,7 +734,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                     value={step4Notes}
                     onChange={(e) => setStep4Notes(e.target.value)}
                     placeholder="Contoh: SJ-2026/09/HD-01"
-                    className="w-full px-3 py-2 bg-white border border-[#DDE5F0] rounded-[14px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B]"
+                    className="w-full px-3 py-2 bg-white border border-[#E2E8F0] rounded-xl text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B]"
                   />
                 </div>
               </div>
@@ -743,13 +742,13 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
               {/* Search & Action Bar */}
               <div className="flex items-center justify-between gap-3">
                 <div className="relative w-full max-w-xs">
-                  <Search className="w-3.5 h-3.5 text-[#60708C] absolute left-3 top-1/2 -translate-y-1/2" />
+                  <Search className="w-3.5 h-3.5 text-[#64748B] absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
                     value={step4Search}
                     onChange={(e) => setStep4Search(e.target.value)}
                     placeholder="Cari item atau vendor..."
-                    className="w-full pl-8 pr-3 py-1.5 bg-[#F8FAFC] border border-[#DDE5F0] rounded-[14px] text-xs text-[#17233D] outline-none focus:border-[#ED002B]"
+                    className="w-full pl-8 pr-3 py-1.5 bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl text-xs text-[#1E293B] outline-none focus:border-[#F0002B]"
                   />
                 </div>
 
@@ -757,7 +756,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                   <button
                     type="button"
                     onClick={handleStep4Reset}
-                    className="text-xs text-[#60708C] hover:text-[#ED002B] flex items-center space-x-1 font-semibold"
+                    className="text-xs text-[#64748B] hover:text-[#F0002B] flex items-center space-x-1 font-semibold"
                   >
                     <RotateCcw className="w-3 h-3" />
                     <span>Reset Qty (0)</span>
@@ -766,7 +765,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
               </div>
 
               {/* 1. Mobile Cards View for Step 4 (sm:hidden) */}
-              <div className="sm:hidden divide-y divide-[#DDE5F0] rounded-[20px] border border-[#DDE5F0] overflow-hidden bg-white max-h-96 overflow-y-auto">
+              <div className="sm:hidden divide-y divide-[#E2E8F0] rounded-xl border border-[#E2E8F0] overflow-hidden bg-white max-h-96 overflow-y-auto">
                 {filteredStep4Items.length > 0 ? (
                   filteredStep4Items.map((item) => {
                     const qty = step4Quantities[item.id] || 0;
@@ -782,32 +781,32 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex-1 min-w-0">
-                            <h4 className="font-bold text-[#17233D] text-sm leading-snug">
+                            <h4 className="font-bold text-[#1E293B] text-sm leading-snug">
                               {item.itemName}
                             </h4>
-                            <div className="flex items-center space-x-2 mt-0.5 text-[11px] text-[#60708C]">
+                            <div className="flex items-center space-x-2 mt-0.5 text-[11px] text-[#64748B]">
                               <span className="truncate">Vendor: {item.vendorName || 'Supplier HD'}</span>
                               <span>•</span>
                               <span>Stok: {item.currentStock}</span>
                             </div>
                           </div>
                           <div className="text-right shrink-0">
-                            <span className="text-xs font-bold text-[#17233D] block">
+                            <span className="text-xs font-bold text-[#1E293B] block">
                               {formatRupiah(item.price)}
                             </span>
-                            <span className="text-[10px] text-[#60708C] block">HB / unit</span>
+                            <span className="text-[10px] text-[#64748B] block">HB / unit</span>
                           </div>
                         </div>
 
                         {/* Stepper counter & Total Value */}
-                        <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-dashed border-[#DDE5F0]">
-                          <div className="inline-flex items-center bg-[#F8FAFC] border border-[#DDE5F0] rounded-[14px] p-0.5 shadow-2xs">
+                        <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-dashed border-[#E2E8F0]">
+                          <div className="inline-flex items-center bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl p-0.5 ">
                             <button
                               type="button"
                               onClick={() => handleStep4Decrement(item.id)}
                               disabled={qty <= 0}
                               aria-label={`Kurangi penerimaan ${item.itemName}`}
-                              className="w-9 h-9 rounded-[10px] flex items-center justify-center text-[#60708C] active:bg-white disabled:opacity-30"
+                              className="w-9 h-9 rounded-[10px] flex items-center justify-center text-[#64748B] active:bg-white disabled:opacity-30"
                             >
                               <Minus className="w-3.5 h-3.5" />
                             </button>
@@ -823,21 +822,21 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                                 )
                               }
                               placeholder="0"
-                              className="w-12 text-center font-black text-sm text-[#17233D] outline-none bg-transparent"
+                              className="w-12 text-center font-bold text-sm text-[#1E293B] outline-none bg-transparent"
                             />
                             <button
                               type="button"
                               onClick={() => handleStep4Increment(item.id)}
                               aria-label={`Tambah penerimaan ${item.itemName}`}
-                              className="w-9 h-9 rounded-[10px] flex items-center justify-center text-[#ED002B] active:bg-[#FFF2F4]"
+                              className="w-9 h-9 rounded-[10px] flex items-center justify-center text-[#F0002B] active:bg-[#FFF2F4]"
                             >
                               <Plus className="w-3.5 h-3.5" />
                             </button>
                           </div>
 
                           <div className="text-right">
-                            <span className="text-[10px] text-[#60708C] block uppercase font-bold">Total Value</span>
-                            <span className={`text-sm font-black ${isFilled ? 'text-[#ED002B]' : 'text-[#60708C]'}`}>
+                            <span className="text-[10px] text-[#64748B] block uppercase font-bold">Total Value</span>
+                            <span className={`text-sm font-bold ${isFilled ? 'text-[#F0002B]' : 'text-[#64748B]'}`}>
                               {formatRupiah(totalVal)}
                             </span>
                           </div>
@@ -846,17 +845,17 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                     );
                   })
                 ) : (
-                  <div className="py-8 text-center text-[#60708C] text-xs">
+                  <div className="py-8 text-center text-[#64748B] text-xs">
                     Tidak ada barang ditemukan.
                   </div>
                 )}
               </div>
 
               {/* 2. Desktop Table View (hidden sm:block) */}
-              <div className="hidden sm:block rounded-[20px] border border-[#DDE5F0] overflow-hidden bg-white shadow-2xs">
+              <div className="hidden sm:block rounded-xl border border-[#E2E8F0] overflow-hidden bg-white ">
                 <div className="overflow-x-auto max-h-96">
                   <table className="w-full text-left border-collapse">
-                    <thead className="sticky top-0 bg-[#F8FAFC] border-b border-[#DDE5F0] text-[11px] font-bold text-[#60708C] uppercase tracking-wider z-10">
+                    <thead className="sticky top-0 bg-[#F8FAFC] border-b border-[#E2E8F0] text-[11px] font-bold text-[#64748B] uppercase tracking-wider z-10">
                       <tr>
                         <th className="py-3 px-3">Vendor</th>
                         <th className="py-3 px-3">Item Barang</th>
@@ -865,7 +864,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                         <th className="py-3 px-3 text-right">Total Value</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-[#DDE5F0] text-xs">
+                    <tbody className="divide-y divide-[#E2E8F0] text-xs">
                       {filteredStep4Items.length > 0 ? (
                         filteredStep4Items.map((item) => {
                           const qty = step4Quantities[item.id] || 0;
@@ -881,33 +880,33 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                             >
                               {/* Vendor Column */}
                               <td className="py-2.5 px-3">
-                                <div className="font-bold text-[#17233D]">{item.vendorName || 'Supplier HD'}</div>
-                                <span className="text-[10px] text-[#60708C] font-mono">
+                                <div className="font-bold text-[#1E293B]">{item.vendorName || 'Supplier HD'}</div>
+                                <span className="text-[10px] text-[#64748B] font-mono">
                                   {item.vendorCode || 'VND-HD'}
                                 </span>
                               </td>
 
                               {/* Item Column */}
                               <td className="py-2.5 px-3">
-                                <div className="font-bold text-[#17233D]">{item.itemName}</div>
-                                <div className="text-[10px] text-[#60708C]">
+                                <div className="font-bold text-[#1E293B]">{item.itemName}</div>
+                                <div className="text-[10px] text-[#64748B]">
                                   Stok saat ini: {item.currentStock}
                                 </div>
                               </td>
 
                               {/* HB Column */}
-                              <td className="py-2.5 px-3 text-right font-medium text-[#17233D]">
+                              <td className="py-2.5 px-3 text-right font-medium text-[#1E293B]">
                                 {formatRupiah(item.price)}
                               </td>
 
                               {/* Qty Column */}
                               <td className="py-2.5 px-3 text-center">
-                                <div className="inline-flex items-center space-x-1 bg-white border border-[#DDE5F0] rounded-[14px] p-0.5 shadow-2xs">
+                                <div className="inline-flex items-center space-x-1 bg-white border border-[#E2E8F0] rounded-xl p-0.5 ">
                                   <button
                                     type="button"
                                     onClick={() => handleStep4Decrement(item.id)}
                                     disabled={qty <= 0}
-                                    className="w-6 h-6 rounded-[10px] flex items-center justify-center text-[#60708C] hover:bg-[#F8FAFC] disabled:opacity-30"
+                                    className="w-6 h-6 rounded-[10px] flex items-center justify-center text-[#64748B] hover:bg-[#F8FAFC] disabled:opacity-30"
                                   >
                                     <Minus className="w-3 h-3" />
                                   </button>
@@ -922,12 +921,12 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                                       )
                                     }
                                     placeholder="0"
-                                    className="w-12 text-center font-bold text-xs text-[#17233D] outline-none bg-transparent"
+                                    className="w-12 text-center font-bold text-xs text-[#1E293B] outline-none bg-transparent"
                                   />
                                   <button
                                     type="button"
                                     onClick={() => handleStep4Increment(item.id)}
-                                    className="w-6 h-6 rounded-[10px] flex items-center justify-center text-[#ED002B] hover:bg-[#FFF2F4]"
+                                    className="w-6 h-6 rounded-[10px] flex items-center justify-center text-[#F0002B] hover:bg-[#FFF2F4]"
                                   >
                                     <Plus className="w-3 h-3" />
                                   </button>
@@ -936,7 +935,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
 
                               {/* Total Value */}
                               <td className="py-2.5 px-3 text-right font-bold">
-                                <span className={isFilled ? 'text-[#ED002B]' : 'text-[#60708C]'}>
+                                <span className={isFilled ? 'text-[#F0002B]' : 'text-[#64748B]'}>
                                   {formatRupiah(totalVal)}
                                 </span>
                               </td>
@@ -945,7 +944,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                         })
                       ) : (
                         <tr>
-                          <td colSpan={5} className="py-6 text-center text-[#60708C]">
+                          <td colSpan={5} className="py-6 text-center text-[#64748B]">
                             Tidak ada barang ditemukan.
                           </td>
                         </tr>
@@ -956,19 +955,19 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
               </div>
 
               {/* Bottom Summary Bar for Step 4 */}
-              <div className="p-3.5 sm:p-4 bg-[#F8FAFC] border border-[#DDE5F0] rounded-[20px] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                <div className="grid grid-cols-3 sm:flex sm:items-center sm:space-x-4 divide-x divide-[#DDE5F0] text-xs">
+              <div className="p-3.5 sm:p-4 bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="grid grid-cols-3 sm:flex sm:items-center sm:space-x-4 divide-x divide-[#E2E8F0] text-xs">
                   <div className="text-center sm:text-left pr-2 sm:pr-0">
-                    <span className="text-[10px] text-[#60708C] block uppercase font-bold">Barang</span>
-                    <strong className="text-xs sm:text-sm text-[#17233D]">{step4Summary.count} Item</strong>
+                    <span className="text-[10px] text-[#64748B] block uppercase font-bold">Barang</span>
+                    <strong className="text-xs sm:text-sm text-[#1E293B]">{step4Summary.count} Item</strong>
                   </div>
                   <div className="text-center sm:text-left px-2 sm:px-0 sm:pl-4">
-                    <span className="text-[10px] text-[#60708C] block uppercase font-bold">Total Qty</span>
-                    <strong className="text-xs sm:text-sm text-[#17233D]">{step4Summary.totalQty} Unit</strong>
+                    <span className="text-[10px] text-[#64748B] block uppercase font-bold">Total Qty</span>
+                    <strong className="text-xs sm:text-sm text-[#1E293B]">{step4Summary.totalQty} Unit</strong>
                   </div>
                   <div className="text-center sm:text-left pl-2 sm:pl-4">
-                    <span className="text-[10px] text-[#60708C] block uppercase font-bold">Total Value</span>
-                    <strong className="text-xs sm:text-sm text-[#ED002B] truncate block">{formatRupiah(step4Summary.totalVal)}</strong>
+                    <span className="text-[10px] text-[#64748B] block uppercase font-bold">Total Value</span>
+                    <strong className="text-xs sm:text-sm text-[#F0002B] truncate block">{formatRupiah(step4Summary.totalVal)}</strong>
                   </div>
                 </div>
 
@@ -976,7 +975,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                   <button
                     type="button"
                     onClick={onClose}
-                    className="px-3.5 sm:px-4 py-2.5 bg-white text-[#60708C] text-xs font-semibold rounded-[18px] border border-[#DDE5F0] min-h-[44px]"
+                    className="px-3.5 sm:px-4 py-2.5 bg-white text-[#64748B] text-xs font-semibold rounded-xl border border-[#E2E8F0] min-h-[36px]"
                   >
                     Batal
                   </button>
@@ -984,7 +983,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                     type="button"
                     onClick={handleSubmitStep4Receiving}
                     disabled={step4Summary.count === 0 || loading}
-                    className="flex-1 sm:flex-none px-4 sm:px-6 py-2.5 bg-[#ED002B] hover:bg-[#d60027] text-white text-xs font-bold rounded-[18px] shadow-sm flex items-center justify-center space-x-2 disabled:opacity-40 transition-all min-h-[44px]"
+                    className="flex-1 sm:flex-none px-4 sm:px-6 py-2.5 bg-[#F0002B] hover:bg-[#D80027] text-white text-xs font-bold rounded-xl  flex items-center justify-center space-x-2 disabled:opacity-40 transition-all min-h-[36px]"
                   >
                     <ClipboardList className="w-4 h-4 shrink-0" />
                     <span className="truncate">
@@ -1003,18 +1002,18 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
           {/* ============================================================================ */}
           {currentStep === 1 && (
             <form onSubmit={handleSaveStep1Vendor} className="space-y-4">
-              <div className="p-5 rounded-[20px] bg-[#F8FAFC] border border-[#DDE5F0] space-y-4">
-                <div className="flex items-center space-x-2 text-xs font-bold text-[#17233D] uppercase tracking-wider">
-                  <Building2 className="w-4 h-4 text-[#ED002B]" />
+              <div className="p-5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-4">
+                <div className="flex items-center space-x-2 text-xs font-bold text-[#1E293B] uppercase tracking-wider">
+                  <Building2 className="w-4 h-4 text-[#F0002B]" />
                   <span>Langkah 1: Input Kode Vendor dan Nama Vendor</span>
                 </div>
-                <p className="text-xs text-[#60708C]">
+                <p className="text-xs text-[#64748B]">
                   Daftarkan identitas vendor terlebih dahulu sebelum menginput barang yang disuplai oleh vendor ini.
                 </p>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-semibold text-[#60708C] mb-1">
+                    <label className="block text-xs font-semibold text-[#64748B] mb-1">
                       Kode Vendor
                     </label>
                     <input
@@ -1024,12 +1023,12 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                       value={step1VendorCode}
                       onChange={(e) => setStep1VendorCode(e.target.value)}
                       placeholder="Contoh: VND-002"
-                      className="w-full px-3.5 py-2.5 bg-white border border-[#DDE5F0] rounded-[18px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B]"
+                      className="w-full px-3.5 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B]"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-[#60708C] mb-1">
+                    <label className="block text-xs font-semibold text-[#64748B] mb-1">
                       Nama Vendor
                     </label>
                     <input
@@ -1039,22 +1038,22 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                       value={step1VendorName}
                       onChange={(e) => setStep1VendorName(e.target.value)}
                       placeholder="Contoh: PT Sinar Abadi"
-                      className="w-full px-3.5 py-2.5 bg-white border border-[#DDE5F0] rounded-[18px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B]"
+                      className="w-full px-3.5 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B]"
                     />
                   </div>
                 </div>
               </div>
 
               {vendorsList.length > 0 && (
-                <div className="p-4 rounded-[18px] bg-white border border-[#DDE5F0] text-xs">
-                  <span className="font-semibold text-[#60708C] block mb-2">
+                <div className="p-4 rounded-xl bg-white border border-[#E2E8F0] text-xs">
+                  <span className="font-semibold text-[#64748B] block mb-2">
                     Vendor yang Sudah Terdaftar ({vendorsList.length}):
                   </span>
                   <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
                     {vendorsList.map((v) => (
                       <span
                         key={v.id}
-                        className="px-2.5 py-1 bg-[#F8FAFC] border border-[#DDE5F0] rounded-full text-[11px] text-[#17233D] font-medium"
+                        className="px-2.5 py-1 bg-[#F8FAFC] border border-[#E2E8F0] rounded-full text-[11px] text-[#1E293B] font-medium"
                       >
                         <strong>{v.vendorCode}</strong> - {v.vendorName}
                       </span>
@@ -1067,7 +1066,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                 <button
                   type="button"
                   onClick={() => setCurrentStep(2)}
-                  className="text-xs font-semibold text-[#60708C] hover:text-[#17233D]"
+                  className="text-xs font-semibold text-[#64748B] hover:text-[#1E293B]"
                 >
                   Lewati ke Langkah 2 (Vendor sudah ada) →
                 </button>
@@ -1076,7 +1075,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                   <button
                     type="button"
                     onClick={onClose}
-                    className="px-4 py-2 bg-white text-[#60708C] text-xs font-semibold rounded-[18px] border border-[#DDE5F0]"
+                    className="px-4 py-2 bg-white text-[#64748B] text-xs font-semibold rounded-xl border border-[#E2E8F0]"
                   >
                     Batal
                   </button>
@@ -1084,7 +1083,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                     id="btn-simpan-vendor-step1"
                     type="submit"
                     disabled={loading}
-                    className="px-5 py-2.5 bg-[#ED002B] hover:bg-[#d60027] text-white text-xs font-bold rounded-[18px] shadow-sm flex items-center space-x-1.5 transition-colors"
+                    className="px-5 py-2.5 bg-[#F0002B] hover:bg-[#D80027] text-white text-xs font-bold rounded-xl  flex items-center space-x-1.5 transition-colors"
                   >
                     <span>{loading ? 'Menyimpan...' : 'Simpan Vendor & Lanjut'}</span>
                     <ArrowRight className="w-3.5 h-3.5" />
@@ -1099,25 +1098,25 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
           {/* ============================================================================ */}
           {currentStep === 2 && (
             <form onSubmit={handleSaveStep2Item} className="space-y-4">
-              <div className="p-5 rounded-[20px] bg-[#F8FAFC] border border-[#DDE5F0] space-y-4">
-                <div className="flex items-center space-x-2 text-xs font-bold text-[#17233D] uppercase tracking-wider">
-                  <PackageCheck className="w-4 h-4 text-[#ED002B]" />
+              <div className="p-5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-4">
+                <div className="flex items-center space-x-2 text-xs font-bold text-[#1E293B] uppercase tracking-wider">
+                  <PackageCheck className="w-4 h-4 text-[#F0002B]" />
                   <span>Langkah 2: Input Nama Barang dan Dropdown si Vendornya</span>
                 </div>
-                <p className="text-xs text-[#60708C]">
+                <p className="text-xs text-[#64748B]">
                   Pilih vendor melalui dropdown, lalu masukkan nama barang dan harga satuan.
                 </p>
 
                 {/* Dropdown Si Vendornya */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="block text-xs font-bold text-[#17233D]">
+                    <label className="block text-xs font-bold text-[#1E293B]">
                       Pilih Vendor (Dropdown Vendor)
                     </label>
                     <button
                       type="button"
                       onClick={() => setCurrentStep(1)}
-                      className="text-xs font-semibold text-[#ED002B] hover:underline"
+                      className="text-xs font-semibold text-[#F0002B] hover:underline"
                     >
                       + Tambah Vendor Baru
                     </button>
@@ -1127,7 +1126,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                     id="dropdown-step2-vendor"
                     value={step2SelectedVendorId}
                     onChange={(e) => setStep2SelectedVendorId(e.target.value ? Number(e.target.value) : '')}
-                    className="w-full px-4 py-2.5 bg-white border border-[#DDE5F0] rounded-[18px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B] cursor-pointer"
+                    className="w-full px-4 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B] cursor-pointer"
                   >
                     <option value="">-- [ Pilih Vendor dari Dropdown ] --</option>
                     {vendorsList.map((v) => (
@@ -1141,7 +1140,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                 {/* Nama Barang & Harga */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                   <div>
-                    <label className="block text-xs font-semibold text-[#60708C] mb-1">
+                    <label className="block text-xs font-semibold text-[#64748B] mb-1">
                       Nama Barang
                     </label>
                     <input
@@ -1151,12 +1150,12 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                       value={step2ItemName}
                       onChange={(e) => setStep2ItemName(e.target.value)}
                       placeholder="Contoh: Ayam Mentah (kg)"
-                      className="w-full px-3.5 py-2.5 bg-white border border-[#DDE5F0] rounded-[18px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B]"
+                      className="w-full px-3.5 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B]"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-[#60708C] mb-1">
+                    <label className="block text-xs font-semibold text-[#64748B] mb-1">
                       Harga Satuan (HB - Rp)
                     </label>
                     <input
@@ -1167,12 +1166,12 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                       value={step2Price}
                       onChange={(e) => setStep2Price(e.target.value === '' ? '' : Number(e.target.value))}
                       placeholder="Contoh: 38000"
-                      className="w-full px-3.5 py-2.5 bg-white border border-[#DDE5F0] rounded-[18px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B]"
+                      className="w-full px-3.5 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B]"
                     />
                   </div>
 
                   {matchedCatalogItemStep2 && Number(step2Price) > 0 && (
-                    <div className="sm:col-span-2 p-3 bg-blue-50 border border-blue-200 rounded-[16px] text-xs text-blue-900 flex items-start space-x-2">
+                    <div className="sm:col-span-2 p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 flex items-start space-x-2">
                       <Scale className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
                       <div className="leading-snug">
                         <span className="font-bold text-blue-800 block">Penyimpanan Master Katalog:</span>
@@ -1185,25 +1184,13 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                   )}
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-[#60708C] mb-1">
-                    Stok Awal (Opsional)
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={step2InitialStock}
-                    onChange={(e) => setStep2InitialStock(Number(e.target.value) || 0)}
-                    className="w-full max-w-xs px-3.5 py-2 bg-white border border-[#DDE5F0] rounded-[16px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B]"
-                  />
-                </div>
               </div>
 
               <div className="pt-2 flex items-center justify-between">
                 <button
                   type="button"
                   onClick={() => setCurrentStep(1)}
-                  className="text-xs font-semibold text-[#60708C] hover:text-[#17233D]"
+                  className="text-xs font-semibold text-[#64748B] hover:text-[#1E293B]"
                 >
                   ← Kembali ke Langkah 1 (Input Vendor)
                 </button>
@@ -1212,7 +1199,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                   <button
                     type="button"
                     onClick={onClose}
-                    className="px-4 py-2 bg-white text-[#60708C] text-xs font-semibold rounded-[18px] border border-[#DDE5F0]"
+                    className="px-4 py-2 bg-white text-[#64748B] text-xs font-semibold rounded-xl border border-[#E2E8F0]"
                   >
                     Batal
                   </button>
@@ -1220,7 +1207,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                     id="btn-simpan-barang-step2"
                     type="submit"
                     disabled={loading}
-                    className="px-5 py-2.5 bg-[#ED002B] hover:bg-[#d60027] text-white text-xs font-bold rounded-[18px] shadow-sm flex items-center space-x-1.5 transition-colors"
+                    className="px-5 py-2.5 bg-[#F0002B] hover:bg-[#D80027] text-white text-xs font-bold rounded-xl  flex items-center space-x-1.5 transition-colors"
                   >
                     <span>{loading ? 'Menyimpan...' : 'Simpan Barang & Lanjut'}</span>
                     <ArrowRight className="w-3.5 h-3.5" />
@@ -1235,22 +1222,22 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
           {/* ============================================================================ */}
           {currentStep === 3 && (
             <form onSubmit={handleSubmitStep3Incoming} className="space-y-4">
-              <div className="p-5 rounded-[20px] bg-[#F8FAFC] border border-[#DDE5F0] space-y-4">
-                <div className="flex items-center space-x-2 text-xs font-bold text-[#17233D] uppercase tracking-wider">
-                  <Boxes className="w-4 h-4 text-[#ED002B]" />
+              <div className="p-5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-4">
+                <div className="flex items-center space-x-2 text-xs font-bold text-[#1E293B] uppercase tracking-wider">
+                  <Boxes className="w-4 h-4 text-[#F0002B]" />
                   <span>Langkah 3: Pilih Barangnya via Dropdown dan Tinggal Isi Quantity</span>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                   <div>
-                    <label className="block text-xs font-bold text-[#17233D] mb-1">
+                    <label className="block text-xs font-bold text-[#1E293B] mb-1">
                       Pilih Barang (Dropdown Barang)
                     </label>
                     <select
                       id="dropdown-step3-barang"
                       value={step3SelectedItemId}
                       onChange={(e) => setStep3SelectedItemId(e.target.value ? Number(e.target.value) : '')}
-                      className="w-full px-4 py-2.5 bg-white border border-[#DDE5F0] rounded-[18px] text-xs font-bold text-[#17233D] outline-none focus:border-[#ED002B] cursor-pointer"
+                      className="w-full px-4 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-xs font-bold text-[#1E293B] outline-none focus:border-[#F0002B] cursor-pointer"
                     >
                       <option value="">-- [ Pilih Barang dari Dropdown ] --</option>
                       {itemsList.map((i) => (
@@ -1262,14 +1249,14 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-[#17233D] mb-1">
+                    <label className="block text-xs font-bold text-[#1E293B] mb-1">
                       Vendor Pemasok / Pengirim
                     </label>
                     <select
                       id="dropdown-step3-vendor"
                       value={step3SelectedVendorId}
                       onChange={(e) => setStep3SelectedVendorId(e.target.value ? Number(e.target.value) : '')}
-                      className="w-full px-4 py-2.5 bg-white border border-[#DDE5F0] rounded-[18px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B] cursor-pointer"
+                      className="w-full px-4 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B] cursor-pointer"
                     >
                       <option value="">-- [ Pilih Vendor Pengirim ] --</option>
                       {vendorsList.map((v) => (
@@ -1281,7 +1268,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-[#17233D] mb-1 flex items-center justify-between">
+                    <label className="block text-xs font-bold text-[#1E293B] mb-1 flex items-center justify-between">
                       <span>Harga Beli Satuan (HB - Input Manual)</span>
                       <span className="text-[10px] text-amber-700 font-normal">Wajib Input Manual</span>
                     </label>
@@ -1293,13 +1280,13 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                       value={step3Price}
                       onChange={(e) => setStep3Price(e.target.value === '' ? '' : Number(e.target.value))}
                       placeholder="Masukkan harga beli riil dari vendor..."
-                      className="w-full px-4 py-2.5 bg-white border border-[#DDE5F0] rounded-[18px] text-xs font-bold text-[#17233D] outline-none focus:border-[#ED002B]"
+                      className="w-full px-4 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-xs font-bold text-[#1E293B] outline-none focus:border-[#F0002B]"
                       required
                     />
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-[#17233D] mb-1">
+                    <label className="block text-xs font-bold text-[#1E293B] mb-1">
                       Tinggal Isi Quantity (Jumlah Masuk)
                     </label>
                     <div className="flex items-center space-x-2">
@@ -1310,12 +1297,12 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                         min="1"
                         value={step3Quantity}
                         onChange={(e) => setStep3Quantity(Math.max(1, parseInt(e.target.value) || 1))}
-                        className="flex-1 px-4 py-2.5 bg-white border border-[#DDE5F0] rounded-[18px] text-sm font-bold text-[#17233D] outline-none focus:border-[#ED002B]"
+                        className="flex-1 px-4 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-sm font-bold text-[#1E293B] outline-none focus:border-[#F0002B]"
                       />
                       <button
                         type="button"
                         onClick={handleAddStagedItem}
-                        className="px-4 py-2.5 bg-[#17233D] hover:bg-[#202f50] text-white text-xs font-bold rounded-[18px] transition-colors shrink-0"
+                        className="px-4 py-2.5 bg-[#1E293B] hover:bg-[#202f50] text-white text-xs font-bold rounded-xl transition-colors shrink-0"
                       >
                         + Tambah ke List
                       </button>
@@ -1323,10 +1310,10 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                   </div>
 
                   {currentSelectedItem && (
-                    <div className="sm:col-span-2 p-3 bg-slate-50 border border-[#CBD5E1] rounded-[16px] text-xs text-[#334155] space-y-1">
+                    <div className="sm:col-span-2 p-3 bg-slate-50 border border-[#CBD5E1] rounded-xl text-xs text-[#334155] space-y-1">
                       <div className="flex items-center justify-between">
                         <span className="text-[#64748B]">Harga Katalog (Khusus Request Outlet):</span>
-                        <strong className="text-[#17233D] font-mono">{formatRupiah(currentSelectedItem.price)}</strong>
+                        <strong className="text-[#1E293B] font-mono">{formatRupiah(currentSelectedItem.price)}</strong>
                       </div>
                       <div className="flex items-center justify-between border-t border-slate-200 pt-1">
                         <span className="text-[#64748B]">Harga Rata-Rata Beli Saat Ini:</span>
@@ -1350,13 +1337,13 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                   <div>
-                    <label className="block text-xs font-semibold text-[#60708C] mb-1">
+                    <label className="block text-xs font-semibold text-[#64748B] mb-1">
                       Metode Pembayaran
                     </label>
                     <select
                       value={step3PaymentMethod}
                       onChange={(e) => setStep3PaymentMethod(e.target.value)}
-                      className="w-full px-3.5 py-2.5 bg-white border border-[#DDE5F0] rounded-[18px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B]"
+                      className="w-full px-3.5 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B]"
                     >
                       <option value="Transfer">Transfer Bank</option>
                       <option value="Tempo">Tempo / Faktur</option>
@@ -1365,51 +1352,51 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-[#60708C] mb-1">
+                    <label className="block text-xs font-semibold text-[#64748B] mb-1">
                       Tanggal Transaksi
                     </label>
                     <input
                       type="date"
                       value={step3TransactionDate}
                       onChange={(e) => setStep3TransactionDate(e.target.value)}
-                      className="w-full px-3.5 py-2.5 bg-white border border-[#DDE5F0] rounded-[18px] text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B]"
+                      className="w-full px-3.5 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B]"
                     />
                   </div>
                 </div>
               </div>
 
               {stagedItems.length > 0 && (
-                <div className="rounded-[18px] border border-[#DDE5F0] overflow-hidden">
-                  <div className="p-3 bg-[#F8FAFC] border-b border-[#DDE5F0] flex items-center justify-between text-xs">
-                    <span className="font-bold text-[#17233D]">
+                <div className="rounded-xl border border-[#E2E8F0] overflow-hidden">
+                  <div className="p-3 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between text-xs">
+                    <span className="font-bold text-[#1E293B]">
                       Daftar Barang yang Akan Masuk ({stagedItems.length})
                     </span>
-                    <span className="font-bold text-[#ED002B]">
+                    <span className="font-bold text-[#F0002B]">
                       Total:{' '}
                       {formatRupiah(stagedItems.reduce((acc, curr) => acc + curr.subtotal, 0))}
                     </span>
                   </div>
-                  <div className="divide-y divide-[#DDE5F0]">
+                  <div className="divide-y divide-[#E2E8F0]">
                     {stagedItems.map((it, idx) => (
                       <div
                         key={idx}
                         className="p-3 flex items-center justify-between bg-white text-xs"
                       >
                         <div>
-                          <div className="font-bold text-[#17233D]">{it.itemName}</div>
-                          <div className="text-[#60708C] text-[11px]">
+                          <div className="font-bold text-[#1E293B]">{it.itemName}</div>
+                          <div className="text-[#64748B] text-[11px]">
                             +{it.quantity} pcs @ {formatRupiah(it.price)} • {it.vendorName}
                           </div>
                         </div>
 
                         <div className="flex items-center space-x-3">
-                          <span className="font-bold text-[#17233D]">
+                          <span className="font-bold text-[#1E293B]">
                             {formatRupiah(it.subtotal)}
                           </span>
                           <button
                             type="button"
                             onClick={() => handleRemoveStagedItem(idx)}
-                            className="text-[#60708C] hover:text-[#ED002B] p-1"
+                            className="text-[#64748B] hover:text-[#F0002B] p-1"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -1424,7 +1411,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                 <button
                   type="button"
                   onClick={() => setCurrentStep(2)}
-                  className="text-xs font-semibold text-[#60708C] hover:text-[#17233D]"
+                  className="text-xs font-semibold text-[#64748B] hover:text-[#1E293B]"
                 >
                   ← Kembali ke Langkah 2 (Input Barang)
                 </button>
@@ -1433,7 +1420,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                   <button
                     type="button"
                     onClick={onClose}
-                    className="px-4 py-2 bg-white text-[#60708C] text-xs font-semibold rounded-[18px] border border-[#DDE5F0]"
+                    className="px-4 py-2 bg-white text-[#64748B] text-xs font-semibold rounded-xl border border-[#E2E8F0]"
                   >
                     Batal
                   </button>
@@ -1441,7 +1428,7 @@ export const WarehouseBarangMasukModal: React.FC<WarehouseBarangMasukModalProps>
                     id="btn-simpan-barang-masuk"
                     type="submit"
                     disabled={loading}
-                    className="px-6 py-2.5 bg-[#ED002B] hover:bg-[#d60027] text-white text-xs font-bold rounded-[18px] shadow-sm transition-colors"
+                    className="px-6 py-2.5 bg-[#F0002B] hover:bg-[#D80027] text-white text-xs font-bold rounded-xl  transition-colors"
                   >
                     {loading ? 'Menyimpan...' : '[ Simpan Barang Masuk ]'}
                   </button>

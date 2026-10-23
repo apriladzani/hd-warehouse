@@ -1,3 +1,5 @@
+import { Toolbar } from '../common/UI.tsx';
+import { StateMessage } from '../common/UI.tsx';
 import React, { useEffect, useState, useMemo } from 'react';
 import {
   CheckCircle2,
@@ -14,7 +16,17 @@ import {
 } from 'lucide-react';
 import { User, InventoryItem } from '../../types.ts';
 import { formatRupiah } from '../../lib/format.ts';
-import { OUTLETS } from '../../constants/outlets.ts';
+import { localDateInputValue } from '../../lib/format.ts';
+
+const CATEGORY_PRIORITY = ['Raw Material', 'Support Material', 'Packaging'];
+
+const compareInventoryItems = (left: InventoryItem, right: InventoryItem) => {
+  const leftCategory = CATEGORY_PRIORITY.indexOf(left.category);
+  const rightCategory = CATEGORY_PRIORITY.indexOf(right.category);
+  const categoryOrder = (leftCategory < 0 ? CATEGORY_PRIORITY.length : leftCategory)
+    - (rightCategory < 0 ? CATEGORY_PRIORITY.length : rightCategory);
+  return categoryOrder || left.itemCode.localeCompare(right.itemCode, undefined, { numeric: true, sensitivity: 'base' });
+};
 
 interface UserRequestFormProps {
   currentUser: User;
@@ -30,12 +42,13 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [outletAssignmentLoading, setOutletAssignmentLoading] = useState(true);
 
   // Form Headers requested by user: "Tgl... Otlet...."
   const [requestDate, setRequestDate] = useState<string>(
-    new Date().toISOString().split('T')[0]
+    localDateInputValue()
   );
-  const [outletName, setOutletName] = useState<string>(OUTLETS[0]);
+  const [outletName, setOutletName] = useState<string>('');
   const [paymentMethod, setPaymentMethod] = useState<string>('Transfer');
 
   // Quantities map: { [itemId: number]: number }
@@ -43,10 +56,7 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
 
   // Search & filter
   const [searchQuery, setSearchQuery] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState<'all' | 'ordered' | 'meat' | 'staple' | 'sauce' | 'pack'>('all');
-
-  // Outlet list from constants
-  const outletOptions = OUTLETS;
+  const [categoryFilter, setCategoryFilter] = useState('all');
 
   // Fetch available inventory items
   useEffect(() => {
@@ -55,7 +65,11 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
         setLoading(true);
         const res = await fetch('/api/inventory');
         const data = await res.json();
-        const items: InventoryItem[] = data.items || [];
+        const itemMap = new Map<number, InventoryItem>();
+        (Array.isArray(data.items) ? data.items as InventoryItem[] : []).forEach((item) => {
+          if (Number.isFinite(Number(item.id)) && !itemMap.has(Number(item.id))) itemMap.set(Number(item.id), item);
+        });
+        const items = Array.from(itemMap.values()).sort(compareInventoryItems);
         setInventory(items);
 
         // Initialize empty quantities
@@ -71,6 +85,25 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
       }
     };
     fetchInventory();
+
+    const fetchOutletAssignment = async () => {
+      setOutletAssignmentLoading(true);
+      const credentials = currentUser as User & { password?: string };
+      try {
+        const response = await fetch('/api/outlet/profile', { headers: {
+          'X-Auth-Email': currentUser.email,
+          'X-Auth-Password': credentials.password || '',
+        } });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Penempatan outlet tidak dapat dimuat.');
+        setOutletName(result.outletName || '');
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : 'Penempatan outlet tidak dapat dimuat.');
+      } finally {
+        setOutletAssignmentLoading(false);
+      }
+    };
+    fetchOutletAssignment();
   }, []);
 
   // Update quantity for a specific item
@@ -104,21 +137,22 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
     setQuantities(reset);
   };
 
-  // Helper to categorize items
-  const getItemCategory = (name: string): 'meat' | 'staple' | 'sauce' | 'pack' => {
-    const lower = name.toLowerCase();
-    if (lower.includes('ayam') || lower.includes('kulit')) return 'meat';
-    if (lower.includes('beras') || lower.includes('tepung') || lower.includes('minyak')) return 'staple';
-    if (lower.includes('s.') || lower.includes('bbq') || lower.includes('geprek') || lower.includes('chili') || lower.includes('tomat') || lower.includes('pedas')) return 'sauce';
-    return 'pack';
-  };
+  const categoryOptions = useMemo(() => Array.from(new Set(inventory.map((item) => item.category)))
+    .sort((left, right) => {
+      const leftOrder = CATEGORY_PRIORITY.indexOf(left);
+      const rightOrder = CATEGORY_PRIORITY.indexOf(right);
+      return (leftOrder < 0 ? CATEGORY_PRIORITY.length : leftOrder) - (rightOrder < 0 ? CATEGORY_PRIORITY.length : rightOrder)
+        || left.localeCompare(right);
+    }), [inventory]);
 
   // Filtered items list
   const filteredItems = useMemo(() => {
     return inventory.filter((item) => {
       const matchesSearch =
         item.itemName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (item.vendorName && item.vendorName.toLowerCase().includes(searchQuery.toLowerCase()));
+        item.itemCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (item.vendorName || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (item.vendorCode || '').toLowerCase().includes(searchQuery.toLowerCase());
 
       if (!matchesSearch) return false;
 
@@ -126,19 +160,7 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
       if (categoryFilter === 'ordered') {
         return qty > 0;
       }
-      if (categoryFilter === 'meat') {
-        return getItemCategory(item.itemName) === 'meat';
-      }
-      if (categoryFilter === 'staple') {
-        return getItemCategory(item.itemName) === 'staple';
-      }
-      if (categoryFilter === 'sauce') {
-        return getItemCategory(item.itemName) === 'sauce';
-      }
-      if (categoryFilter === 'pack') {
-        return getItemCategory(item.itemName) === 'pack';
-      }
-      return true;
+      return categoryFilter === 'all' || item.category === categoryFilter;
     });
   }, [inventory, searchQuery, categoryFilter, quantities]);
 
@@ -166,8 +188,8 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
     setError(null);
     setSuccessMsg(null);
 
-    if (!outletName.trim()) {
-      setError('Nama Outlet wajib diisi.');
+    if (outletAssignmentLoading || !outletName.trim()) {
+      setError('Akun ini belum memiliki penempatan outlet. Hubungi Admin.');
       return;
     }
 
@@ -189,9 +211,8 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
     try {
       setSubmitting(true);
 
+      const credentials = currentUser as User & { password?: string };
       const payload = {
-        userId: currentUser.id,
-        requesterName: `${outletName.trim()} (${currentUser.name})`,
         paymentMethod,
         requestDate,
         items: orderedItems,
@@ -199,7 +220,11 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
 
       const res = await fetch('/api/requests', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Auth-Email': currentUser.email,
+          'X-Auth-Password': credentials.password || '',
+        },
         body: JSON.stringify(payload),
       });
 
@@ -226,22 +251,22 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
   };
 
   return (
-    <div className="space-y-4 sm:space-y-6">
+    <div className="hd-outlet-request-form space-y-4">
       {/* Header Form: Tgl & Outlet */}
-      <div className="bg-white p-3.5 sm:p-5 rounded-[18px] sm:rounded-[22px] border border-[#DDE5F0] shadow-xs space-y-2.5 sm:space-y-3.5">
-        <div className="flex items-center justify-between gap-2 border-b border-[#DDE5F0] pb-2.5 sm:pb-3">
+      <div className="bg-white p-3.5 sm:p-4 rounded-xl border border-[#E2E8F0] space-y-2.5 sm:space-y-3.5">
+        <div className="flex items-center justify-between gap-2 border-b border-[#E2E8F0] pb-2.5 sm:pb-3">
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-            <span className="px-2 py-0.5 bg-[#ED002B]/10 text-[#ED002B] text-[10px] sm:text-[11px] font-extrabold rounded-full tracking-wider uppercase">
+            <span className="px-2 py-0.5 bg-[#F0002B]/10 text-[#F0002B] text-[10px] sm:text-[11px] font-bold rounded-full tracking-wider uppercase">
               HD Order
             </span>
-            <h2 className="text-sm sm:text-lg font-bold text-[#17233D] tracking-tight">
+            <h2 className="text-sm sm:text-lg font-bold text-[#1E293B] tracking-tight">
               Daftar Permintaan Barang
             </h2>
           </div>
 
-          <div className="flex items-center space-x-1 text-[11px] sm:text-xs text-[#60708C] shrink-0">
+          <div className="flex items-center space-x-1 text-[11px] sm:text-xs text-[#64748B] shrink-0">
             <span className="hidden sm:inline">Pemohon:</span>
-            <strong className="text-[#17233D] bg-[#F8FAFC] px-2 py-0.5 rounded-full border border-[#DDE5F0] max-w-[130px] sm:max-w-none truncate block">
+            <strong className="text-[#1E293B] bg-[#F8FAFC] px-2 py-0.5 rounded-full border border-[#E2E8F0] max-w-[130px] sm:max-w-none truncate block">
               {currentUser.name}
             </strong>
           </div>
@@ -251,8 +276,8 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 sm:gap-3.5 pt-0.5">
           {/* Kolom Tanggal */}
           <div className="col-span-1">
-            <label className="block text-[9px] sm:text-xs font-bold text-[#60708C] uppercase tracking-wider mb-0.5 sm:mb-1 flex items-center space-x-1">
-              <Calendar className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-[#ED002B] shrink-0" />
+            <label className="block text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider mb-0.5 sm:mb-1 flex items-center space-x-1">
+              <Calendar className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-[#F0002B] shrink-0" />
               <span className="truncate">Tgl Order</span>
             </label>
             <input
@@ -260,43 +285,32 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
               type="date"
               value={requestDate}
               onChange={(e) => setRequestDate(e.target.value)}
-              className="w-full px-2 py-0.5 sm:px-3.5 sm:py-2 bg-[#F8FAFC] border border-[#DDE5F0] rounded-[10px] sm:rounded-[16px] text-[10px] sm:text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B] h-[30px] sm:h-[40px]"
+              className="w-full px-2 py-0.5 sm:px-3.5 sm:py-2 bg-[#F8FAFC] border border-[#E2E8F0] rounded-[10px] sm:rounded-xl text-[10px] sm:text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B] h-[30px] sm:h-[40px]"
             />
           </div>
 
           {/* Kolom Outlet */}
           <div className="col-span-1">
-            <label className="block text-[9px] sm:text-xs font-bold text-[#60708C] uppercase tracking-wider mb-0.5 sm:mb-1 flex items-center space-x-1">
-              <Store className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-[#ED002B] shrink-0" />
+            <label className="block text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider mb-0.5 sm:mb-1 flex items-center space-x-1">
+              <Store className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-[#F0002B] shrink-0" />
               <span className="truncate">Outlet</span>
             </label>
-            <div className="relative">
-              <select
-                id="select-hd-outlet"
-                value={outletName}
-                onChange={(e) => setOutletName(e.target.value)}
-                className="w-full px-2 py-0.5 sm:px-3.5 sm:py-2 bg-[#F8FAFC] border border-[#DDE5F0] rounded-[10px] sm:rounded-[16px] text-[10px] sm:text-xs font-bold text-[#17233D] outline-none focus:border-[#ED002B] cursor-pointer h-[30px] sm:h-[40px] truncate"
-              >
-                {outletOptions.map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
-                  </option>
-                ))}
-              </select>
+            <div id="outlet-assignment-display" aria-live="polite" className="flex h-[30px] items-center truncate rounded-[10px] border border-[#E2E8F0] bg-[#F8FAFC] px-2 text-[11px] font-bold text-[#1E293B] sm:h-[40px] sm:px-3.5 sm:text-xs">
+              {outletAssignmentLoading ? 'Memuat penempatan…' : outletName || 'Belum ditempatkan'}
             </div>
           </div>
 
           {/* Kolom Metode Pembayaran */}
           <div className="col-span-2 sm:col-span-1">
-            <label className="block text-[9px] sm:text-xs font-bold text-[#60708C] uppercase tracking-wider mb-0.5 sm:mb-1 flex items-center space-x-1">
-              <CreditCard className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-[#ED002B] shrink-0" />
+            <label className="block text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider mb-0.5 sm:mb-1 flex items-center space-x-1">
+              <CreditCard className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-[#F0002B] shrink-0" />
               <span className="truncate">Metode Pembayaran</span>
             </label>
             <select
               id="select-hd-payment"
               value={paymentMethod}
               onChange={(e) => setPaymentMethod(e.target.value)}
-              className="w-full px-2 py-0.5 sm:px-3.5 sm:py-2 bg-[#F8FAFC] border border-[#DDE5F0] rounded-[10px] sm:rounded-[16px] text-[10px] sm:text-xs font-semibold text-[#17233D] outline-none focus:border-[#ED002B] cursor-pointer h-[30px] sm:h-[40px]"
+              className="w-full px-2 py-0.5 sm:px-3.5 sm:py-2 bg-[#F8FAFC] border border-[#E2E8F0] rounded-[10px] sm:rounded-xl text-[10px] sm:text-xs font-semibold text-[#1E293B] outline-none focus:border-[#F0002B] cursor-pointer h-[30px] sm:h-[40px]"
             >
               <option value="Transfer">Transfer Bank</option>
               <option value="Tempo">Tempo / Invoice Outlet</option>
@@ -308,106 +322,69 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
 
       {/* Alert Messages */}
       {error && (
-        <div className="p-4 bg-[#FDE8EC] border border-[#F8B6C2] rounded-[18px] text-xs font-semibold text-[#ED002B] flex items-center space-x-2">
+        <div className="p-4 bg-[#FDE8EC] border border-[#F8B6C2] rounded-xl text-xs font-semibold text-[#F0002B] flex items-center space-x-2">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{error}</span>
         </div>
       )}
 
       {successMsg && (
-        <div className="p-4 bg-[#EAF8F1] border border-[#A7E4C4] rounded-[18px] text-xs font-semibold text-[#1B9357] flex items-center space-x-2">
+        <div className="p-4 bg-[#EAF8F1] border border-[#A7E4C4] rounded-xl text-xs font-semibold text-[#1B9357] flex items-center space-x-2">
           <CheckCircle2 className="w-4 h-4 shrink-0" />
           <span>{successMsg}</span>
         </div>
       )}
 
       {/* Filter Chips & Search Bar */}
-      <div className="bg-white p-3 sm:p-4 rounded-[18px] sm:rounded-[22px] border border-[#DDE5F0] shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-2.5 sm:gap-3">
+      <Toolbar>
         {/* Search */}
-        <div className="relative w-full max-w-xs">
-          <Search className="w-3.5 h-3.5 text-[#60708C] absolute left-3.5 top-1/2 -translate-y-1/2" />
+        <div className="hd-outlet-request-search relative w-full max-w-xs">
+          <Search className="w-3.5 h-3.5 text-[#64748B] absolute left-3.5 top-1/2 -translate-y-1/2" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Cari item barang..."
-            className="w-full pl-9 pr-3 py-1.5 bg-[#F8FAFC] border border-[#DDE5F0] rounded-[16px] text-xs text-[#17233D] outline-none focus:border-[#ED002B]"
+            placeholder="Cari nama atau kode barang..."
+            className="w-full pl-9 pr-3 py-1.5 bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl text-xs text-[#1E293B] outline-none focus:border-[#F0002B]"
           />
         </div>
 
         {/* Category Filters */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full no-scrollbar">
-          <button
-            type="button"
-            onClick={() => setCategoryFilter('all')}
-            className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
-              categoryFilter === 'all'
-                ? 'bg-[#17233D] text-white'
-                : 'bg-[#F8FAFC] text-[#60708C] hover:text-[#17233D]'
-            }`}
-          >
-            Semua ({inventory.length})
-          </button>
+        <div className="hd-outlet-request-filters flex flex-wrap items-center gap-1.5 max-w-full">
+          <div className="hd-category-chip-scroll inline-flex max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-[#E2E8F0] bg-white p-0.5 no-scrollbar">
+            <button
+              type="button"
+              onClick={() => setCategoryFilter('all')}
+              aria-pressed={categoryFilter === 'all'}
+              className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors whitespace-nowrap ${categoryFilter === 'all' ? 'bg-[#1E293B] text-white' : 'text-[#64748B] hover:bg-[#F8FAFC] hover:text-[#1E293B]'}`}
+            >
+              Semua
+            </button>
+            {categoryOptions.map((category) => (
+              <button
+                key={category}
+                type="button"
+                onClick={() => setCategoryFilter(category)}
+                aria-pressed={categoryFilter === category}
+                className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors whitespace-nowrap ${categoryFilter === category ? 'bg-[#1E293B] text-white' : 'text-[#64748B] hover:bg-[#F8FAFC] hover:text-[#1E293B]'}`}
+              >
+                {category}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
             onClick={() => setCategoryFilter('ordered')}
-            className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
-              categoryFilter === 'ordered'
-                ? 'bg-[#ED002B] text-white'
-                : 'bg-[#F8FAFC] text-[#60708C] hover:text-[#17233D]'
-            }`}
+            aria-pressed={categoryFilter === 'ordered'}
+            className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors whitespace-nowrap ${categoryFilter === 'ordered' ? 'border-[#F0002B] bg-[#FFF1F3] text-[#C8102E]' : 'border-[#E2E8F0] bg-white text-[#64748B] hover:bg-[#F8FAFC]'}`}
           >
             Diorder ({orderSummary.totalItemsCount})
-          </button>
-          <button
-            type="button"
-            onClick={() => setCategoryFilter('meat')}
-            className={`px-2.5 py-1.5 rounded-full text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-              categoryFilter === 'meat'
-                ? 'bg-[#17233D] text-white'
-                : 'bg-[#F8FAFC] text-[#60708C] hover:text-[#17233D]'
-            }`}
-          >
-            Ayam &amp; Kulit
-          </button>
-          <button
-            type="button"
-            onClick={() => setCategoryFilter('staple')}
-            className={`px-2.5 py-1.5 rounded-full text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-              categoryFilter === 'staple'
-                ? 'bg-[#17233D] text-white'
-                : 'bg-[#F8FAFC] text-[#60708C] hover:text-[#17233D]'
-            }`}
-          >
-            Bahan Pokok
-          </button>
-          <button
-            type="button"
-            onClick={() => setCategoryFilter('sauce')}
-            className={`px-2.5 py-1.5 rounded-full text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-              categoryFilter === 'sauce'
-                ? 'bg-[#17233D] text-white'
-                : 'bg-[#F8FAFC] text-[#60708C] hover:text-[#17233D]'
-            }`}
-          >
-            Saus &amp; Bumbu
-          </button>
-          <button
-            type="button"
-            onClick={() => setCategoryFilter('pack')}
-            className={`px-2.5 py-1.5 rounded-full text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-              categoryFilter === 'pack'
-                ? 'bg-[#17233D] text-white'
-                : 'bg-[#F8FAFC] text-[#60708C] hover:text-[#17233D]'
-            }`}
-          >
-            Packaging
           </button>
           {orderSummary.totalItemsCount > 0 && (
             <button
               type="button"
               onClick={handleResetAll}
-              className="ml-auto text-xs text-[#60708C] hover:text-[#ED002B] flex items-center space-x-1 pl-2 whitespace-nowrap shrink-0"
+              className="ml-auto text-xs text-[#64748B] hover:text-[#F0002B] flex items-center space-x-1 pl-2 whitespace-nowrap shrink-0"
               title="Reset semua quantity ke 0"
             >
               <RotateCcw className="w-3 h-3" />
@@ -415,30 +392,30 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
             </button>
           )}
         </div>
-      </div>
+      </Toolbar>
 
       {/* Main Container: Mobile Card List + Desktop Table */}
-      <div className="bg-white rounded-[22px] border border-[#DDE5F0] overflow-hidden shadow-xs">
+      <div className="bg-white rounded-xl border border-[#E2E8F0] overflow-hidden ">
         {/* Subheader */}
-        <div className="p-3.5 sm:p-4 border-b border-[#DDE5F0] bg-[#F8FAFC]/60 flex items-center justify-between">
+        <div className="p-3.5 sm:p-4 border-b border-[#E2E8F0] bg-[#F8FAFC]/60 flex items-center justify-between">
           <div className="flex items-center space-x-2">
-            <span className="text-xs font-bold text-[#17233D] uppercase tracking-wider">
+            <span className="text-xs font-bold text-[#1E293B] uppercase tracking-wider">
               Daftar Barang HD Request
             </span>
-            <span className="text-[11px] text-[#60708C] hidden sm:inline">
+            <span className="text-[11px] text-[#64748B] hidden sm:inline">
               (Cukup isi kolom Qty langsung untuk memilih barang)
             </span>
           </div>
 
-          <span className="text-[11px] font-semibold text-[#60708C]">
-            Menampilkan: <strong className="text-[#17233D]">{filteredItems.length}</strong> barang
+          <span className="text-[11px] font-semibold text-[#64748B]">
+            Menampilkan: <strong className="text-[#1E293B]">{filteredItems.length}</strong> barang
           </span>
         </div>
 
         {/* 1. Mobile Cards View (sm:hidden) */}
-        <div className="sm:hidden divide-y divide-[#DDE5F0]">
+        <div className="hd-outlet-request-list sm:hidden divide-y divide-[#E2E8F0]">
           {loading ? (
-            <div className="py-12 text-center text-[#60708C] text-sm">Memuat daftar barang HD...</div>
+            <StateMessage kind="loading">Memuat daftar barang HD...</StateMessage>
           ) : filteredItems.length > 0 ? (
             filteredItems.map((item) => {
               const qty = quantities[item.id] || 0;
@@ -454,19 +431,23 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
-                      <h4 className="font-bold text-[#17233D] text-sm leading-snug">
+                      <h4 className="font-bold text-[#1E293B] text-sm leading-snug">
                         {item.itemName}
                       </h4>
-                      <div className="flex items-center space-x-2 mt-0.5 text-[11px] text-[#60708C]">
-                        <span>Vendor: {item.vendorName || 'Supplier HD'}</span>
-                        <span>•</span>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-[#64748B]">
+                        <span className="font-mono font-semibold text-[#475569]">{item.itemCode}</span>
+                        <span>·</span>
+                        <span>{item.category}</span>
+                        <span>·</span>
+                        <span>Satuan: pcs</span>
+                        <span>·</span>
                         <span
                           className={`font-semibold ${
                             item.currentStock > 15
                               ? 'text-[#1B9357]'
                               : item.currentStock > 0
                               ? 'text-[#B88700]'
-                              : 'text-[#ED002B]'
+                              : 'text-[#F0002B]'
                           }`}
                         >
                           Stok: {item.currentStock}
@@ -474,22 +455,22 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
                       </div>
                     </div>
                     <div className="text-right shrink-0">
-                      <span className="text-xs font-bold text-[#17233D] block">
+                      <span className="text-xs font-bold text-[#1E293B] block">
                         {formatRupiah(item.price)}
                       </span>
-                      <span className="text-[10px] text-[#60708C] block">/ unit</span>
+                      <span className="text-[10px] text-[#64748B] block">Harga katalog / pcs</span>
                     </div>
                   </div>
 
                   {/* Stepper counter & Subtotal */}
-                  <div className="flex items-center justify-between mt-1.5 pt-1 border-t border-dashed border-[#DDE5F0] gap-1.5">
-                    <div className="inline-flex items-center bg-[#F8FAFC] border border-[#DDE5F0] rounded-[8px] p-0.5 shadow-2xs">
+                  <div className="flex items-center justify-between mt-1.5 pt-1 border-t border-dashed border-[#E2E8F0] gap-1.5">
+                    <div className="hd-qty-stepper inline-flex items-center bg-[#F8FAFC] border border-[#E2E8F0] rounded-[8px] p-0.5 ">
                       <button
                         type="button"
                         onClick={() => handleDecrement(item.id)}
                         disabled={qty <= 0}
                         aria-label={`Kurangi ${item.itemName}`}
-                        className="w-5 h-5 rounded-[5px] flex items-center justify-center text-[#60708C] active:bg-white disabled:opacity-30"
+                        className="hd-qty-stepper-button w-5 h-5 rounded-[5px] flex items-center justify-center text-[#64748B] active:bg-white disabled:opacity-30"
                       >
                         <Minus className="w-2.5 h-2.5" />
                       </button>
@@ -505,21 +486,21 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
                           )
                         }
                         placeholder="0"
-                        className="w-7 text-center font-bold text-[11px] text-[#17233D] bg-transparent outline-none"
+                        className="hd-qty-stepper-input w-7 text-center font-bold text-[11px] text-[#1E293B] bg-transparent outline-none"
                       />
                       <button
                         type="button"
                         onClick={() => handleIncrement(item.id)}
                         aria-label={`Tambah ${item.itemName}`}
-                        className="w-5 h-5 rounded-[5px] flex items-center justify-center text-[#ED002B] active:bg-[#FFF2F4]"
+                        className="hd-qty-stepper-button w-5 h-5 rounded-[5px] flex items-center justify-center text-[#F0002B] active:bg-[#FFF2F4]"
                       >
                         <Plus className="w-2.5 h-2.5" />
                       </button>
                     </div>
 
                     <div className="text-right shrink-0">
-                      <span className="text-[8px] text-[#60708C] block uppercase font-bold tracking-wider">Subtotal</span>
-                      <span className={`text-[11px] font-bold ${isSelected ? 'text-[#ED002B]' : 'text-[#60708C]'}`}>
+                      <span className="text-[10px] text-[#64748B] block uppercase font-bold tracking-wider">Subtotal</span>
+                      <span className={`text-[11px] font-bold ${isSelected ? 'text-[#F0002B]' : 'text-[#64748B]'}`}>
                         {formatRupiah(subtotal)}
                       </span>
                     </div>
@@ -528,9 +509,7 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
               );
             })
           ) : (
-            <div className="py-8 text-center text-[#60708C] text-sm">
-              Tidak ada barang yang cocok dengan filter.
-            </div>
+            <StateMessage>Tidak ada barang yang cocok dengan filter.</StateMessage>
           )}
         </div>
 
@@ -538,20 +517,19 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
         <div className="hidden sm:block overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="bg-[#F8FAFC] border-b border-[#DDE5F0] text-[11px] font-bold text-[#60708C] uppercase tracking-wider">
+              <tr className="bg-[#F8FAFC] border-b border-[#E2E8F0] text-[11px] font-bold text-[#64748B] uppercase tracking-wider">
                 <th className="py-3.5 px-4">Item Barang</th>
                 <th className="py-3.5 px-3 text-center">Stok Gudang</th>
-                <th className="py-3.5 px-4 text-right">Harga (HB)</th>
+                <th className="py-3.5 px-4 text-center">Satuan</th>
+                <th className="py-3.5 px-4 text-right">Harga Katalog</th>
                 <th className="py-3.5 px-4 text-center w-40">Qty (Order)</th>
                 <th className="py-3.5 px-4 text-right">Total Subtotal</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#DDE5F0] text-xs">
+            <tbody className="divide-y divide-[#E2E8F0] text-xs">
               {loading ? (
                 <tr>
-                  <td colSpan={5} className="py-12 text-center text-[#60708C]">
-                    Memuat daftar barang HD...
-                  </td>
+                  <td colSpan={6}><StateMessage kind="loading">Memuat daftar barang HD...</StateMessage></td>
                 </tr>
               ) : filteredItems.length > 0 ? (
                 filteredItems.map((item) => {
@@ -568,11 +546,13 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
                     >
                       {/* Item Column */}
                       <td className="py-3 px-4">
-                        <div className="font-bold text-[#17233D] text-sm">
+                        <div className="font-bold text-[#1E293B] text-sm">
                           {item.itemName}
                         </div>
-                        <div className="text-[11px] text-[#60708C] flex items-center space-x-1 mt-0.5">
-                          <span>Vendor: {item.vendorName || 'Supplier HD'}</span>
+                        <div className="text-[11px] text-[#64748B] flex flex-wrap items-center gap-x-1.5 mt-0.5">
+                          <span className="font-mono font-semibold text-[#475569]">{item.itemCode}</span>
+                          <span>·</span>
+                          <span>{item.category}</span>
                         </div>
                       </td>
 
@@ -584,7 +564,7 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
                               ? 'bg-[#EAF8F1] text-[#1B9357]'
                               : item.currentStock > 0
                               ? 'bg-[#FFF8E6] text-[#B88700]'
-                              : 'bg-[#FDE8EC] text-[#ED002B]'
+                              : 'bg-[#FDE8EC] text-[#F0002B]'
                           }`}
                         >
                           <Boxes className="w-3 h-3 mr-1" />
@@ -592,19 +572,21 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
                         </span>
                       </td>
 
+                      <td className="py-3 px-4 text-center text-[#64748B]">pcs</td>
+
                       {/* Harga HB */}
-                      <td className="py-3 px-4 text-right font-medium text-[#17233D]">
+                      <td className="py-3 px-4 text-right font-medium text-[#1E293B]">
                         {formatRupiah(item.price)}
                       </td>
 
                       {/* Kolom Input Qty: langsung masukin quantity aja */}
                       <td className="py-3 px-4 text-center">
-                        <div className="inline-flex items-center space-x-1 bg-white border border-[#DDE5F0] rounded-[16px] p-1 shadow-2xs">
+                        <div className="inline-flex items-center space-x-1 bg-white border border-[#E2E8F0] rounded-xl p-1 ">
                           <button
                             type="button"
                             onClick={() => handleDecrement(item.id)}
                             disabled={qty <= 0}
-                            className="w-7 h-7 rounded-[12px] flex items-center justify-center text-[#60708C] hover:bg-[#F8FAFC] hover:text-[#17233D] disabled:opacity-30"
+                            className="w-7 h-7 rounded-[12px] flex items-center justify-center text-[#64748B] hover:bg-[#F8FAFC] hover:text-[#1E293B] disabled:opacity-30"
                           >
                             <Minus className="w-3 h-3" />
                           </button>
@@ -619,12 +601,12 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
                               )
                             }
                             placeholder="0"
-                            className="w-14 text-center font-extrabold text-sm text-[#17233D] bg-transparent outline-none"
+                            className="w-14 text-center font-bold text-sm text-[#1E293B] bg-transparent outline-none"
                           />
                           <button
                             type="button"
                             onClick={() => handleIncrement(item.id)}
-                            className="w-7 h-7 rounded-[12px] flex items-center justify-center text-[#ED002B] hover:bg-[#FFF2F4]"
+                            className="w-7 h-7 rounded-[12px] flex items-center justify-center text-[#F0002B] hover:bg-[#FFF2F4]"
                           >
                             <Plus className="w-3 h-3" />
                           </button>
@@ -633,7 +615,7 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
 
                       {/* Total Subtotal */}
                       <td className="py-3 px-4 text-right font-bold text-sm">
-                        <span className={isSelected ? 'text-[#ED002B]' : 'text-[#60708C]'}>
+                        <span className={isSelected ? 'text-[#F0002B]' : 'text-[#64748B]'}>
                           {formatRupiah(subtotal)}
                         </span>
                       </td>
@@ -642,9 +624,7 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
                 })
               ) : (
                 <tr>
-                  <td colSpan={5} className="py-8 text-center text-[#60708C]">
-                    Tidak ada barang yang cocok dengan pencarian filter.
-                  </td>
+                  <td colSpan={6}><StateMessage>Tidak ada barang yang cocok dengan pencarian filter.</StateMessage></td>
                 </tr>
               )}
             </tbody>
@@ -652,43 +632,43 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
         </div>
       </div>
 
-      {/* Floating / Sticky Order Summary & Submit Bar (Floating above mobile bottom nav) */}
-      <div className="sticky bottom-16 md:bottom-4 z-30 bg-white/95 backdrop-blur-md p-2 sm:p-5 rounded-[14px] sm:rounded-[22px] border sm:border-2 border-[#DDE5F0] shadow-md sm:shadow-xl flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 sm:gap-4">
-        <div className="grid grid-cols-3 sm:flex sm:items-center sm:space-x-4 divide-x divide-[#DDE5F0]">
-          <div className="text-center sm:text-left pr-1 sm:pr-0">
-            <span className="text-[8px] sm:text-[10px] text-[#60708C] block uppercase font-bold tracking-wider">
+      {/* Sticky order summary keeps the submit action in reach. */}
+      <div className="hd-order-summary sticky bottom-3 md:bottom-4 z-20 bg-white p-3 sm:px-4 sm:py-3 rounded-xl border border-[#E2E8F0] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 sm:gap-4">
+        <div className="grid grid-cols-3 sm:flex sm:items-center divide-x divide-[#E2E8F0] min-w-0">
+          <div className="min-w-0 text-center sm:text-left pr-2 sm:pr-4">
+            <span className="text-[11px] text-[#64748B] block font-medium">
               Item
             </span>
-            <div className="text-[11px] sm:text-base font-extrabold text-[#17233D] mt-0.5">
-              {orderSummary.totalItemsCount} <span className="text-[8px] sm:text-xs font-medium text-[#60708C]">jenis</span>
+            <div className="text-base sm:text-lg font-semibold text-[#1E293B] mt-0.5 tabular-nums">
+              {orderSummary.totalItemsCount} <span className="text-[10px] sm:text-xs font-medium text-[#64748B]">jenis</span>
             </div>
           </div>
 
-          <div className="text-center sm:text-left px-1 sm:px-0 sm:pl-4">
-            <span className="text-[8px] sm:text-[10px] text-[#60708C] block uppercase font-bold tracking-wider">
+          <div className="min-w-0 text-center sm:text-left px-2 sm:px-4">
+            <span className="text-[11px] text-[#64748B] block font-medium">
               Total Qty
             </span>
-            <div className="text-[11px] sm:text-base font-extrabold text-[#17233D] mt-0.5">
-              {orderSummary.totalQuantity} <span className="text-[8px] sm:text-xs font-medium text-[#60708C]">unit</span>
+            <div className="text-base sm:text-lg font-semibold text-[#1E293B] mt-0.5 tabular-nums">
+              {orderSummary.totalQuantity} <span className="text-[10px] sm:text-xs font-medium text-[#64748B]">unit</span>
             </div>
           </div>
 
-          <div className="text-center sm:text-left pl-1 sm:pl-4">
-            <span className="text-[8px] sm:text-[10px] text-[#60708C] block uppercase font-bold tracking-wider">
+          <div className="min-w-0 text-center sm:text-left pl-2 sm:pl-4">
+            <span className="text-[11px] text-[#64748B] block font-medium">
               Total Nilai
             </span>
-            <div className="text-[11px] sm:text-lg font-black text-[#ED002B] mt-0.5 truncate">
+            <div className="text-base sm:text-lg font-semibold text-[#F0002B] mt-0.5 truncate tabular-nums">
               {formatRupiah(orderSummary.totalAmount)}
             </div>
           </div>
         </div>
 
-        <div className="flex items-center space-x-1.5 sm:space-x-3 w-full sm:w-auto">
+        <div className="flex items-center justify-end gap-2 w-full sm:w-auto shrink-0">
           <button
             type="button"
             onClick={handleResetAll}
             disabled={orderSummary.totalItemsCount === 0 || submitting}
-            className="px-2 sm:px-4 py-1 sm:py-2.5 bg-white text-[#60708C] hover:text-[#ED002B] text-[10px] sm:text-xs font-bold rounded-[10px] sm:rounded-[18px] border border-[#DDE5F0] disabled:opacity-40 transition-colors min-h-[30px] sm:min-h-[44px]"
+            className="h-9 px-3 bg-white text-[#64748B] hover:text-[#F0002B] text-xs font-semibold rounded-lg border border-[#E2E8F0] disabled:bg-[#F8FAFC] disabled:text-[#64748B] disabled:cursor-not-allowed transition-colors"
           >
             Reset
           </button>
@@ -697,10 +677,10 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
             type="button"
             onClick={handleSubmitOrder}
             disabled={orderSummary.totalItemsCount === 0 || submitting}
-            className="flex-1 sm:flex-none px-2.5 sm:px-6 py-1 sm:py-2.5 bg-[#ED002B] hover:bg-[#d60027] text-white text-[11px] sm:text-sm font-bold rounded-[10px] sm:rounded-[18px] shadow-xs sm:shadow-sm flex items-center justify-center space-x-1 sm:space-x-2 transition-all disabled:opacity-50 min-h-[30px] sm:min-h-[44px]"
+            className="h-9 shrink-0 px-3 sm:px-4 bg-[#F0002B] hover:bg-[#D80027] text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 transition-colors disabled:bg-[#C24155] disabled:text-white disabled:cursor-not-allowed"
           >
             <ShoppingBag className="w-3 h-3 sm:w-4 sm:h-4 shrink-0" />
-            <span className="truncate">
+            <span className="whitespace-nowrap">
               {submitting
                 ? 'Mengirim...'
                 : `Ajukan Order (${orderSummary.totalItemsCount})`}

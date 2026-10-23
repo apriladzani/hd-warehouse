@@ -1,3 +1,4 @@
+import { StateMessage } from '../common/UI.tsx';
 import React, { useState, useEffect, useMemo } from 'react';
 import { DateFilter } from '../common/DateFilter.tsx';
 import { StatusBadge } from '../common/StatusBadge.tsx';
@@ -5,7 +6,6 @@ import { formatDateIndo, formatRupiah } from '../../lib/format.ts';
 import { PurchaseTransaction, OutgoingHistoryTransaction } from '../../types.ts';
 import { TransactionDetailModal } from '../modals/TransactionDetailModal.tsx';
 import { PrintableTransactionA4 } from '../modals/PrintableTransactionA4.tsx';
-import { OUTLETS } from '../../constants/outlets.ts';
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -18,6 +18,7 @@ import {
   Layers,
   Scale,
   FileSpreadsheet,
+  Search,
 } from 'lucide-react';
 
 type PeriodFilterType = 'hari' | 'minggu' | 'bulan' | 'semua' | 'kustom';
@@ -27,7 +28,10 @@ export const WarehouseHistory: React.FC = () => {
   const [activePeriod, setActivePeriod] = useState<PeriodFilterType>('semua');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [selectedOutlets, setSelectedOutlets] = useState<string[]>([]);
+  const [selectedOutlets, setSelectedOutlets] = useState<number[]>([]);
+  const [outlets, setOutlets] = useState<Array<{ id: number; code: string; name: string }>>([]);
+  const [selectedItemIds, setSelectedItemIds] = useState<number[]>([]);
+  const [historySearch, setHistorySearch] = useState('');
 
   const [incomingList, setIncomingList] = useState<PurchaseTransaction[]>([]);
   const [outgoingList, setOutgoingList] = useState<OutgoingHistoryTransaction[]>([]);
@@ -79,6 +83,7 @@ export const WarehouseHistory: React.FC = () => {
   // Initial load
   useEffect(() => {
     fetchAllHistory(startDate, endDate);
+    fetch('/api/outlets').then((res) => res.json()).then((data) => setOutlets(data.outlets || [])).catch((err) => console.error('Failed to load outlets:', err));
   }, []);
 
   // Quick period presets: Hari, Minggu, Bulan, Semua
@@ -132,48 +137,47 @@ export const WarehouseHistory: React.FC = () => {
   };
 
   // Filter outgoing list by selected outlet if any
+  const itemOptions = useMemo(() => {
+    const items = [...incomingList.flatMap((tx) => tx.items || []), ...outgoingList.flatMap((tx) => tx.items || [])];
+    return [...new Map(items.map((item) => [item.itemId, { id: item.itemId, name: item.itemName || `Barang #${item.itemId}` }])).values()];
+  }, [incomingList, outgoingList]);
+  const matchesHistoryFilters = (tx: PurchaseTransaction | OutgoingHistoryTransaction) => {
+    const isPurchase = 'transactionCode' in tx;
+    const text = `${isPurchase ? tx.transactionCode : tx.requestCode} ${isPurchase ? tx.vendorName || tx.vendorCode || '' : tx.requesterName} ${tx.itemSummary || ''} ${(tx.items || []).map((item) => item.itemName || '').join(' ')}`.toLocaleLowerCase('id-ID');
+    const itemMatches = !selectedItemIds.length || (tx.items || []).some((item) => selectedItemIds.includes(item.itemId));
+    return itemMatches && text.includes(historySearch.trim().toLocaleLowerCase('id-ID'));
+  };
+  const filteredIncomingList = useMemo(() => incomingList.filter(matchesHistoryFilters), [incomingList, selectedItemIds, historySearch]);
   const filteredOutgoingList = useMemo(() => {
     if (!selectedOutlets.length) return outgoingList;
-    return outgoingList.filter((tx) =>
-      selectedOutlets.some((outlet) => (tx.requesterName || '').toLowerCase().includes(outlet.toLowerCase()))
-    );
+    return outgoingList.filter((tx) => tx.outletId != null && selectedOutlets.includes(Number(tx.outletId)));
   }, [outgoingList, selectedOutlets]);
+  const displayedOutgoingList = useMemo(() => filteredOutgoingList.filter(matchesHistoryFilters), [filteredOutgoingList, selectedItemIds, historySearch]);
 
   // Aggregate stats based on current period filter
   const totalIncomingAmount = useMemo(() => {
-    return incomingList.reduce((sum, tx) => sum + (Number(tx.totalAmount) || 0), 0);
-  }, [incomingList]);
+    return incomingList.reduce((sum, tx) => sum + (tx.items || []).reduce((lineSum, line) =>
+      Number(line.quantity) > 0 && Number(line.price) >= 0 && (!selectedItemIds.length || selectedItemIds.includes(line.itemId))
+        ? lineSum + Number(line.quantity) * Number(line.price) : lineSum, 0), 0);
+  }, [incomingList, selectedItemIds]);
 
   const totalIncomingQty = useMemo(() => {
-    return incomingList.reduce((sum, tx) => {
-      if (Array.isArray(tx.items) && tx.items.length > 0) {
-        return sum + tx.items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
-      }
-      return sum + (Number(tx.itemCount) || 1);
-    }, 0);
-  }, [incomingList]);
+    return incomingList.reduce((sum, tx) => sum + (tx.items || []).reduce((lineSum, line) =>
+      Number(line.quantity) > 0 && Number(line.price) >= 0 && (!selectedItemIds.length || selectedItemIds.includes(line.itemId))
+        ? lineSum + Number(line.quantity) : lineSum, 0), 0);
+  }, [incomingList, selectedItemIds]);
 
   const totalOutgoingAmount = useMemo(() => {
-    return filteredOutgoingList.reduce(
-      (sum, tx) => sum + (Number(tx.totalApprovedAmount || tx.totalAmount) || 0),
-      0
-    );
-  }, [filteredOutgoingList]);
+    return filteredOutgoingList.reduce((sum, tx) => sum + (tx.items || []).reduce((lineSum, line) =>
+      line.status === 'Approved' && Number(line.approvedQuantity) > 0 && (!selectedItemIds.length || selectedItemIds.includes(line.itemId))
+        ? lineSum + Number(line.approvedQuantity) * Number(line.price) : lineSum, 0), 0);
+  }, [filteredOutgoingList, selectedItemIds]);
 
   const totalOutgoingQty = useMemo(() => {
-    return filteredOutgoingList.reduce((sum, tx) => {
-      if (Array.isArray(tx.items) && tx.items.length > 0) {
-        return (
-          sum +
-          tx.items.reduce(
-            (s, it) => (it.status === 'Approved' ? s + (Number(it.approvedQuantity) || 0) : s),
-            0
-          )
-        );
-      }
-      return sum + (Number(tx.itemCount) || 1);
-    }, 0);
-  }, [filteredOutgoingList]);
+    return filteredOutgoingList.reduce((sum, tx) => sum + (tx.items || []).reduce((lineSum, line) =>
+      line.status === 'Approved' && Number(line.approvedQuantity) > 0 && (!selectedItemIds.length || selectedItemIds.includes(line.itemId))
+        ? lineSum + Number(line.approvedQuantity) : lineSum, 0), 0);
+  }, [filteredOutgoingList, selectedItemIds]);
 
   // Dynamic period label
   const periodLabel = useMemo(() => {
@@ -197,31 +201,31 @@ export const WarehouseHistory: React.FC = () => {
   }, [activePeriod, startDate, endDate]);
 
   return (
-    <div className="space-y-4 sm:space-y-6">
+    <div className="hd-warehouse-history space-y-3">
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5 sm:gap-3">
         <div>
-          <h1 className="text-lg sm:text-2xl font-bold text-[#17233D] tracking-tight">
+          <h1 className="text-lg sm:text-xl font-bold text-[#1E293B] tracking-tight">
             Riwayat Transaksi Gudang
           </h1>
-          <p className="text-xs sm:text-sm text-[#60708C] mt-0.5">
+          <p className="text-xs sm:text-sm text-[#64748B] mt-0.5">
             Arsip mutasi transaksi fisik barang masuk dan barang keluar.
           </p>
         </div>
 
         {/* Badge Periode Aktif */}
-        <div className="inline-flex items-center space-x-1.5 px-2.5 py-1 sm:px-3.5 sm:py-1.5 rounded-full bg-[#F8FAFC] border border-[#DDE5F0] text-[11px] sm:text-xs text-[#17233D] font-semibold self-start md:self-auto">
-          <Calendar className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#ED002B]" />
-          <span>Periode: <strong className="text-[#17233D]">{periodLabel}</strong></span>
+        <div className="inline-flex items-center space-x-1.5 px-2.5 py-1 sm:px-3.5 sm:py-1.5 rounded-full bg-[#F8FAFC] border border-[#E2E8F0] text-[11px] sm:text-xs text-[#1E293B] font-semibold self-start md:self-auto">
+          <Calendar className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#F0002B]" />
+          <span>Periode: <strong className="text-[#1E293B]">{periodLabel}</strong></span>
         </div>
       </div>
 
       {/* Quick Filter Bar: Hari, Minggu, Bulan, Semua & Custom Date Picker */}
-      <div className="bg-white p-2 sm:p-4 rounded-[14px] sm:rounded-[22px] border border-[#DDE5F0] shadow-xs space-y-1.5 sm:space-y-3">
+      <div className="hd-period-toolbar bg-white p-2 sm:p-4 rounded-xl border border-[#E2E8F0] space-y-1.5 sm:space-y-3">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-1.5 sm:gap-3">
           {/* Preset Buttons */}
           <div className="flex flex-wrap items-center gap-1 sm:gap-2">
-            <span className="text-[10px] sm:text-xs font-bold text-[#60708C] mr-0.5 hidden sm:inline uppercase tracking-wider">
+            <span className="text-[10px] sm:text-xs font-bold text-[#64748B] mr-0.5 hidden sm:inline uppercase tracking-wider">
               Filter:
             </span>
 
@@ -229,10 +233,10 @@ export const WarehouseHistory: React.FC = () => {
               id="filter-preset-hari"
               type="button"
               onClick={() => handlePeriodChange('hari')}
-              className={`px-2 py-0.5 sm:px-3.5 sm:py-2 rounded-[8px] sm:rounded-[16px] text-[10px] sm:text-xs font-bold transition-all cursor-pointer min-h-[26px] sm:min-h-[38px] ${
+              className={`px-2 py-0.5 sm:px-3.5 sm:py-2 rounded-[8px] sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all cursor-pointer min-h-[26px] sm:min-h-[38px] ${
                 activePeriod === 'hari'
-                  ? 'bg-[#ED002B] text-white shadow-xs'
-                  : 'bg-[#F8FAFC] hover:bg-[#EEF2F6] text-[#60708C] hover:text-[#17233D] border border-[#DDE5F0]'
+                  ? 'bg-[#F0002B] text-white '
+                  : 'bg-[#F8FAFC] hover:bg-[#EEF2F6] text-[#64748B] hover:text-[#1E293B] border border-[#E2E8F0]'
               }`}
             >
               📅 Hari Ini
@@ -242,10 +246,10 @@ export const WarehouseHistory: React.FC = () => {
               id="filter-preset-minggu"
               type="button"
               onClick={() => handlePeriodChange('minggu')}
-              className={`px-2 py-0.5 sm:px-3.5 sm:py-2 rounded-[8px] sm:rounded-[16px] text-[10px] sm:text-xs font-bold transition-all cursor-pointer min-h-[26px] sm:min-h-[38px] ${
+              className={`px-2 py-0.5 sm:px-3.5 sm:py-2 rounded-[8px] sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all cursor-pointer min-h-[26px] sm:min-h-[38px] ${
                 activePeriod === 'minggu'
-                  ? 'bg-[#ED002B] text-white shadow-xs'
-                  : 'bg-[#F8FAFC] hover:bg-[#EEF2F6] text-[#60708C] hover:text-[#17233D] border border-[#DDE5F0]'
+                  ? 'bg-[#F0002B] text-white '
+                  : 'bg-[#F8FAFC] hover:bg-[#EEF2F6] text-[#64748B] hover:text-[#1E293B] border border-[#E2E8F0]'
               }`}
             >
               📆 Minggu Ini
@@ -255,10 +259,10 @@ export const WarehouseHistory: React.FC = () => {
               id="filter-preset-bulan"
               type="button"
               onClick={() => handlePeriodChange('bulan')}
-              className={`px-2 py-0.5 sm:px-3.5 sm:py-2 rounded-[8px] sm:rounded-[16px] text-[10px] sm:text-xs font-bold transition-all cursor-pointer min-h-[26px] sm:min-h-[38px] ${
+              className={`px-2 py-0.5 sm:px-3.5 sm:py-2 rounded-[8px] sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all cursor-pointer min-h-[26px] sm:min-h-[38px] ${
                 activePeriod === 'bulan'
-                  ? 'bg-[#ED002B] text-white shadow-xs'
-                  : 'bg-[#F8FAFC] hover:bg-[#EEF2F6] text-[#60708C] hover:text-[#17233D] border border-[#DDE5F0]'
+                  ? 'bg-[#F0002B] text-white '
+                  : 'bg-[#F8FAFC] hover:bg-[#EEF2F6] text-[#64748B] hover:text-[#1E293B] border border-[#E2E8F0]'
               }`}
             >
               🗓️ Bulan Ini
@@ -268,10 +272,10 @@ export const WarehouseHistory: React.FC = () => {
               id="filter-preset-semua"
               type="button"
               onClick={() => handlePeriodChange('semua')}
-              className={`px-2 py-0.5 sm:px-3.5 sm:py-2 rounded-[8px] sm:rounded-[16px] text-[10px] sm:text-xs font-bold transition-all cursor-pointer min-h-[26px] sm:min-h-[38px] ${
+              className={`px-2 py-0.5 sm:px-3.5 sm:py-2 rounded-[8px] sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all cursor-pointer min-h-[26px] sm:min-h-[38px] ${
                 activePeriod === 'semua'
-                  ? 'bg-[#17233D] text-white shadow-xs'
-                  : 'bg-[#F8FAFC] hover:bg-[#EEF2F6] text-[#60708C] hover:text-[#17233D] border border-[#DDE5F0]'
+                  ? 'bg-[#1E293B] text-white '
+                  : 'bg-[#F8FAFC] hover:bg-[#EEF2F6] text-[#64748B] hover:text-[#1E293B] border border-[#E2E8F0]'
               }`}
             >
               Semua
@@ -293,39 +297,39 @@ export const WarehouseHistory: React.FC = () => {
         {/* Card 1: Total Transaksi Barang Masuk */}
         <div
           onClick={() => setActiveTab('incoming')}
-          className={`p-2.5 sm:p-5 rounded-[14px] sm:rounded-[22px] border transition-all cursor-pointer relative overflow-hidden ${
+          className={`hd-history-summary-card p-2.5 sm:p-3 rounded-xl border transition-all cursor-pointer relative overflow-hidden ${
             activeTab === 'incoming'
-              ? 'bg-white border-[#1B9357] ring-2 ring-[#1B9357]/20 shadow-xs'
-              : 'bg-white border-[#DDE5F0] hover:border-[#1B9357]/50 shadow-xs'
+              ? 'bg-white border-[#1B9357] ring-2 ring-[#1B9357]/20 '
+              : 'bg-white border-[#E2E8F0] hover:border-[#1B9357]/50 '
           }`}
         >
           <div className="flex items-center justify-between mb-1 sm:mb-3">
             <div className="flex items-center space-x-1 sm:space-x-2.5">
-              <div className="w-6 h-6 sm:w-9 sm:h-9 rounded-[8px] sm:rounded-[14px] bg-[#EAF8F1] text-[#1B9357] flex items-center justify-center font-bold">
+              <div className="w-6 h-6 sm:w-9 sm:h-9 rounded-[8px] sm:rounded-xl bg-[#EAF8F1] text-[#1B9357] flex items-center justify-center font-bold">
                 <ArrowDownLeft className="w-3 h-3 sm:w-5 sm:h-5" />
               </div>
               <div>
-                <span className="text-[9px] sm:text-[11px] font-bold text-[#60708C] uppercase tracking-wider block">
+                <span className="text-[10px] sm:text-[11px] font-bold text-[#64748B] uppercase tracking-wider block">
                   Barang Masuk
                 </span>
-                <span className="text-[9px] sm:text-xs text-[#1B9357] font-semibold hidden sm:inline">
+                <span className="text-[10px] sm:text-xs text-[#1B9357] font-semibold hidden sm:inline">
                   (Pembelian Vendor)
                 </span>
               </div>
             </div>
             {activeTab === 'incoming' && (
-              <span className="px-1.5 py-0.5 rounded-full text-[8px] sm:text-[10px] font-bold bg-[#EAF8F1] text-[#1B9357] border border-[#A7E4C4]">
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] sm:text-[10px] font-bold bg-[#EAF8F1] text-[#1B9357] border border-[#A7E4C4]">
                 Aktif
               </span>
             )}
           </div>
 
           <div className="space-y-0.5 sm:space-y-1">
-            <div className="text-xs sm:text-2xl lg:text-3xl font-black text-[#17233D] tracking-tight">
+            <div className="hd-history-kpi-value text-xs sm:text-xl lg:text-3xl font-bold text-[#1E293B] tracking-tight">
               {formatRupiah(totalIncomingAmount)}
             </div>
-            <div className="flex flex-wrap items-center gap-x-1 sm:gap-x-2 text-[9px] sm:text-xs text-[#60708C]">
-              <span className="font-bold text-[#17233D]">{incomingList.length} Trx</span>
+            <div className="flex flex-wrap items-center gap-x-1 sm:gap-x-2 text-[10px] sm:text-xs text-[#64748B]">
+              <span className="font-bold text-[#1E293B]">{incomingList.length} Trx</span>
               <span>•</span>
               <span className="font-semibold text-[#1B9357]">
                 {totalIncomingQty.toLocaleString('id-ID')} unit
@@ -333,7 +337,7 @@ export const WarehouseHistory: React.FC = () => {
             </div>
           </div>
 
-          <div className="mt-1.5 sm:mt-4 pt-1 sm:pt-3 border-t border-[#F1F5F9] flex items-center justify-between text-[9px] sm:text-xs font-semibold text-[#1B9357]">
+          <div className="mt-1.5 sm:mt-4 pt-1 sm:pt-3 border-t border-[#F1F5F9] flex items-center justify-between text-[10px] sm:text-xs font-semibold text-[#1B9357]">
             <span className="truncate">Buka daftar masuk</span>
             <span>→</span>
           </div>
@@ -342,64 +346,64 @@ export const WarehouseHistory: React.FC = () => {
         {/* Card 2: Total Transaksi Barang Keluar */}
         <div
           onClick={() => setActiveTab('outgoing')}
-          className={`p-2.5 sm:p-5 rounded-[14px] sm:rounded-[22px] border transition-all cursor-pointer relative overflow-hidden ${
+          className={`hd-history-summary-card p-2.5 sm:p-3 rounded-xl border transition-all cursor-pointer relative overflow-hidden ${
             activeTab === 'outgoing'
-              ? 'bg-white border-[#ED002B] ring-2 ring-[#ED002B]/20 shadow-xs'
-              : 'bg-white border-[#DDE5F0] hover:border-[#ED002B]/50 shadow-xs'
+              ? 'bg-white border-[#F0002B] ring-2 ring-[#F0002B]/20 '
+              : 'bg-white border-[#E2E8F0] hover:border-[#F0002B]/50 '
           }`}
         >
           <div className="flex items-center justify-between mb-1 sm:mb-3">
             <div className="flex items-center space-x-1 sm:space-x-2.5">
-              <div className="w-6 h-6 sm:w-9 sm:h-9 rounded-[8px] sm:rounded-[14px] bg-[#FDF2F4] text-[#ED002B] flex items-center justify-center font-bold">
+              <div className="w-6 h-6 sm:w-9 sm:h-9 rounded-[8px] sm:rounded-xl bg-[#FDF2F4] text-[#F0002B] flex items-center justify-center font-bold">
                 <ArrowUpRight className="w-3 h-3 sm:w-5 sm:h-5" />
               </div>
               <div>
-                <span className="text-[9px] sm:text-[11px] font-bold text-[#60708C] uppercase tracking-wider block">
+                <span className="text-[10px] sm:text-[11px] font-bold text-[#64748B] uppercase tracking-wider block">
                   Barang Keluar
                 </span>
-                <span className="text-[9px] sm:text-xs text-[#ED002B] font-semibold hidden sm:inline">
+                <span className="text-[10px] sm:text-xs text-[#F0002B] font-semibold hidden sm:inline">
                   (Disetujui Outlet)
                 </span>
               </div>
             </div>
             {activeTab === 'outgoing' && (
-              <span className="px-1.5 py-0.5 rounded-full text-[8px] sm:text-[10px] font-bold bg-[#FDF2F4] text-[#ED002B] border border-[#F9B7C2]">
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] sm:text-[10px] font-bold bg-[#FDF2F4] text-[#F0002B] border border-[#F9B7C2]">
                 Aktif
               </span>
             )}
           </div>
 
           <div className="space-y-0.5 sm:space-y-1">
-            <div className="text-xs sm:text-2xl lg:text-3xl font-black text-[#ED002B] tracking-tight">
+            <div className="hd-history-kpi-value text-xs sm:text-xl lg:text-3xl font-bold text-[#F0002B] tracking-tight">
               {formatRupiah(totalOutgoingAmount)}
             </div>
-            <div className="flex flex-wrap items-center gap-x-1 sm:gap-x-2 text-[9px] sm:text-xs text-[#60708C]">
-              <span className="font-bold text-[#17233D]">{filteredOutgoingList.length} Trx</span>
+            <div className="flex flex-wrap items-center gap-x-1 sm:gap-x-2 text-[10px] sm:text-xs text-[#64748B]">
+              <span className="font-bold text-[#1E293B]">{filteredOutgoingList.length} Trx</span>
               <span>•</span>
-              <span className="font-semibold text-[#ED002B]">
+              <span className="font-semibold text-[#F0002B]">
                 {totalOutgoingQty.toLocaleString('id-ID')} unit
               </span>
             </div>
           </div>
 
-          <div className="mt-1.5 sm:mt-4 pt-1 sm:pt-3 border-t border-[#F1F5F9] flex items-center justify-between text-[9px] sm:text-xs font-semibold text-[#ED002B]">
+          <div className="mt-1.5 sm:mt-4 pt-1 sm:pt-3 border-t border-[#F1F5F9] flex items-center justify-between text-[10px] sm:text-xs font-semibold text-[#F0002B]">
             <span className="truncate">Buka daftar keluar</span>
             <span>→</span>
           </div>
         </div>
 
         {/* Card 3: Selisih Mutasi & Ringkasan Periode */}
-        <div className="col-span-2 md:col-span-1 p-2.5 sm:p-5 rounded-[14px] sm:rounded-[22px] border border-[#DDE5F0] bg-[#F8FAFC] shadow-xs flex flex-col justify-between">
+        <div className="hd-history-summary-card col-span-2 md:col-span-1 p-2.5 sm:p-3 rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] flex flex-col justify-between">
           <div>
             <div className="flex items-center space-x-1.5 sm:space-x-2.5 mb-1 sm:mb-3">
-              <div className="w-6 h-6 sm:w-9 sm:h-9 rounded-[8px] sm:rounded-[14px] bg-white border border-[#DDE5F0] text-[#17233D] flex items-center justify-center font-bold">
+              <div className="w-6 h-6 sm:w-9 sm:h-9 rounded-[8px] sm:rounded-xl bg-white border border-[#E2E8F0] text-[#1E293B] flex items-center justify-center font-bold">
                 <Scale className="w-3 h-3 sm:w-5 sm:h-5" />
               </div>
               <div className="flex-1 min-w-0">
-                <span className="text-[9px] sm:text-[11px] font-bold text-[#60708C] uppercase tracking-wider block">
+                <span className="text-[10px] sm:text-[11px] font-bold text-[#64748B] uppercase tracking-wider block">
                   Selisih Nilai Mutasi
                 </span>
-                <span className="text-[9px] sm:text-xs text-[#60708C] font-semibold truncate block">
+                <span className="text-[10px] sm:text-xs text-[#64748B] font-semibold truncate block">
                   {periodLabel}
                 </span>
               </div>
@@ -407,19 +411,19 @@ export const WarehouseHistory: React.FC = () => {
 
             <div className="space-y-0.5 sm:space-y-1">
               <div
-                className={`text-xs sm:text-xl lg:text-2xl font-black tracking-tight ${
-                  totalIncomingAmount - totalOutgoingAmount >= 0 ? 'text-[#17233D]' : 'text-[#ED002B]'
+                className={`hd-history-kpi-value text-xs sm:text-xl lg:text-2xl font-bold tracking-tight ${
+                  totalIncomingAmount - totalOutgoingAmount >= 0 ? 'text-[#1E293B]' : 'text-[#F0002B]'
                 }`}
               >
                 {formatRupiah(totalIncomingAmount - totalOutgoingAmount)}
               </div>
-              <div className="text-[9px] sm:text-xs text-[#60708C]">
+              <div className="text-[10px] sm:text-xs text-[#64748B]">
                 {totalIncomingAmount >= totalOutgoingAmount ? (
                   <span className="text-[#1B9357] font-semibold">
                     ▲ Surplus Nilai Masuk
                   </span>
                 ) : (
-                  <span className="text-[#ED002B] font-semibold">
+                  <span className="text-[#F0002B] font-semibold">
                     ▼ Nilai Keluar Lebih Tinggi
                   </span>
                 )}
@@ -427,9 +431,9 @@ export const WarehouseHistory: React.FC = () => {
             </div>
           </div>
 
-          <div className="mt-1.5 sm:mt-4 pt-1 sm:pt-3 border-t border-[#DDE5F0] flex items-center justify-between text-[9px] sm:text-xs text-[#60708C]">
+          <div className="mt-1.5 sm:mt-4 pt-1 sm:pt-3 border-t border-[#E2E8F0] flex items-center justify-between text-[10px] sm:text-xs text-[#64748B]">
             <span>Volume Total</span>
-            <span className="font-bold text-[#17233D]">
+            <span className="font-bold text-[#1E293B]">
               {(totalIncomingQty + totalOutgoingQty).toLocaleString('id-ID')} unit
             </span>
           </div>
@@ -437,16 +441,16 @@ export const WarehouseHistory: React.FC = () => {
       </div>
 
       {/* Navigation Tabs & Outlet Filter */}
-      <div className="bg-white p-2.5 sm:p-4 rounded-[16px] sm:rounded-[22px] border border-[#DDE5F0] shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3">
+      <div className="hd-history-filterbar bg-white p-2.5 sm:p-3 rounded-xl border border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3">
         {/* Tabs: [ Barang Masuk ] [ Barang Keluar ] */}
-        <div className="flex items-center space-x-1.5 sm:space-x-2 bg-[#F8FAFC] p-1 rounded-[14px] sm:rounded-[20px] border border-[#DDE5F0] w-full sm:w-auto">
+        <div className="flex items-center space-x-1.5 sm:space-x-2 bg-[#F8FAFC] p-1 rounded-xl border border-[#E2E8F0] w-full sm:w-auto">
           <button
             id="tab-barang-masuk"
             onClick={() => setActiveTab('incoming')}
-            className={`flex-1 sm:flex-initial flex items-center justify-center space-x-1.5 px-3 py-1.5 sm:px-4 sm:py-2.5 rounded-[12px] sm:rounded-[18px] text-[11px] sm:text-xs font-bold transition-colors cursor-pointer min-h-[34px] ${
+            className={`flex-1 sm:flex-initial flex items-center justify-center space-x-1.5 px-3 py-1.5 sm:px-4 sm:py-2.5 rounded-[12px] sm:rounded-xl text-[11px] sm:text-xs font-bold transition-colors cursor-pointer min-h-[34px] ${
               activeTab === 'incoming'
-                ? 'bg-[#17233D] text-white shadow-xs'
-                : 'text-[#60708C] hover:text-[#17233D]'
+                ? 'bg-[#1E293B] text-white '
+                : 'text-[#64748B] hover:text-[#1E293B]'
             }`}
           >
             <ArrowDownLeft className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
@@ -456,10 +460,10 @@ export const WarehouseHistory: React.FC = () => {
           <button
             id="tab-barang-keluar"
             onClick={() => setActiveTab('outgoing')}
-            className={`flex-1 sm:flex-initial flex items-center justify-center space-x-1.5 px-3 py-1.5 sm:px-4 sm:py-2.5 rounded-[12px] sm:rounded-[18px] text-[11px] sm:text-xs font-bold transition-colors cursor-pointer min-h-[34px] ${
+            className={`flex-1 sm:flex-initial flex items-center justify-center space-x-1.5 px-3 py-1.5 sm:px-4 sm:py-2.5 rounded-[12px] sm:rounded-xl text-[11px] sm:text-xs font-bold transition-colors cursor-pointer min-h-[34px] ${
               activeTab === 'outgoing'
-                ? 'bg-[#17233D] text-white shadow-xs'
-                : 'text-[#60708C] hover:text-[#17233D]'
+                ? 'bg-[#1E293B] text-white '
+                : 'text-[#64748B] hover:text-[#1E293B]'
             }`}
           >
             <ArrowUpRight className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
@@ -467,22 +471,39 @@ export const WarehouseHistory: React.FC = () => {
           </button>
         </div>
 
+        <div className="flex flex-1 flex-wrap items-center gap-2 sm:justify-end">
+          <label className="relative min-w-[180px] flex-1 sm:max-w-[240px]">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#94A3B8]" aria-hidden="true" />
+            <input aria-label="Cari riwayat transaksi" value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Cari transaksi atau barang" className="w-full min-h-[34px] rounded-[10px] border border-[#E2E8F0] bg-[#F8FAFC] pl-8 pr-2 text-xs text-[#1E293B] outline-none focus:border-[#F0002B]" />
+          </label>
+          <details className="relative">
+            <summary className="list-none flex min-h-[34px] items-center gap-2 rounded-[10px] border border-[#E2E8F0] bg-[#F8FAFC] px-3 text-xs font-semibold text-[#334155]">Barang ({selectedItemIds.length || 'Semua'})</summary>
+            <div className="absolute right-0 z-20 mt-1 max-h-64 w-64 overflow-auto rounded-xl border border-[#E2E8F0] bg-white p-2 shadow-lg">
+              {itemOptions.map((item) => <label key={item.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-[#F8FAFC]">
+                <input type="checkbox" checked={selectedItemIds.includes(item.id)} onChange={() => setSelectedItemIds((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />
+                <span className="truncate">{item.name}</span>
+              </label>)}
+              {!itemOptions.length && <span className="block px-2 py-2 text-xs text-[#64748B]">Data barang belum tersedia.</span>}
+            </div>
+          </details>
+        </div>
+
         {/* Filter Outlet khusus tab Barang Keluar */}
         {activeTab === 'outgoing' && (
           <details className="relative w-full sm:w-auto">
-            <summary id="filter-history-outlet" className="list-none flex items-center gap-1.5 w-full bg-[#F8FAFC] px-2.5 py-1.5 rounded-[12px] sm:rounded-[16px] border border-[#DDE5F0] cursor-pointer text-[11px] sm:text-xs font-semibold text-[#17233D] min-h-[30px] sm:min-h-[36px]">
-              <Store className="w-3.5 h-3.5 text-[#ED002B] shrink-0" />
-              {selectedOutlets.length ? `${selectedOutlets.length} outlet dipilih` : `Semua Outlet (${OUTLETS.length})`}
+            <summary id="filter-history-outlet" className="list-none flex items-center gap-1.5 w-full bg-[#F8FAFC] px-2.5 py-1.5 rounded-[12px] sm:rounded-xl border border-[#E2E8F0] cursor-pointer text-[11px] sm:text-xs font-semibold text-[#1E293B] min-h-[30px] sm:min-h-[36px]">
+              <Store className="w-3.5 h-3.5 text-[#F0002B] shrink-0" />
+              {selectedOutlets.length ? `${selectedOutlets.length} outlet dipilih` : `Semua Outlet (${outlets.length})`}
             </summary>
-            <div className="absolute right-0 z-20 mt-1 w-56 max-h-72 overflow-auto rounded-xl border border-[#DDE5F0] bg-white p-2 shadow-lg">
-              <div className="flex justify-between gap-2 border-b border-[#DDE5F0] pb-2 mb-1 text-xs">
-                <button type="button" onClick={() => setSelectedOutlets([...OUTLETS])} className="font-bold text-[#1D63D8]">Select All</button>
-                <button type="button" onClick={() => setSelectedOutlets([])} className="font-semibold text-[#60708C]">Clear Selection</button>
+            <div className="absolute right-0 z-20 mt-1 w-56 max-h-72 overflow-auto rounded-xl border border-[#E2E8F0] bg-white p-2 shadow-lg">
+              <div className="flex justify-between gap-2 border-b border-[#E2E8F0] pb-2 mb-1 text-xs">
+              <button type="button" onClick={() => setSelectedOutlets(outlets.map((outlet) => outlet.id))} className="font-bold text-[#1D63D8]">Select All</button>
+                <button type="button" onClick={() => setSelectedOutlets([])} className="font-semibold text-[#64748B]">Clear Selection</button>
               </div>
-              {OUTLETS.map((outlet) => (
-                <label key={outlet} className="flex items-center gap-2 rounded-md px-1.5 py-1.5 text-xs text-[#17233D] hover:bg-[#F8FAFC] cursor-pointer">
-                  <input type="checkbox" checked={selectedOutlets.includes(outlet)} onChange={() => setSelectedOutlets((current) => current.includes(outlet) ? current.filter((entry) => entry !== outlet) : [...current, outlet])} />
-                  {outlet}
+              {outlets.map((outlet) => (
+                <label key={outlet.id} className="flex items-center gap-2 rounded-md px-1.5 py-1.5 text-xs text-[#1E293B] hover:bg-[#F8FAFC] cursor-pointer">
+                  <input type="checkbox" checked={selectedOutlets.includes(outlet.id)} onChange={() => setSelectedOutlets((current) => current.includes(outlet.id) ? current.filter((entry) => entry !== outlet.id) : [...current, outlet.id])} />
+                  {outlet.name}
                 </label>
               ))}
             </div>
@@ -492,193 +513,80 @@ export const WarehouseHistory: React.FC = () => {
 
       {/* Content for BARANG MASUK */}
       {activeTab === 'incoming' && (
-        <div className="bg-white rounded-[18px] sm:rounded-[22px] border border-[#DDE5F0] overflow-hidden shadow-xs">
-          <div className="p-3 sm:p-4 border-b border-[#DDE5F0] flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 bg-[#F8FAFC]/60">
+        <div className="bg-white rounded-xl border border-[#E2E8F0] overflow-hidden ">
+          <div className="p-3 sm:p-4 border-b border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 bg-[#F8FAFC]/60">
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-              <span className="text-[11px] sm:text-xs font-bold text-[#60708C] uppercase tracking-wider">
+              <span className="text-[11px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider">
                 Pembelian Masuk ({incomingList.length})
               </span>
               <span className="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-[#EAF8F1] text-[#1B9357] font-bold border border-[#A7E4C4]">
                 {periodLabel}
               </span>
             </div>
-            <div className="text-[11px] sm:text-xs text-[#17233D] font-bold">
+            <div className="text-[11px] sm:text-xs text-[#1E293B] font-bold">
               Subtotal: <span className="text-[#1B9357]">{formatRupiah(totalIncomingAmount)}</span> ({totalIncomingQty} unit)
             </div>
           </div>
 
-          <div className="divide-y divide-[#DDE5F0]">
-            {loading ? (
-              <div className="py-8 sm:py-12 text-center text-[#60708C] text-xs sm:text-sm">Memuat data barang masuk...</div>
-            ) : incomingList.length > 0 ? (
-              incomingList.map((tx) => (
-                <div
-                  key={tx.id}
-                  onClick={() => setSelectedTx({ type: 'incoming', data: tx })}
-                  className="p-3 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 hover:bg-[#F8FAFC] transition-colors cursor-pointer"
-                >
-                  <div className="space-y-1 flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                      <span className="font-bold text-sm sm:text-base text-[#17233D] tracking-tight">
-                        {tx.transactionCode}
-                      </span>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] sm:text-[11px] font-semibold bg-[#EAF8F1] text-[#1B9357] border border-[#A7E4C4]">
-                        Masuk
-                      </span>
-                      <span className="text-[10px] sm:text-xs text-[#60708C] px-1.5 py-0.5 rounded-full bg-[#F1F5F9]">
-                        {tx.paymentMethod || 'Transfer'}
-                      </span>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-0.5 text-[11px] sm:text-xs text-[#60708C]">
-                      <span className="font-semibold text-[#17233D]">{formatDateIndo(tx.transactionDate)}</span>
-                      <span>•</span>
-                      <span className="font-bold text-[#17233D]">{tx.vendorName || tx.vendorCode}</span>
-                      <span>•</span>
-                      <span className="text-[#17233D] font-medium truncate max-w-[200px] sm:max-w-sm">
-                        {tx.itemSummary || `${tx.itemCount || 1} Barang`}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between sm:justify-end space-x-3 sm:space-x-4 border-t sm:border-t-0 pt-2 sm:pt-0 border-[#DDE5F0]">
-                    <div className="text-left sm:text-right">
-                      <span className="text-[10px] sm:text-[11px] text-[#60708C] block uppercase font-semibold">Total Nominal</span>
-                      <span className="text-xs sm:text-base font-bold text-[#17233D]">
-                        {formatRupiah(tx.totalAmount)}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center space-x-1.5 sm:space-x-2">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setPrintA4Data({ type: 'incoming', data: tx });
-                        }}
-                        className="inline-flex items-center space-x-1 px-2.5 py-1 sm:px-3 sm:py-2 bg-[#F8FAFC] hover:bg-[#ED002B] text-[#17233D] hover:text-white text-[11px] sm:text-xs font-bold rounded-[10px] sm:rounded-[14px] border border-[#DDE5F0] hover:border-[#ED002B] transition-colors cursor-pointer"
-                        title="Cetak format kertas A4"
-                      >
-                        <Printer className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-                        <span className="hidden sm:inline">Cetak A4</span>
-                      </button>
-
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedTx({ type: 'incoming', data: tx });
-                        }}
-                        className="px-2.5 py-1 sm:px-3.5 sm:py-2 bg-white hover:bg-[#F8FAFC] text-[#17233D] text-[11px] sm:text-xs font-bold rounded-[10px] sm:rounded-[14px] border border-[#DDE5F0] transition-colors cursor-pointer"
-                      >
-                        Detail
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="py-8 sm:py-12 text-center text-[#60708C] text-xs sm:text-sm">
-                Tidak ada transaksi barang masuk pada filter {periodLabel}.
-              </div>
-            )}
-          </div>
+          {loading ? <StateMessage kind="loading">Memuat data barang masuk...</StateMessage> : filteredIncomingList.length ? (
+            <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs">
+              <thead><tr><th>Nomor Transaksi</th><th>Tanggal</th><th>Vendor</th><th>Barang</th><th>Metode</th><th className="text-right">Total Nominal</th><th className="text-right">Aksi</th></tr></thead>
+              <tbody>{filteredIncomingList.map((tx) => <tr key={tx.id}>
+                <th scope="row" className="whitespace-nowrap font-semibold text-[#1E293B]">{tx.transactionCode}</th>
+                <td className="whitespace-nowrap text-[#64748B]">{formatDateIndo(tx.transactionDate)}</td>
+                <td className="max-w-[180px] truncate">{tx.vendorName || tx.vendorCode}</td>
+                <td className="max-w-[220px] truncate">{tx.itemSummary || `${tx.itemCount || 1} Barang`}</td>
+                <td><span className="hd-badge">{tx.paymentMethod || 'Transfer'}</span></td>
+                <td className="whitespace-nowrap text-right font-semibold tabular-nums">{formatRupiah(tx.totalAmount)}</td>
+                <td className="whitespace-nowrap text-right"><div className="inline-flex gap-1">
+                  <button onClick={() => setPrintA4Data({ type: 'incoming', data: tx })} className="hd-button hd-button--secondary !min-h-[30px] !px-2"><Printer className="h-3.5 w-3.5" /><span>Cetak A4</span></button>
+                  <button onClick={() => setSelectedTx({ type: 'incoming', data: tx })} className="hd-button hd-button--secondary !min-h-[30px] !px-2">Detail</button>
+                </div></td>
+              </tr>)}</tbody>
+            </table></div>
+          ) : <StateMessage>Tidak ada transaksi barang masuk pada filter {periodLabel}.</StateMessage>}
         </div>
       )}
 
       {/* Content for BARANG KELUAR */}
       {activeTab === 'outgoing' && (
-        <div className="bg-white rounded-[18px] sm:rounded-[22px] border border-[#DDE5F0] overflow-hidden shadow-xs">
-          <div className="p-3 sm:p-4 border-b border-[#DDE5F0] flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 bg-[#F8FAFC]/60">
+        <div className="bg-white rounded-xl border border-[#E2E8F0] overflow-hidden ">
+          <div className="p-3 sm:p-4 border-b border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 bg-[#F8FAFC]/60">
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-              <span className="text-[11px] sm:text-xs font-bold text-[#60708C] uppercase tracking-wider">
+              <span className="text-[11px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider">
                 Barang Keluar ({filteredOutgoingList.length})
               </span>
-              <span className="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-[#FDF2F4] text-[#ED002B] font-bold border border-[#F9B7C2]">
+              <span className="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-[#FDF2F4] text-[#F0002B] font-bold border border-[#F9B7C2]">
                 {periodLabel}
               </span>
               {selectedOutlets.length > 0 && (
-                <span className="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-[#F1F5F9] text-[#17233D] font-bold border border-[#DDE5F0]">
+                <span className="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-[#F1F5F9] text-[#1E293B] font-bold border border-[#E2E8F0]">
                   Outlet: {selectedOutlets.length} dipilih
                 </span>
               )}
             </div>
-            <div className="text-[11px] sm:text-xs text-[#17233D] font-bold">
-              Subtotal: <span className="text-[#ED002B]">{formatRupiah(totalOutgoingAmount)}</span> ({totalOutgoingQty} unit)
+            <div className="text-[11px] sm:text-xs text-[#1E293B] font-bold">
+              Subtotal: <span className="text-[#F0002B]">{formatRupiah(totalOutgoingAmount)}</span> ({totalOutgoingQty} unit)
             </div>
           </div>
 
-          <div className="divide-y divide-[#DDE5F0]">
-            {loading ? (
-              <div className="py-8 sm:py-12 text-center text-[#60708C] text-xs sm:text-sm">Memuat data barang keluar...</div>
-            ) : filteredOutgoingList.length > 0 ? (
-              filteredOutgoingList.map((tx) => (
-                <div
-                  key={tx.id}
-                  onClick={() => setSelectedTx({ type: 'outgoing', data: tx })}
-                  className="p-3 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-4 hover:bg-[#F8FAFC] transition-colors cursor-pointer"
-                >
-                  <div className="space-y-1 flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                      <span className="font-bold text-sm sm:text-base text-[#17233D] tracking-tight">
-                        {tx.requestCode}
-                      </span>
-                      <StatusBadge status={tx.status} />
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-0.5 text-[11px] sm:text-xs text-[#60708C]">
-                      <span className="font-semibold text-[#17233D]">{formatDateIndo(tx.requestDate)}</span>
-                      <span>•</span>
-                      <span className="font-bold text-[#ED002B] flex items-center space-x-1">
-                        <Store className="w-3 h-3 sm:w-3.5 sm:h-3.5 inline mr-0.5" />
-                        <span>{tx.requesterName}</span>
-                      </span>
-                      <span>•</span>
-                      <span className="text-[#17233D] font-medium truncate max-w-[200px] sm:max-w-sm">
-                        {tx.itemSummary || `${tx.itemCount || 1} Barang Disetujui`}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between sm:justify-end space-x-3 sm:space-x-4 border-t sm:border-t-0 pt-2 sm:pt-0 border-[#DDE5F0]">
-                    <div className="text-left sm:text-right">
-                      <span className="text-[10px] sm:text-[11px] text-[#60708C] block uppercase font-semibold">Total Nilai Keluar</span>
-                      <span className="text-xs sm:text-base font-bold text-[#ED002B]">
-                        {formatRupiah(tx.totalApprovedAmount || tx.totalAmount)}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center space-x-1.5 sm:space-x-2">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setPrintA4Data({ type: 'outgoing', data: tx });
-                        }}
-                        className="inline-flex items-center space-x-1 px-2.5 py-1 sm:px-3 sm:py-2 bg-[#F8FAFC] hover:bg-[#ED002B] text-[#17233D] hover:text-white text-[11px] sm:text-xs font-bold rounded-[10px] sm:rounded-[14px] border border-[#DDE5F0] hover:border-[#ED002B] transition-colors cursor-pointer"
-                        title="Cetak format kertas A4"
-                      >
-                        <Printer className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-                        <span className="hidden sm:inline">Cetak A4</span>
-                      </button>
-
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedTx({ type: 'outgoing', data: tx });
-                        }}
-                        className="px-2.5 py-1 sm:px-3.5 sm:py-2 bg-white hover:bg-[#F8FAFC] text-[#17233D] text-[11px] sm:text-xs font-bold rounded-[10px] sm:rounded-[14px] border border-[#DDE5F0] transition-colors cursor-pointer"
-                      >
-                        Detail
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="py-8 sm:py-12 text-center text-[#60708C] text-xs sm:text-sm">
-                Tidak ada riwayat transaksi barang keluar pada filter {periodLabel}{' '}
-                {selectedOutlets.length ? `untuk ${selectedOutlets.length} outlet terpilih` : ''}.
-              </div>
-            )}
-          </div>
+          {loading ? <StateMessage kind="loading">Memuat data barang keluar...</StateMessage> : displayedOutgoingList.length ? (
+            <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-left text-xs">
+              <thead><tr><th>Nomor Request</th><th>Tanggal</th><th>Outlet</th><th>Status</th><th>Barang</th><th className="text-right">Total Nilai Keluar</th><th className="text-right">Aksi</th></tr></thead>
+              <tbody>{displayedOutgoingList.map((tx) => <tr key={tx.id}>
+                <th scope="row" className="whitespace-nowrap font-semibold text-[#1E293B]">{tx.requestCode}</th>
+                <td className="whitespace-nowrap text-[#64748B]">{formatDateIndo(tx.requestDate)}</td>
+                <td className="max-w-[180px] truncate">{tx.requesterName}</td>
+                <td><StatusBadge status={tx.status} /></td>
+                <td className="max-w-[220px] truncate">{tx.itemSummary || `${tx.itemCount || 1} Barang Disetujui`}</td>
+                <td className="whitespace-nowrap text-right font-semibold text-[#1E293B] tabular-nums">{formatRupiah(tx.totalApprovedAmount || tx.totalAmount)}</td>
+                <td className="whitespace-nowrap text-right"><div className="inline-flex gap-1">
+                  <button onClick={() => setPrintA4Data({ type: 'outgoing', data: tx })} className="hd-button hd-button--secondary !min-h-[30px] !px-2"><Printer className="h-3.5 w-3.5" /><span>Cetak A4</span></button>
+                  <button onClick={() => setSelectedTx({ type: 'outgoing', data: tx })} className="hd-button hd-button--secondary !min-h-[30px] !px-2">Detail</button>
+                </div></td>
+              </tr>)}</tbody>
+            </table></div>
+          ) : <StateMessage>Tidak ada riwayat transaksi barang keluar pada filter {periodLabel}{' '}{selectedOutlets.length ? `untuk ${selectedOutlets.length} outlet terpilih` : ''}.</StateMessage>}
         </div>
       )}
 

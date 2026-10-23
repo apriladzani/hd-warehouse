@@ -1,10 +1,22 @@
-export type Role = 'OUTLET' | 'WAREHOUSE';
+export type Role = 'ADMIN' | 'OUTLET' | 'WAREHOUSE' | 'FINANCE';
 
 export interface User {
   id: number;
   name: string;
+  username?: string;
   email: string;
   role: Role;
+  outletId?: number | null;
+  outletName?: string | null;
+  isActive?: boolean;
+}
+
+export interface Outlet {
+  id: number;
+  code: string;
+  name: string;
+  address?: string | null;
+  isActive?: boolean;
 }
 
 export interface Vendor {
@@ -51,6 +63,7 @@ export interface RequestTransaction {
   id: number;
   requestCode: string;
   userId?: number;
+  outletId?: number | null;
   requesterName: string;
   paymentMethod: string;
   requestDate: string;
@@ -114,7 +127,9 @@ export interface WarehouseItemProfitability {
   totalPurchaseAmount: number;
   catalogPrice: number;
   totalSellingAmount: number;
-  totalProfit: number;
+  averageSellingPrice: number;
+  totalProfit: number | null;
+  missingCostQuantity?: number;
 }
 
 export interface WarehouseStats {
@@ -126,14 +141,15 @@ export interface WarehouseStats {
     id: number;
     itemName: string;
     quantity: number;
-    movementType: 'IN' | 'OUT';
+    movementType: 'IN' | 'OUT' | 'STOCK_OPNAME_ADJUSTMENT';
     typeLabel: string;
     date: string;
     referenceId: string;
   }>;
   totalPurchaseAmount?: number;
   totalSellingAmount?: number;
-  totalProfit?: number;
+  totalIncomeReceived?: number | null;
+  totalProfit?: number | null;
   totalQuantity?: number;
   totalIncomingAmount?: number;
   totalCogsAmount?: number;
@@ -144,4 +160,33 @@ export interface WarehouseStats {
     code: 'RM' | 'SM' | 'PKG';
     totalAmount: number;
   }>;
+  financePeriods?: FinancePeriod[];
+  financePeriod?: FinancePeriod | null;
+  inventoryAdjustmentAmount?: number;
+  missingCostQuantity?: number;
+  hasMissingCostData?: boolean;
+  otherIncome?: number;
+  shrinkageAmount?: number | null;
+  contributionMargin?: number | null;
+  contributionIncome?: number | null;
+  directCosts?: number;
+  depreciationAmortization?: number;
+  ebitda?: number | null;
+  ebit?: number | null;
+  manualEntries?: Array<{ id: number; accountCode: string; entryType: 'INCOME' | 'EXPENSE'; outletId: number | null; outletName?: string | null; transactionDate: string; amount: number; description: string }>;
+  manualByCode?: Record<string, number>;
+  shrinkageDataAvailable?: boolean;
+  hasMissingShrinkageData?: boolean;
+  shrinkageUnavailableReason?: string;
+  cogsByCategory?: Array<{ category: string; code: string; amount: number; missingCostQuantity: number }>;
+}
+
+export interface FinancePeriod {
+  id: string;
+  label: string;
+  status: 'Open' | 'Closed' | 'All';
+  startAt: string | null;
+  endAt: string | null;
+  startDate: string | null;
+  endDate: string | null;
 }
