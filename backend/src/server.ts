@@ -140,6 +140,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     }
     res.json({ user: publicUser(user) });
   } catch (err: any) {
+    console.error('[login] gagal:', err?.code, err?.message);
     res.status(503).json({ error: 'Sumber autentikasi operasional tidak tersedia.' });
   }
 });
