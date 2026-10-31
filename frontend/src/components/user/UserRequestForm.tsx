@@ -88,12 +88,8 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
 
     const fetchOutletAssignment = async () => {
       setOutletAssignmentLoading(true);
-      const credentials = currentUser as User & { password?: string };
       try {
-        const response = await fetch('/api/outlet/profile', { headers: {
-          'X-Auth-Email': currentUser.email,
-          'X-Auth-Password': credentials.password || '',
-        } });
+        const response = await fetch('/api/outlet/profile', { credentials: 'same-origin' });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Penempatan outlet tidak dapat dimuat.');
         setOutletName(result.outletName || '');
@@ -211,7 +207,6 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
     try {
       setSubmitting(true);
 
-      const credentials = currentUser as User & { password?: string };
       const payload = {
         paymentMethod,
         requestDate,
@@ -220,10 +215,9 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
 
       const res = await fetch('/api/requests', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: {
           'Content-Type': 'application/json',
-          'X-Auth-Email': currentUser.email,
-          'X-Auth-Password': credentials.password || '',
         },
         body: JSON.stringify(payload),
       });

@@ -3,6 +3,7 @@ import { Activity, Boxes, ChevronRight, Clock3, FileText, LayoutDashboard, LockK
 import type { User } from '../../types.ts';
 import { Button, IconButton } from './UI.tsx';
 import { useBranding } from './BrandingContext.tsx';
+import { PAGES } from '../../finance/model.ts';
 
 interface NavbarProps {
   currentUser: User;
@@ -23,13 +24,14 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, activeNav, onNaviga
   const roleLabel = roleLabels[currentUser.role];
   const dashboard = { id: 'dashboard', label: currentUser.role === 'ADMIN' ? 'Overview' : 'Dashboard', icon: LayoutDashboard };
   const history = { id: 'history', label: 'Riwayat', icon: Clock3 };
+  const financeItems = PAGES.map(([id, label]) => ({ id: `finance-${id}`, label, icon: id === 'dashboard' ? LayoutDashboard : id === 'settings' ? Settings : id === 'commercial-income' ? CircleDollarSign : FileText }));
   const navItems = currentUser.role === 'ADMIN'
     ? [dashboard, { id: 'users', label: 'User Management', icon: Users }, { id: 'outlets', label: 'Outlet Management', icon: Store }, { id: 'branding', label: 'Branding Settings', icon: Palette }, { id: 'settings', label: 'System Settings', icon: Settings }, { id: 'financeSecurity', label: 'Finance Security', icon: LockKeyhole }, { id: 'activity', label: 'Activity Logs', icon: Activity }]
     : currentUser.role === 'WAREHOUSE'
     ? [dashboard, { id: 'inventory', label: 'Inventory', icon: Boxes }, { id: 'requests', label: 'Request Outlet', icon: PackageCheck }, history, { id: 'finance', label: 'Finance', icon: CircleDollarSign }]
     : currentUser.role === 'FINANCE'
-      ? [{ id: 'finance', label: 'Finance', icon: CircleDollarSign }]
-      : [dashboard, { id: 'request', label: 'HD Request', icon: FileText }, history];
+      ? financeItems
+      : [dashboard, { id: 'request', label: 'HD Request', icon: FileText }, history, { id: 'report', label: 'Laporan Penjualan', icon: CircleDollarSign }];
   const title = navItems.find((item) => item.id === activeNav)?.label || 'Dashboard';
   const initials = currentUser.name.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('');
 
@@ -71,7 +73,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, activeNav, onNaviga
   };
 
   return (
-    <div className={`hd-ui hd-app ${collapsed ? 'hd-app--collapsed' : ''} ${drawerOpen ? 'hd-app--drawer-open' : ''}`} data-role={currentUser.role}>
+    <div className={`hd-ui hd-app ${collapsed ? 'hd-app--collapsed' : ''} ${drawerOpen ? 'hd-app--drawer-open' : ''}`} data-role={currentUser.role} data-finance={activeNav.startsWith('finance-') || undefined}>
       <a href="#main-content" className="hd-skip-link">Lewati navigasi</a>
       {drawerOpen && <button className="hd-drawer-overlay" tabIndex={-1} aria-label="Tutup navigasi" onClick={() => setDrawerOpen(false)} />}
       <aside id="app-sidebar" ref={sidebarRef} className="hd-sidebar" role={drawerOpen ? 'dialog' : undefined} aria-modal={drawerOpen || undefined} aria-label={`Workspace ${roleLabel}`}>

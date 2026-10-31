@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { User } from './types.ts';
+import { WarehouseDashboard } from './components/warehouse/WarehouseDashboard.tsx';
 import { FinanceAccessGate } from './components/warehouse/FinanceAccessGate.tsx';
+import { FinanceEntry } from './finance/FinanceEntry.tsx';
+import { financePath, financePage, isFinancePath, type FinancePage } from './finance/model.ts';
+import './finance/finance.css';
 import {
   Navbar,
   LoginPage,
@@ -9,7 +13,6 @@ import {
   UserDashboard,
   UserRequestForm,
   UserRiwayat,
-  WarehouseDashboard,
   WarehouseOperationalDashboard,
   WarehouseInventory,
   WarehouseRequests,
@@ -42,11 +45,12 @@ const pagePath = (role: string, page: string) => {
     if (page === 'inventory-catalog') return `${base}/inventory/katalog`;
     return `${base}/${page === 'requests' ? 'request' : page === 'history' ? 'riwayat' : page}`;
   }
-  return `${base}/${page === 'request' ? 'request' : page === 'history' ? 'riwayat' : page}`;
+  return `${base}/${page === 'request' ? 'request' : page === 'history' ? 'riwayat' : page === 'report' ? 'laporan' : page}`;
 };
 
 const legacyPath = (pathname: string, role: string) => {
   const path = pathname.replace(/\/+$/, '') || '/';
+  if (role === 'WAREHOUSE' && isFinancePath(path)) return '/warehouse/finance';
   if (path === '/') return pagePath(role, 'dashboard');
   if (path === '/dashboard') return pagePath(role, 'dashboard');
   if (path === '/finance' || path === '/finance/dashboard') {
@@ -72,6 +76,7 @@ const tabForPath = (pathname: string, role: string) => {
     return 'dashboard';
   }
   if (role === 'FINANCE') return 'finance';
+  if (role === 'WAREHOUSE' && isFinancePath(pathname)) return 'finance';
   if (pathname.endsWith('/dashboard')) return 'dashboard';
   if (role === 'WAREHOUSE') {
     if (pathname === '/warehouse/finance') return 'finance';
@@ -81,6 +86,7 @@ const tabForPath = (pathname: string, role: string) => {
   } else {
     if (/\/request(?:\/\d+)?$/.test(pathname)) return 'request';
     if (pathname.endsWith('/riwayat')) return 'history';
+    if (pathname.endsWith('/laporan')) return 'report';
   }
   return 'dashboard';
 };
@@ -125,10 +131,10 @@ export default function App() {
   const routeAllowed = routeRole === 'ADMIN'
     ? /^\/admin\/(?:dashboard|users|outlets|branding-settings|system-settings|finance-security|activity-logs|monitoring\/(?:warehouse|outlet|finance))$/.test(canonicalPath)
     : routeRole === 'WAREHOUSE'
-    ? /^\/warehouse\/(?:dashboard|inventory(?:\/(?:stock-opname|vendors|katalog))?|request(?:\/\d+)?|riwayat|finance)$/.test(canonicalPath)
+    ? isFinancePath(canonicalPath) || /^\/warehouse\/(?:dashboard|inventory(?:\/(?:stock-opname|vendors|katalog))?|request(?:\/\d+)?|riwayat)$/.test(canonicalPath)
     : routeRole === 'FINANCE'
-      ? canonicalPath === '/warehouse/finance'
-      : /^\/outlet\/(?:dashboard|request|riwayat)$/.test(canonicalPath);
+      ? isFinancePath(canonicalPath)
+      : /^\/outlet\/(?:dashboard|request|riwayat|laporan)$/.test(canonicalPath);
 
   useEffect(() => {
     if (!currentUser) {
@@ -148,6 +154,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    void fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => undefined);
     if (currentUser?.role === 'WAREHOUSE') {
       const credentials = currentUser as User & { password?: string };
       void fetch('/api/finance/access/logout', { method: 'POST', headers: { 'X-Auth-Email': currentUser.email, 'X-Auth-Password': credentials.password || '' } }).catch(() => undefined);
@@ -191,8 +198,8 @@ export default function App() {
   return (
       <Navbar
         currentUser={currentUser}
-        activeNav={activeTab}
-        onNavigate={(tab) => navigatePage(tab)}
+        activeNav={isFinance && activeTab === 'finance' ? `finance-${financePage(canonicalPath)}` : activeTab}
+        onNavigate={(tab) => tab.startsWith('finance-') ? navigateTo(financePath(tab.slice('finance-'.length) as FinancePage)) : navigatePage(tab)}
         onLogout={handleLogout}
       >
         {/* User Screens */}
@@ -212,6 +219,7 @@ export default function App() {
               />
             )}
             {activeTab === 'history' && <UserRiwayat currentUser={currentUser} />}
+            {activeTab === 'report' && <WarehouseDashboard currentUser={currentUser} />}
           </>
         )}
 
@@ -225,7 +233,7 @@ export default function App() {
             {activeTab === 'finance' && <FinanceAccessGate currentUser={currentUser} onBack={() => navigatePage('dashboard')}><WarehouseDashboard currentUser={currentUser} /></FinanceAccessGate>}
           </>
         )}
-        {isFinance && activeTab === 'finance' && <WarehouseDashboard currentUser={currentUser} />}
+        {isFinance && activeTab === 'finance' && <FinanceEntry currentUser={currentUser} onBack={() => navigatePage('dashboard')} pathname={canonicalPath} />}
         {isAdmin && <AdminWorkspace currentUser={currentUser} activeTab={activeTab} pathname={canonicalPath} onNavigate={navigatePage} onNavigatePath={(path) => navigateTo(path)} />}
       </Navbar>
   );

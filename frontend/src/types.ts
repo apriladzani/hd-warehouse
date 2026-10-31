@@ -114,17 +114,41 @@ export interface UserStats {
   recentRequests: RequestTransaction[];
 }
 
+// One outlet's share of an item's sales in the period (outlet 0 = without outlet).
+export interface OutletSalesBreakdown {
+  outletId: number;
+  soldQuantity: number;
+  sales: string;
+  cogs?: string | null;
+  profit?: string | null;
+}
+
 export interface WarehouseItemProfitability {
-  purchaseQuantity: number;
-  totalCogsAmount: number;
+  outletBreakdown?: OutletSalesBreakdown[];
+  // Per Stock Opname period, never the live Inventory balance.
+  openingStock?: number | null;
+  correctionQuantity?: number;
+  systemStock?: number;
+  physicalStock?: number | null;
+  difference?: number | null;
+  differenceValue?: string | null;
+  closingStock?: number | null;
+  closingValue?: string | null;
+  openingAvgCost?: string | null;
+  periodAverage?: string | null;
+  purchaseQuantity?: number;
+  totalCogsAmount?: number;
+  totalCogsAmountExact?: string | null;
+  totalSellingAmountExact?: string;
+  totalProfitExact?: string | null;
+  profitReasons?: string[];
   itemId: number;
   itemName: string;
   category: 'Raw Material' | 'Support Material' | 'Packaging';
   itemCode: string;
-  currentStock: number;
   quantity: number;
-  avgPurchasePrice: number;
-  totalPurchaseAmount: number;
+  avgPurchasePrice?: number;
+  totalPurchaseAmount?: number;
   catalogPrice: number;
   totalSellingAmount: number;
   averageSellingPrice: number;
@@ -141,7 +165,7 @@ export interface WarehouseStats {
     id: number;
     itemName: string;
     quantity: number;
-    movementType: 'IN' | 'OUT' | 'STOCK_OPNAME_ADJUSTMENT';
+    movementType: 'IN' | 'OUT' | 'STOCK_OPNAME_ADJUSTMENT' | 'PERIOD_CORRECTION';
     typeLabel: string;
     date: string;
     referenceId: string;
@@ -162,6 +186,9 @@ export interface WarehouseStats {
   }>;
   financePeriods?: FinancePeriod[];
   financePeriod?: FinancePeriod | null;
+  periodLock?: { closedAt: string; closedBy: string; source: string } | null;
+  // Set by the server: an Outlet account is locked to its outlet and may not see cost.
+  viewer?: { lockedOutletId: number | null; showCost: boolean; outletIds: number[] };
   inventoryAdjustmentAmount?: number;
   missingCostQuantity?: number;
   hasMissingCostData?: boolean;
@@ -189,4 +216,8 @@ export interface FinancePeriod {
   endAt: string | null;
   startDate: string | null;
   endDate: string | null;
+  opnameId?: number | null;
+  locked?: boolean;
+  closedAt?: string | null;
+  closedBy?: string | null;
 }

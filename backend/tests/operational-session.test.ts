@@ -1,0 +1,31 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createOperationalSessions } from '../src/finance/operationalSession.ts';
+const req = (cookie = '') => ({ header: (key: string) => key === 'Cookie' ? cookie : '' }) as any;
+test('operational identity uses opaque session, fresh role/active/password and no writes', async () => {
+  let clock = 0, active = 1, role = 'FINANCE', password = 'mock-only';
+  const queries: string[] = [];
+  const store = createOperationalSessions({ select: async (sql) => { queries.push(sql); return [{ id: 7, name: 'Mock', email: 'mock@example.invalid', username: 'mock', role, isActive: active, password }]; } }, () => clock);
+  const cookies: string[] = [];
+  const res = { append: (_: string, cookie: string) => cookies.push(cookie), setHeader: () => {} } as any;
+  assert.equal(await store.authenticate(req()), null);
+  assert.equal(await store.login(req(), res, 'mock', 'wrong'), null);
+  const profile = await store.login(req(), res, 'mock', password);
+  assert.ok(profile); assert.equal('password' in profile!, false);
+  assert.ok(cookies[0].includes('HttpOnly; SameSite=Strict'));
+  const session = req(cookies[0].split(';')[0]);
+  assert.deepEqual(await store.authenticate(session), { role: 'FINANCE', warehouseGateVerified: false });
+  role = 'OUTLET'; assert.equal((await store.authenticate(session))?.role, 'OUTLET');
+  active = 0; assert.equal(await store.authenticate(session), null); active = 1;
+  await store.login(req(), res, 'mock', password); const second = req(cookies.at(-1)!.split(';')[0]);
+  password = 'changed'; assert.equal(await store.authenticate(second), null);
+  await store.login(req(), res, 'mock', password); const third = req(cookies.at(-1)!.split(';')[0]);
+  clock += 8 * 3600000; assert.equal(await store.authenticate(third), null);
+  await store.login(req(), res, 'mock', password); const fourth = req(cookies.at(-1)!.split(';')[0]);
+  store.logout(fourth, res); assert.equal(await store.authenticate(fourth), null);
+  assert.ok(queries.every(sql => sql.startsWith('SELECT ')));
+});
+test('Warehouse retains separate gate and DB failures fail closed', async () => {
+  const broken = createOperationalSessions({ select: async () => { throw new Error('private'); } });
+  await assert.rejects(() => broken.login(req(), {} as any, 'test', 'test'), e => !String(e).includes('private'));
+});

@@ -15,6 +15,7 @@ import { StatusBadge } from '../common/StatusBadge.tsx';
 import { formatDateIndo, formatRupiah } from '../../lib/format.ts';
 import { PrintableTransactionA4 } from './PrintableTransactionA4.tsx';
 import { buildApprovedRequestPrintData, canPrintApprovedRequest } from '../../lib/requestPrint.ts';
+import { ApproveSubsetConfirm, linesAutoRejected } from './ApproveSubsetConfirm.tsx';
 
 interface WarehouseRequestDetailModalProps {
   isOpen: boolean;
@@ -37,6 +38,8 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [showPrintA4, setShowPrintA4] = useState(false);
+  // Set when approving one line would auto-reject others, so the user decides first.
+  const [pendingApproval, setPendingApproval] = useState<{ item: any; autoRejected: any[] } | null>(null);
 
   const fetchDetail = async () => {
     if (!requestId) return;
@@ -68,6 +71,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
     if (isOpen && requestId) {
       setError(null);
       setSuccessMsg(null);
+      setPendingApproval(null);
       fetchDetail();
     }
   }, [isOpen, requestId]);
@@ -126,6 +130,14 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
     }
   };
 
+  // Approving one line closes the request, so the other undecided lines are
+  // named before the decision rather than silently rejected by the backend.
+  const requestApproval = (item: any) => {
+    const autoRejected = linesAutoRejected(request?.items ?? [], item.id);
+    if (!autoRejected.length) return handleDecision(item.id, 'Approve');
+    setPendingApproval({ item, autoRejected });
+  };
+
   // Batch Decision: Approve ALL Pending Items
   const handleApproveAll = async () => {
     if (!requestId) return;
@@ -149,6 +161,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
       }
 
       setSuccessMsg('Semua barang dalam pengajuan berhasil disetujui!');
+      setPendingApproval(null);
       await fetchDetail();
       onUpdated();
     } catch (err: any) {
@@ -433,7 +446,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                           <button
                             id={`btn-approve-item-${item.id}`}
                             type="button"
-                            onClick={() => handleDecision(item.id, 'Approve')}
+                            onClick={() => requestApproval(item)}
                             disabled={isItemLoading || isOutOfStock}
                             className="px-3.5 py-1.5 sm:px-4 sm:py-1.5 rounded-[8px] sm:rounded-xl text-[10px] sm:text-xs font-bold transition-colors bg-[#20B26B] hover:bg-[#1b9a5c] text-white  disabled:opacity-40 flex items-center space-x-1"
                           >
@@ -497,6 +510,21 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
           </button>
         </div>
       </div>
+      {pendingApproval && (
+        <ApproveSubsetConfirm
+          item={pendingApproval.item}
+          autoRejected={pendingApproval.autoRejected}
+          approvedQuantity={quantities[pendingApproval.item.id] ?? pendingApproval.item.requestedQuantity}
+          busy={batchLoading || actionLoadingId !== null}
+          onApproveAll={() => void handleApproveAll()}
+          onApproveSelected={() => {
+            const itemId = pendingApproval.item.id;
+            setPendingApproval(null);
+            void handleDecision(itemId, 'Approve');
+          }}
+          onCancel={() => setPendingApproval(null)}
+        />
+      )}
       {showPrintA4 && canPrintApprovedRequest(request) && (
         <PrintableTransactionA4
           isOpen={showPrintA4}

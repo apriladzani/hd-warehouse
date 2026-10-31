@@ -36,14 +36,9 @@ export const WarehouseOperationalDashboard: React.FC<{ currentUser: User }> = ({
       const params = new URLSearchParams();
       if (start) params.set('startDate', start);
       if (end) params.set('endDate', end);
-      const credentials = currentUser as User & { password?: string };
-      const response = await fetch(`/api/dashboard/warehouse-ops-stats${params.size ? `?${params}` : ''}`, {
-        headers: {
-          'X-Auth-Email': currentUser.email,
-          'X-Auth-Password': credentials.password || '',
-        },
-      });
+      const response = await fetch(`/api/dashboard/warehouse-ops-stats${params.size ? `?${params}` : ''}`, { credentials: 'same-origin' });
       const result = await response.json();
+      if (response.status === 401) throw new Error('Sesi login berakhir. Keluar lalu login kembali.');
       if (!response.ok) throw new Error(result.error || 'Gagal memuat dashboard');
       setData({ items: result.items || [], purchases: result.purchases || [] });
     } catch (err) {

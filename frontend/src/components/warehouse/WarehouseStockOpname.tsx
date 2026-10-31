@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ClipboardCheck, History, Save } from 'lucide-react';
 import { InventoryItem, User } from '../../types.ts';
 import { formatRupiah } from '../../lib/format.ts';
+import { PendingRequestsWarning, pendingRequestsMessage, type PendingRequestsAtClosing } from './PendingRequestsWarning.tsx';
 
 type OpnameLine = {
   itemId: number;
@@ -63,6 +64,18 @@ export const WarehouseStockOpname: React.FC<WarehouseStockOpnameProps> = ({ item
   const [historyLoading, setHistoryLoading] = useState(true);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  // Requests still awaiting approval: their goods stay in the warehouse, so
+  // closing now puts them in the next period.
+  const [pending, setPending] = useState<PendingRequestsAtClosing | null>(null);
+
+  const loadPending = async (): Promise<PendingRequestsAtClosing | null> => {
+    try {
+      const response = await fetch('/api/inventory/stock-opname/pending-requests');
+      const data = response.ok ? await response.json() : null;
+      setPending(data);
+      return data;
+    } catch { setPending(null); return null; }
+  };
 
   const loadHistory = async () => {
     try {
@@ -78,7 +91,7 @@ export const WarehouseStockOpname: React.FC<WarehouseStockOpnameProps> = ({ item
     }
   };
 
-  useEffect(() => { loadHistory(); }, []);
+  useEffect(() => { loadHistory(); void loadPending(); }, []);
 
   const checkedCount = useMemo(() => Object.values(physicalStocks).filter((value) => value !== '').length, [physicalStocks]);
 
@@ -121,7 +134,10 @@ export const WarehouseStockOpname: React.FC<WarehouseStockOpnameProps> = ({ item
       const raw = physicalStocks[item.id];
       return raw !== undefined && raw !== '' && Number(raw) !== Number(item.currentStock);
     }).length;
-    if (!window.confirm(`Konfirmasi Stock Opname untuk ${checkedCount} barang?${changedCount ? ` Stok ${changedCount} barang yang memiliki selisih akan langsung disesuaikan.` : ' Stok tidak memiliki selisih.'}`)) return;
+    // Re-read right before closing: a request may have been approved meanwhile.
+    const latestPending = await loadPending();
+    const warning = pendingRequestsMessage(latestPending);
+    if (!window.confirm(`Konfirmasi Stock Opname untuk ${checkedCount} barang?${changedCount ? ` Stok ${changedCount} barang yang memiliki selisih akan langsung disesuaikan.` : ' Stok tidak memiliki selisih.'}${warning ? `\n\n${warning}` : ''}`)) return;
     const requestKey = submissionKey || (typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -148,13 +164,15 @@ export const WarehouseStockOpname: React.FC<WarehouseStockOpnameProps> = ({ item
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Gagal menyimpan Stock Opname');
       setHistory((current) => [data.opname, ...current]);
+      setPending(data.opname.pendingRequests ?? null);
       setExpandedId(data.opname.id);
       await onRefresh();
       setPhysicalStocks({});
       setItemNotes({});
       setNotes('');
       setSubmissionKey('');
-      setSuccess('Stock Opname berhasil disimpan dan stok sistem telah disesuaikan.');
+      const closedWith = Number(data.opname.pendingRequests?.count || 0);
+      setSuccess(`Stock Opname berhasil disimpan dan stok sistem telah disesuaikan.${closedWith ? ` ${closedWith} request yang belum di-approve masuk ke periode berikutnya.` : ''}`);
     } catch (err: any) {
       setError(err.message || 'Gagal menyimpan Stock Opname');
     } finally {
@@ -279,6 +297,8 @@ export const WarehouseStockOpname: React.FC<WarehouseStockOpnameProps> = ({ item
               </table>
             </div>
           </div>
+
+          <PendingRequestsWarning pending={pending} />
 
           {error && <p role="alert" className="text-xs font-medium text-red-600">{error}</p>}
           {success && <p role="status" className="text-xs font-medium text-emerald-700">{success}</p>}

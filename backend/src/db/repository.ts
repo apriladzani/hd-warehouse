@@ -1,6 +1,9 @@
+import { inventoryReceiptAverage, opnameAverage } from '../finance/warehouseSimpleFinance.ts';
 import { eq, desc, and, gt, inArray, sql } from 'drizzle-orm';
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { db, pool } from './index.ts';
+import { ensurePeriodSnapshotSchema, ledgerRows, loadLedger, PERIOD_CORRECTION, repriceOpenPeriod, saveSnapshot, type LedgerData } from './periodClosing.ts';
+import { effectiveTime, forOutlets } from '../finance/periodLedger.ts';
 import {
   users,
   outlets,
@@ -15,6 +18,7 @@ import {
   stockOpnames,
   inventoryCostPeriods,
   inventoryCostSnapshots,
+  financePeriodSnapshots,
 } from './schema.ts';
 
 export const ITEM_CATEGORIES = ['Raw Material', 'Support Material', 'Packaging'] as const;
@@ -240,7 +244,8 @@ export function ensureAdminOutletSchema() {
 
 let adminSettingsSchemaReady: Promise<void> | null = null;
 export const DEFAULT_BRANDING = { appName: 'HD Management System', subtitle: 'Inventory & Operations', mainLogo: '', sidebarLogo: '', favicon: '' };
-export const DEFAULT_SYSTEM_SETTINGS = { systemName: 'HD Management System', dateFormat: 'DD MMM YYYY', timeZone: 'Asia/Jakarta', currency: 'IDR', organizationInfo: '' };
+// outletCanViewCost: Outlet accounts may see HPP and estimated profit of their own outlet.
+export const DEFAULT_SYSTEM_SETTINGS = { systemName: 'HD Management System', dateFormat: 'DD MMM YYYY', timeZone: 'Asia/Jakarta', currency: 'IDR', organizationInfo: '', outletCanViewCost: false };
 export async function ensureAdminSettingsSchema() {
   if (!adminSettingsSchemaReady) adminSettingsSchemaReady = (async () => {
     await pool.query(`CREATE TABLE IF NOT EXISTS system_settings (
@@ -466,7 +471,7 @@ async function ensureFinanceSnapshotSchema() {
       is_voided TINYINT(1) NOT NULL DEFAULT 0,
       void_reason VARCHAR(500) NULL,
       created_by INT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(3),
       INDEX idx_manual_finance_date (transaction_date),
       INDEX idx_manual_finance_outlet (outlet_id),
       INDEX idx_manual_finance_account (account_code)
@@ -525,8 +530,8 @@ export const FINANCE_MANUAL_ACCOUNT_CODES = [
   { code: 'DA02', label: 'Amortization', type: 'DEPRECIATION' },
 ] as const;
 
-export async function getManualFinanceEntries(filters: { startDate?: string; endDate?: string; startAt?: string; endAt?: string; outletIds?: number[] } = {}) {
-  await ensureFinanceSnapshotSchema();
+export async function getManualFinanceEntries(filters: { startDate?: string; endDate?: string; startAt?: string; endAt?: string; outletIds?: number[] } = {}, initialize = true) {
+  if (initialize) await ensureFinanceSnapshotSchema();
   const conditions: string[] = ['e.is_voided = 0'];
   const params: unknown[] = [];
   if (filters.startDate) { conditions.push('e.transaction_date >= ?'); params.push(filters.startDate); }
@@ -1166,6 +1171,11 @@ export type FinancePeriod = {
   endAt: string | null;
   startDate: string | null;
   endDate: string | null;
+  // Stock opname that closes the period, and its permanent snapshot if stored.
+  opnameId: number | null;
+  locked: boolean;
+  closedAt: string | null;
+  closedBy: string | null;
 };
 
 function dateInJakarta(value: Date | string | null | undefined): string | null {
@@ -1188,42 +1198,41 @@ function transactionTimestamp(createdAt: Date | string | null | undefined, busin
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-export async function getFinancePeriods(): Promise<FinancePeriod[]> {
-  await ensureFinanceSnapshotSchema();
-  await ensureStockOpnameTable();
-  const [purchases, sales, opnameRows] = await Promise.all([
-    db.select({ createdAt: purchaseTransactions.createdAt, transactionDate: purchaseTransactions.transactionDate }).from(purchaseTransactions),
-    db.select({ createdAt: requests.createdAt, requestDate: requests.requestDate }).from(requestItems)
-      .innerJoin(requests, eq(requestItems.requestId, requests.id))
-      .where(and(eq(requestItems.status, 'Approved'), sql`${requestItems.approvedQuantity} > 0`)),
-    db.select({
-      id: stockOpnames.id,
-      createdAt: stockOpnames.createdAt,
-      examinationDate: stockOpnames.examinationDate,
-      cutoffAt: sql<Date | null>`MAX(${inventoryCostPeriods.cutoffAt})`,
-    }).from(stockOpnames).leftJoin(inventoryCostPeriods, eq(inventoryCostPeriods.stockOpnameId, stockOpnames.id))
-      .groupBy(stockOpnames.id, stockOpnames.createdAt, stockOpnames.examinationDate).orderBy(stockOpnames.id),
-  ]);
-  const firstTransaction = [...purchases.map((row) => transactionTimestamp(row.createdAt, row.transactionDate)), ...sales.map((row) => transactionTimestamp(row.createdAt, row.requestDate))]
-    .filter((value): value is number => value != null).sort((a, b) => a - b)[0] ?? null;
-  const cutoffs = opnameRows.map((row) => ({ id: Number(row.id), at: transactionTimestamp(row.cutoffAt || row.createdAt, row.examinationDate) }))
-    .filter((row): row is { id: number; at: number } => row.at != null && (firstTransaction == null || row.at > firstTransaction))
-    .sort((a, b) => a.at - b.at || a.id - b.id);
+export async function getFinancePeriods(ledger?: LedgerData): Promise<FinancePeriod[]> {
+  // Same cut-offs as the period ledger, so a period and its numbers never disagree.
+  const { periods: closings, firstTransaction } = ledger ?? await loadLedger();
+  const cutoffs = closings.filter((row) => firstTransaction == null || row.end > firstTransaction);
   const asIso = (value: number | null) => value == null ? null : new Date(value).toISOString();
-  const period = (id: string, label: string, status: FinancePeriod['status'], start: number | null, end: number | null): FinancePeriod => ({
+  const period = (id: string, label: string, status: FinancePeriod['status'], start: number | null, end: number | null, closing: (typeof closings)[number] | null = null): FinancePeriod => ({
     id, label, status, startAt: asIso(start), endAt: asIso(end),
     startDate: start == null ? null : dateInJakarta(new Date(start)),
     endDate: end == null ? null : dateInJakarta(new Date(end)),
+    opnameId: closing?.opnameId ?? null,
+    locked: Boolean(closing?.snapshot),
+    closedAt: closing?.snapshot?.closedAt ?? null,
+    closedBy: closing?.snapshot?.closedBy ?? null,
   });
   const periods: FinancePeriod[] = [];
   let cursor = firstTransaction;
   for (const [index, cutoff] of cutoffs.entries()) {
-    periods.push(period(`period-${index + 1}`, `Periode ${index + 1}`, 'Closed', cursor, cutoff.at));
-    cursor = cutoff.at;
+    periods.push(period(`period-${index + 1}`, `Periode ${index + 1}`, 'Closed', cursor, cutoff.end, cutoff));
+    cursor = cutoff.end;
   }
   periods.push(period('running', 'Periode Berjalan', 'Open', cursor, null));
   periods.push(period('all', 'Semua Periode', 'All', firstTransaction, null));
   return periods;
+}
+
+// A dated transaction (receipt, request, opname) may only land in the open
+// period; a closed period is corrected through a period correction instead.
+export async function assertOpenPeriodDate(executor: InventoryExecutor, date: string) {
+  const day = String(date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
+  const ledger = await loadLedger(executor);
+  const at = effectiveTime(Date.now(), day);
+  if (!ledger.periods.some((period) => at < period.end)) return;
+  const closed = (await getFinancePeriods(ledger)).find((period) => period.status === 'Closed' && period.endAt && at < Date.parse(period.endAt));
+  throw new Error(`${closed?.label ?? 'Periode sebelumnya'} sudah ditutup. Gunakan form koreksi.`);
 }
 
 export async function seedHDItemsIfEmpty() {
@@ -1253,30 +1262,16 @@ export async function seedHDItemsIfEmpty() {
 }
 
 // Items & Inventory
-// All vendors and dates contribute to the same Inventory item. Stock is not a weight.
-const inventoryAverage = sql<number>`COALESCE((
-  SELECT SUM(${purchaseItems.quantity} * ${purchaseItems.price}) / NULLIF(SUM(${purchaseItems.quantity}), 0)
-  FROM ${purchaseItems}
-  WHERE ${purchaseItems.itemId} = ${items.id}
-    AND ${purchaseItems.quantity} > 0 AND ${purchaseItems.price} >= 0
-), 0)`;
-
+// Inventory cost is event-driven: receipts and physical opname own cycle state.
 export async function recalculateItemAvgPurchasePrice(itemId: number, executor: InventoryExecutor = db) {
-  await ensureItemCategorySchema();
-  await executor.update(items).set({ avgPurchasePrice: inventoryAverage }).where(eq(items.id, itemId));
+  // Preserve the cycle cost established by receipts/opname. No lifetime backfill.
   const [item] = await executor.select({ avgPurchasePrice: items.avgPurchasePrice }).from(items).where(eq(items.id, itemId));
   return Number(item?.avgPurchasePrice ?? 0);
 }
 
 export async function syncAllItemAveragePrices() {
-  await ensureItemCategorySchema();
-  await ensureInventoryPrecisionSchema();
-  // Backfill only items with active stock and no stored average. Existing averages
-  // are cycle state and must survive later stockouts and subsequent purchases.
-  await db.update(items).set({ avgPurchasePrice: inventoryAverage })
-    .where(and(gt(items.currentStock, 0), eq(items.avgPurchasePrice, 0), sql`NOT EXISTS (
-      SELECT 1 FROM inventory_cost_periods cp WHERE cp.item_id = ${items.id}
-    )`));
+  // No automatic historical repair on read/startup. Receipt and opname events
+  // own the moving average; missing legacy evidence requires separate review.
 }
 
 let averagePricesReady: Promise<void> | undefined;
@@ -1458,7 +1453,7 @@ async function reconstructHistoricalUnitCost(executor: InventoryExecutor, itemId
     physicalStock: inventoryCostPeriods.physicalStock,
     avgCostAfter: inventoryCostPeriods.avgCostAfter,
   }).from(inventoryCostPeriods)
-    .where(and(eq(inventoryCostPeriods.itemId, itemId), sql`DATE(${inventoryCostPeriods.cutoffAt}) < ${saleDate}`));
+    .where(and(eq(inventoryCostPeriods.itemId, itemId), ...(asOfTimestamp ? [sql`${inventoryCostPeriods.cutoffAt} <= ${new Date(asOfTimestamp)}`] : [sql`DATE(${inventoryCostPeriods.cutoffAt}) < ${saleDate}`])));
   const sales = await executor.select({
     saleDate: requests.requestDate,
     createdAt: requests.createdAt,
@@ -1475,7 +1470,7 @@ async function reconstructHistoricalUnitCost(executor: InventoryExecutor, itemId
     ...purchases.map((row) => ({ date: asOfTimestamp ? eventTime(row.createdAt, row.transactionDate) : String(row.transactionDate || '').slice(0, 10), order: Number(row.purchaseId), kind: 'purchase' as const, quantity: Number(row.quantity), price: Number(row.price), snapshot: row.avgCostAfter == null ? null : Number(row.avgCostAfter) })),
     ...sales.map((row, index) => ({ date: asOfTimestamp ? eventTime(row.createdAt, row.saleDate) : String(row.saleDate || '').slice(0, 10), order: 1_000_000_000 + index, kind: 'sale' as const, quantity: Number(row.quantity) })),
     ...cutoffs.map((row, index) => ({ date: asOfTimestamp ? eventTime(row.cutoffAt, null) : jakartaDate(row.cutoffAt), order: 2_000_000_000 + index, kind: 'cutoff' as const, stock: Number(row.physicalStock), cost: Number(row.avgCostAfter) })),
-  ].filter((event) => event.date && event.date <= saleDate);
+  ].filter((event) => event.date && event.date <= (asOfTimestamp || saleDate));
   events.sort((a, b) => a.date.localeCompare(b.date) || a.order - b.order);
 
   let stock = 0;
@@ -1547,6 +1542,36 @@ async function ensureStockOpnameTable() {
   await ensureInventoryPrecisionSchema();
 }
 
+// Requests still awaiting a warehouse decision when a period is closed. Their
+// goods have not left the warehouse yet, so they are counted in the next period,
+// not the one being closed. Surfaced as a warning before and after closing.
+export type PendingRequestAtClosing = { id: number; requestCode: string; requesterName: string; outletName: string | null; requestDate: string; pendingItems: number; pendingQuantity: number };
+export async function pendingRequestsAtClosing(executor: InventoryExecutor = db): Promise<{ count: number; requests: PendingRequestAtClosing[] }> {
+  await ensureAdminOutletSchema();
+  const rows = await executor.select({
+    id: requests.id,
+    requestCode: requests.requestCode,
+    requesterName: requests.requesterName,
+    outletName: outlets.outletName,
+    requestDate: requests.requestDate,
+    pendingItems: sql<number>`COUNT(${requestItems.id})`,
+    pendingQuantity: sql<number>`COALESCE(SUM(${requestItems.requestedQuantity}), 0)`,
+  }).from(requests)
+    .innerJoin(requestItems, eq(requestItems.requestId, requests.id))
+    .leftJoin(outlets, eq(outlets.id, requests.outletId))
+    .where(eq(requestItems.status, 'Pending'))
+    .groupBy(requests.id, requests.requestCode, requests.requesterName, outlets.outletName, requests.requestDate)
+    .orderBy(requests.id);
+  return {
+    count: rows.length,
+    requests: rows.map((row) => ({
+      id: Number(row.id), requestCode: String(row.requestCode), requesterName: String(row.requesterName),
+      outletName: row.outletName ? String(row.outletName) : null, requestDate: String(row.requestDate),
+      pendingItems: Number(row.pendingItems), pendingQuantity: Number(row.pendingQuantity),
+    })),
+  };
+}
+
 export async function saveStockOpname(data: {
   examinationDate: string;
   notes?: string;
@@ -1558,6 +1583,7 @@ export async function saveStockOpname(data: {
   await ensureInventoryAveragePrices();
   await ensureStockOpnameTable();
   await ensureFinanceSnapshotSchema();
+  await ensurePeriodSnapshotSchema();
   const physicalById = new Map(data.physicalStocks.map((entry) => [entry.itemId, entry.physicalStock]));
   if (physicalById.size !== data.physicalStocks.length) throw new Error('Daftar barang Stock Opname memiliki item duplikat');
   const createdBy = data.createdBy?.trim().slice(0, 100) || 'Warehouse';
@@ -1587,6 +1613,7 @@ export async function saveStockOpname(data: {
         };
       }
     }
+    await assertOpenPeriodDate(tx, data.examinationDate);
     const itemById = new Map(lockedItems.map((item) => [item.id, item]));
     for (const itemId of physicalById.keys()) {
       if (!itemById.has(itemId)) throw new Error(`Barang ID ${itemId} tidak ditemukan`);
@@ -1597,7 +1624,7 @@ export async function saveStockOpname(data: {
       const systemStock = Number(item.currentStock);
       const avgPurchasePriceBefore = Number(item.avgPurchasePrice || 0);
       const difference = physicalStock === null ? null : physicalStock - systemStock;
-      const avgPurchasePriceAfter = physicalStock === 0 ? 0 : avgPurchasePriceBefore;
+      const avgPurchasePriceAfter = physicalStock === null ? avgPurchasePriceBefore : Number(opnameAverage(physicalStock, avgPurchasePriceBefore.toFixed(6)));
       const adjustmentValue = difference === null ? 0 : Number((difference * avgPurchasePriceBefore).toFixed(6));
       return {
         itemId: item.id,
@@ -1724,7 +1751,12 @@ export async function saveStockOpname(data: {
     }
 
     await tx.update(stockOpnames).set({ itemsJson: JSON.stringify(opnameItems) }).where(eq(stockOpnames.id, id));
+    // Tutup buku: the period ending at this opname is stored permanently.
+    await saveSnapshot(tx, await loadLedger(tx), id, 'CLOSING', createdBy);
+    // Read inside the transaction: exactly the requests left open by this closing.
+    const pendingRequests = await pendingRequestsAtClosing(tx);
     return {
+      pendingRequests,
       id,
       examinationDate: data.examinationDate,
       notes: data.notes?.trim() || '',
@@ -2047,6 +2079,7 @@ export async function registerIncomingGoods(data: {
     }
 
     return await db.transaction(async (tx) => {
+      await assertOpenPeriodDate(tx, data.transactionDate);
       const [txResult] = await tx.insert(purchaseTransactions).values({
         transactionCode,
         vendorId: vendor.id,
@@ -2093,9 +2126,7 @@ export async function registerIncomingGoods(data: {
           await tx.update(items).set({
             vendorId: vendor.id,
             currentStock: newStock,
-            avgPurchasePrice: oldStock > 0
-              ? sql`ROUND(((${oldStock} * ${oldAverage}) + (${it.quantity} * ${it.price})) / ${newStock}, 6)`
-              : Number(Number(it.price).toFixed(6)),
+            avgPurchasePrice: Number(inventoryReceiptAverage(oldStock, oldAverage, it.quantity, String(it.price))),
           }).where(eq(items.id, existingItem.id));
           actualItemId = existingItem.id;
           const [updatedItem] = await tx.select({ avgPurchasePrice: items.avgPurchasePrice }).from(items).where(eq(items.id, actualItemId));
@@ -2151,6 +2182,13 @@ export async function registerIncomingGoods(data: {
       }
 
       // Retrieve all saved items for this purchase transaction
+      // A backdated receipt changes the average for everything after it in the
+      // open period: later receipts, the HPP of later sales and Inventory.
+      if (String(data.transactionDate).slice(0, 10) < todayJakarta()) {
+        const lines = await tx.select({ itemId: purchaseItems.itemId }).from(purchaseItems).where(eq(purchaseItems.purchaseId, purchase.id));
+        await repriceOpenPeriod(tx, lines.map((line) => line.itemId));
+      }
+
       const allTxItems = await tx
         .select({
           id: purchaseItems.id,
@@ -2275,6 +2313,8 @@ export async function generateNextRequestCode(): Promise<string> {
   return code;
 }
 
+// The outlet is fixed on the request when it is created (the requester's
+// placement at that moment); reports never look it up from the user later.
 export async function createRequest(data: {
   userId?: number;
   outletId: number;
@@ -2287,9 +2327,11 @@ export async function createRequest(data: {
     quantity: number;
     price: number;
   }>;
-}) {
+}, executor: InventoryExecutor = db) {
   try {
+    if (!Number.isSafeInteger(data.outletId) || data.outletId <= 0) throw new Error('Request wajib memiliki outlet.');
     await ensureAdminOutletSchema();
+    await assertOpenPeriodDate(executor, data.requestDate);
     let requestCode = data.requestCode?.trim();
     if (!requestCode) {
       requestCode = await generateNextRequestCode();
@@ -2308,7 +2350,7 @@ export async function createRequest(data: {
       totalAmount += it.price * it.quantity;
     }
 
-    const [reqResult] = await db.insert(requests).values({
+    const [reqResult] = await executor.insert(requests).values({
       requestCode,
       userId: data.userId || null,
       outletId: data.outletId,
@@ -2318,10 +2360,10 @@ export async function createRequest(data: {
       status: 'Pending',
       totalAmount,
     });
-    const [reqRecord] = await db.select().from(requests).where(eq(requests.id, reqResult.insertId));
+    const [reqRecord] = await executor.select().from(requests).where(eq(requests.id, reqResult.insertId));
 
     for (const it of data.items) {
-      await db.insert(requestItems).values({
+      await executor.insert(requestItems).values({
         requestId: reqRecord.id,
         itemId: it.itemId,
         requestedQuantity: it.quantity,
@@ -2561,6 +2603,19 @@ export async function updateRequestItemStatus(
         .where(eq(requestItems.id, requestItemId));
     }
 
+    // A request is processed once. Unresolved lines are explicitly closed as
+    // rejected so they cannot remain pending after a partial decision. This runs
+    // before the status is recalculated, so the status describes the lines as
+    // they finally are: a request whose every line ended up rejected is
+    // 'Rejected', not 'Partially Approved'.
+    const processedAt = todayJakarta();
+    await tx.update(requestItems).set({
+      status: 'Rejected',
+      approvedQuantity: 0,
+      approvedBy: staffName,
+      approvedAt: processedAt,
+    }).where(and(eq(requestItems.requestId, requestId), eq(requestItems.status, 'Pending')));
+
     // Recalculate overall request status
     const allItemsInReq = await tx
       .select({
@@ -2596,16 +2651,6 @@ export async function updateRequestItemStatus(
       }
     }
 
-    // A request is processed once. Unresolved lines are explicitly closed as
-    // rejected so they cannot remain pending after a partial decision.
-    const processedAt = todayJakarta();
-    await tx.update(requestItems).set({
-      status: 'Rejected',
-      approvedQuantity: 0,
-      approvedBy: staffName,
-      approvedAt: processedAt,
-    }).where(and(eq(requestItems.requestId, requestId), eq(requestItems.status, 'Pending')));
-
     await tx.update(requests).set({ status: newStatus }).where(eq(requests.id, requestId));
 
     return { success: true, newStatus };
@@ -2616,6 +2661,40 @@ export async function updateRequestItemStatus(
   }
 }
 
+// A closed period is never reopened. A correction of it is a stock movement in
+// the open period that references the source opname and states the reason.
+export async function recordPeriodCorrection(data: { itemId: number; quantity: number; sourceOpnameId: number; reason: string; createdBy: string; createdByUserId?: number | null }) {
+  await ensureInventoryPrecisionSchema();
+  await ensurePeriodSnapshotSchema();
+  return db.transaction(async (tx) => {
+    const [item] = await tx.select({ id: items.id, currentStock: items.currentStock, avgPurchasePrice: items.avgPurchasePrice })
+      .from(items).where(eq(items.id, data.itemId)).for('update');
+    if (!item) throw new Error('Barang tidak ditemukan');
+    const [source] = await tx.select({ id: financePeriodSnapshots.id }).from(financePeriodSnapshots)
+      .where(eq(financePeriodSnapshots.stockOpnameId, data.sourceOpnameId)).limit(1);
+    if (!source) throw new Error('Periode asal belum ditutup (snapshot tidak ditemukan).');
+    const stockAfter = Number(item.currentStock) + data.quantity;
+    if (stockAfter < 0) throw new Error(`Koreksi membuat stok negatif (stok saat ini ${item.currentStock}).`);
+    const unitCost = Number(item.avgPurchasePrice || 0);
+    await tx.update(items).set({ currentStock: stockAfter }).where(eq(items.id, item.id));
+    const referenceId = `KOR-SO-${data.sourceOpnameId}`;
+    const [insert] = await tx.insert(stockMovements).values({
+      itemId: item.id,
+      movementType: PERIOD_CORRECTION,
+      quantity: data.quantity,
+      stockBefore: Number(item.currentStock),
+      stockAfter,
+      unitCost,
+      adjustmentValue: Number((data.quantity * unitCost).toFixed(6)),
+      notes: data.reason,
+      createdByUserId: data.createdByUserId || null,
+      referenceId,
+      createdBy: data.createdBy.slice(0, 100),
+    });
+    return { id: Number(insert.insertId), itemId: item.id, quantity: data.quantity, stockBefore: Number(item.currentStock), stockAfter, referenceId, reason: data.reason };
+  });
+}
+
 // Batch Approve All Items in a Request
 export async function approveAllRequestItems(
   requestId: number,
@@ -2623,6 +2702,8 @@ export async function approveAllRequestItems(
   staffName: string = 'Staff Gudang'
 ) {
   try {
+    await ensureInventoryAveragePrices();
+    await ensureFinanceSnapshotSchema();
     return await db.transaction(async (tx) => {
     const [lockedRequest] = await tx.select({ id: requests.id, status: requests.status })
       .from(requests).where(eq(requests.id, requestId)).for('update');
@@ -2636,7 +2717,9 @@ export async function approveAllRequestItems(
         requestedQuantity: requestItems.requestedQuantity,
         approvedQuantity: requestItems.approvedQuantity,
         status: requestItems.status,
+        price: requestItems.price,
         currentStock: items.currentStock,
+        avgPurchasePrice: items.avgPurchasePrice,
         itemName: items.itemName,
         requestCode: requests.requestCode,
       })
@@ -2699,6 +2782,12 @@ export async function approveAllRequestItems(
           })
           .where(eq(items.id, it.itemId));
 
+        // HPP is fixed at the weighted average of the moment of sale.
+        const [costHistory] = await tx.select({ id: purchaseItems.id }).from(purchaseItems)
+          .where(and(eq(purchaseItems.itemId, it.itemId), sql`${purchaseItems.quantity} > 0`, sql`${purchaseItems.price} > 0`))
+          .limit(1);
+        const unitCostSnapshot = costHistory && Number(it.avgPurchasePrice ?? 0) > 0 ? Number(it.avgPurchasePrice) : null;
+
         // Update request item
         await tx
           .update(requestItems)
@@ -2707,8 +2796,26 @@ export async function approveAllRequestItems(
             status: 'Approved',
             approvedBy: staffName,
             approvedAt: today,
+            unitCostSnapshot,
           })
           .where(eq(requestItems.id, it.id));
+
+        const [activeCostPeriod] = await tx.select({ id: inventoryCostPeriods.id }).from(inventoryCostPeriods)
+          .where(eq(inventoryCostPeriods.itemId, it.itemId))
+          .orderBy(desc(inventoryCostPeriods.cutoffAt), desc(inventoryCostPeriods.id)).limit(1);
+        const salesAmount = qtyToApprove * Number(it.price || 0);
+        const cogsAmount = unitCostSnapshot == null ? null : Number((qtyToApprove * unitCostSnapshot).toFixed(6));
+        await tx.insert(inventoryCostSnapshots).values({
+          requestItemId: it.id,
+          itemId: it.itemId,
+          cutoffPeriodId: activeCostPeriod?.id || null,
+          approvedQuantity: qtyToApprove,
+          unitCost: unitCostSnapshot,
+          salesAmount,
+          cogsAmount,
+          profitAmount: cogsAmount == null ? null : Number((salesAmount - cogsAmount).toFixed(6)),
+          source: unitCostSnapshot == null ? 'MISSING' : 'SALE_APPROVAL',
+        });
 
         // Catat mutasi barang keluar
         await tx.insert(stockMovements).values({
@@ -2894,18 +3001,20 @@ export async function getUserDashboardStats(userId?: number) {
   }
 }
 
-export async function getWarehouseDashboardStats(startDate?: string, endDate?: string, itemIds?: number[], outletIds?: number[], categories?: ItemCategory[], outletNames?: string[], financePeriod?: FinancePeriod) {
+// Finance report for one Stock Opname period (default: all periods). There is
+// no free date range: a period is the unit, so its numbers can be locked.
+export async function getWarehouseDashboardStats(options: { itemIds?: number[]; outletIds?: number[]; categories?: ItemCategory[]; financePeriod?: FinancePeriod; ledger?: LedgerData } = {}) {
+  const { itemIds, outletIds, categories, financePeriod } = options;
   try {
-    await ensureFinanceSnapshotSchema();
-    await ensureInventoryAveragePrices();
+    // Read-only report: never initialize schema or overwrite stored averages.
     // 1. Total Stock
     const stockSumRows = await db
       .select({ total: sql<number>`COALESCE(SUM(${items.currentStock}), 0)` })
       .from(items);
     const totalStock = Number(stockSumRows[0]?.total || 0);
 
-    // 2. Total Incoming (pcs)
-    let inMovements = await db
+    // 2. Latest stock movements
+    const inMovements = await db
       .select({
         id: stockMovements.id,
         movementType: stockMovements.movementType,
@@ -2918,27 +3027,6 @@ export async function getWarehouseDashboardStats(startDate?: string, endDate?: s
       .leftJoin(items, eq(stockMovements.itemId, items.id))
       .orderBy(desc(stockMovements.createdAt), desc(stockMovements.id));
 
-    if (startDate) {
-      inMovements = inMovements.filter((m) => {
-        const dateStr = m.createdAt ? jakartaDate(m.createdAt) : '';
-        return dateStr >= startDate;
-      });
-    }
-    if (endDate) {
-      inMovements = inMovements.filter((m) => {
-        const dateStr = m.createdAt ? jakartaDate(m.createdAt) : '';
-        return dateStr <= endDate;
-      });
-    }
-
-    const barangMasukPcs = inMovements
-      .filter((m) => m.movementType === 'IN')
-      .reduce((sum, m) => sum + m.quantity, 0);
-
-    const barangKeluarPcs = inMovements
-      .filter((m) => m.movementType === 'OUT')
-      .reduce((sum, m) => sum + m.quantity, 0);
-
     // 3. Request Pending
     const pendingReqRows = await db
       .select({ count: sql<number>`count(*)` })
@@ -2946,187 +3034,65 @@ export async function getWarehouseDashboardStats(startDate?: string, endDate?: s
       .where(eq(requests.status, 'Pending'));
     const requestPending = Number(pendingReqRows[0]?.count || 0);
 
-    // 4. Riwayat Masuk (Total Belanja Masuk Gudang)
-    let pTxs = await db
-      .select({
-        totalAmount: purchaseTransactions.totalAmount,
-        transactionDate: purchaseTransactions.transactionDate,
-      })
-      .from(purchaseTransactions);
-    if (startDate || endDate) pTxs = pTxs.filter((t) => isWithinDateRange(t.transactionDate, startDate, endDate));
-    const totalIncomingAmount = pTxs.reduce((sum, t) => sum + Number(t.totalAmount || 0), 0);
-
     // 5. Recent transactions list for dashboard
     const recentTransactions = inMovements.slice(0, 8).map((m) => ({
       id: m.id,
       itemName: m.itemName || 'Barang',
       quantity: m.quantity,
-      movementType: m.movementType as 'IN' | 'OUT' | 'STOCK_OPNAME_ADJUSTMENT',
-      typeLabel: m.movementType === 'IN' ? 'Barang Masuk' : m.movementType === 'OUT' ? 'Barang Keluar' : 'Penyesuaian Stock Opname',
+      movementType: m.movementType as 'IN' | 'OUT' | 'STOCK_OPNAME_ADJUSTMENT' | 'PERIOD_CORRECTION',
+      typeLabel: m.movementType === 'IN' ? 'Barang Masuk' : m.movementType === 'OUT' ? 'Barang Keluar' : m.movementType === PERIOD_CORRECTION ? 'Koreksi Periode' : 'Penyesuaian Stock Opname',
       date: m.createdAt ? new Date(m.createdAt).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '16 Sep 2026',
       referenceId: m.referenceId,
     }));
 
-    // 6. Item Profitability Calculation (Warehouse Dashboard Improvement)
-    // - Harga rata-rata pembelian menggunakan field Inventory items.avgPurchasePrice
-    // - Harga katalog diambil dari master katalog barang (items.price)
-    // - Kuantitas diambil dari transaksi barang ke outlet yang sudah disetujui (requestItems.status = 'Approved')
+    // 6. Item rows per Stock Opname period (tutup buku). Closed periods are read
+    // from their permanent snapshot; the open period is replayed from its own
+    // transactions. Live Inventory stock/average belongs to Warehouse pages only.
     const allItems = await db.select().from(items).orderBy(items.itemName);
     const itemList = allItems.map((it) => ({ id: it.id, itemName: it.itemName }));
-
-    let allReqs = await db.select().from(requests);
-    if (startDate || endDate) {
-      allReqs = allReqs.filter((r) => isWithinDateRange(r.requestDate, startDate, endDate));
-    }
-    if (financePeriod?.status !== 'All' && financePeriod) {
-      const periodStart = financePeriod.startAt ? new Date(financePeriod.startAt).getTime() : null;
-      const periodEnd = financePeriod.endAt ? new Date(financePeriod.endAt).getTime() : null;
-      allReqs = allReqs.filter((request) => {
-        const created = transactionTimestamp(request.createdAt, request.requestDate);
-        return created != null && (periodStart == null || created >= periodStart) && (periodEnd == null || created < periodEnd);
-      });
-    }
-    if (outletIds?.length) {
-      const selectedOutlets = new Set(outletIds);
-      allReqs = allReqs.filter((r) => r.outletId != null && selectedOutlets.has(Number(r.outletId)));
-    } else if (outletNames?.length) {
-      const selectedOutlets = new Set(outletNames);
-      allReqs = allReqs.filter((r) => Array.from(selectedOutlets).some(
-        (outlet) => r.requesterName === outlet || r.requesterName.startsWith(`${outlet} (`)
-      ));
-    }
-
-    const validReqIds = new Set(allReqs.map((r) => r.id));
-
-    const approvedReqItems = await db
-      .select({
-        id: requestItems.id,
-        requestId: requestItems.requestId,
-        itemId: requestItems.itemId,
-        approvedQuantity: requestItems.approvedQuantity,
-        price: requestItems.price,
-        approvedAt: requestItems.approvedAt,
-        status: requestItems.status,
-        unitCostSnapshot: requestItems.unitCostSnapshot,
-      })
-      .from(requestItems)
-      .where(and(eq(requestItems.status, 'Approved'), sql`${requestItems.approvedQuantity} > 0`));
-
-    // Filter by valid requests in date range with approved quantity > 0
-    const filteredReqItems = approvedReqItems.filter(
-      (ri) => validReqIds.has(ri.requestId) && ri.approvedQuantity > 0
-    );
-
-    const snapshotRows = filteredReqItems.length ? await db.select({
-      requestItemId: inventoryCostSnapshots.requestItemId,
-      unitCost: inventoryCostSnapshots.unitCost,
-    }).from(inventoryCostSnapshots).where(inArray(inventoryCostSnapshots.requestItemId, filteredReqItems.map((row) => row.id))) : [];
-    const costSnapshotByRequestItem = new Map(snapshotRows.map((row) => [row.requestItemId, row.unitCost == null ? null : Number(row.unitCost)]));
-    const requestDateById = new Map(allReqs.map((row) => [row.id, String(row.requestDate || '').slice(0, 10)]));
-
-    // Aggregate only approved quantities and their persisted transaction prices.
-    const qtyByItemId = new Map<number, number>();
-    const salesAmountByItemId = new Map<number, number>();
-    const cogsByItemId = new Map<number, number>();
-    const missingCostByItemId = new Map<number, number>();
-    const resolvedCostCache = new Map<string, number | null>();
-    for (const ri of filteredReqItems) {
-      const current = qtyByItemId.get(ri.itemId) || 0;
-      qtyByItemId.set(ri.itemId, current + ri.approvedQuantity);
-      const salesAmount = salesAmountByItemId.get(ri.itemId) || 0;
-      salesAmountByItemId.set(ri.itemId, salesAmount + ri.approvedQuantity * Number(ri.price || 0));
-      const saleDate = requestDateById.get(ri.requestId) || '';
-      const snapshotCost = costSnapshotByRequestItem.get(ri.id);
-      let unitCost = snapshotCost != null && snapshotCost > 0
-        ? snapshotCost
-        : ri.unitCostSnapshot == null || Number(ri.unitCostSnapshot) <= 0 ? null : Number(ri.unitCostSnapshot);
-      const cacheKey = `${ri.itemId}:${saleDate}`;
-      if (unitCost == null && saleDate) {
-        if (resolvedCostCache.has(cacheKey)) unitCost = resolvedCostCache.get(cacheKey) ?? null;
-        else {
-          unitCost = await reconstructHistoricalUnitCost(db, ri.itemId, saleDate);
-          resolvedCostCache.set(cacheKey, unitCost);
-        }
-      }
-      if (unitCost == null || !Number.isFinite(unitCost)) {
-        missingCostByItemId.set(ri.itemId, (missingCostByItemId.get(ri.itemId) || 0) + ri.approvedQuantity);
-      } else {
-        cogsByItemId.set(ri.itemId, (cogsByItemId.get(ri.itemId) || 0) + ri.approvedQuantity * unitCost);
-      }
-    }
-
-    // Aggregate receiving lines independently from outlet quantities, joined by Inventory item ID.
-    const purchaseConditions = [sql`${purchaseItems.quantity} > 0`, sql`${purchaseItems.price} >= 0`];
-    if (startDate) purchaseConditions.push(sql`LEFT(${purchaseTransactions.transactionDate}, 10) >= ${startDate}`);
-    if (endDate) purchaseConditions.push(sql`LEFT(${purchaseTransactions.transactionDate}, 10) <= ${endDate}`);
-    if (financePeriod?.status !== 'All' && financePeriod?.startAt) purchaseConditions.push(sql`${purchaseTransactions.createdAt} >= ${new Date(financePeriod.startAt)}`);
-    if (financePeriod?.status !== 'All' && financePeriod?.endAt) purchaseConditions.push(sql`${purchaseTransactions.createdAt} < ${new Date(financePeriod.endAt)}`);
-    if (itemIds?.length) purchaseConditions.push(inArray(purchaseItems.itemId, itemIds));
-    if (categories?.length) {
-      const categoryItemIds = allItems.filter((it) => categories.includes(it.category as ItemCategory)).map((it) => it.id);
-      purchaseConditions.push(categoryItemIds.length ? inArray(purchaseItems.itemId, categoryItemIds) : sql`1 = 0`);
-    }
-    const purchaseTotals = await db.select({
-      itemId: purchaseItems.itemId,
-      quantity: sql<number>`SUM(${purchaseItems.quantity})`,
-      amount: sql<number>`SUM(${purchaseItems.quantity} * ${purchaseItems.price})`,
-    }).from(purchaseItems)
-      .innerJoin(purchaseTransactions, eq(purchaseItems.purchaseId, purchaseTransactions.id))
-      .where(and(...purchaseConditions))
-      .groupBy(purchaseItems.itemId);
-    const purchasesByItemId = new Map(purchaseTotals.map((row) => [row.itemId, row]));
-
-    const periodCostDate = financePeriod?.endAt
-      ? new Date(new Date(financePeriod.endAt).getTime() - 1).toISOString()
-      : todayJakarta();
-    const financeAverageByItem = new Map<number, number | null>();
-    for (const item of allItems) {
-      const storedAverage = item.avgPurchasePrice == null ? 0 : Number(item.avgPurchasePrice);
-      if (financePeriod?.status === 'All') {
-        const purchase = purchasesByItemId.get(item.id);
-        const quantity = Number(purchase?.quantity || 0);
-        const amount = Number(purchase?.amount || 0);
-        financeAverageByItem.set(item.id, quantity > 0 && amount > 0 ? amount / quantity : storedAverage > 0 ? storedAverage : null);
-      } else if (financePeriod?.status === 'Closed' && financePeriod.endAt) {
-        financeAverageByItem.set(item.id, await reconstructHistoricalUnitCost(db, item.id, periodCostDate.slice(0, 10), periodCostDate));
-      } else {
-        financeAverageByItem.set(item.id, storedAverage > 0 && Number.isFinite(storedAverage)
-          ? storedAverage
-          : await reconstructHistoricalUnitCost(db, item.id, periodCostDate.slice(0, 10), periodCostDate.includes('T') ? periodCostDate : undefined));
-      }
-    }
+    const ledger = options.ledger ?? await loadLedger();
+    const periodKey = !financePeriod || financePeriod.status === 'All' ? 'all' as const : financePeriod.status === 'Open' ? null : financePeriod.opnameId;
+    const periodRows = ledgerRows(ledger, periodKey);
+    const periodLock = typeof periodKey === 'number' ? ledger.periods.find((p) => p.opnameId === periodKey)?.snapshot ?? null : null;
+    // Goods in/out and receipts of the same period as the item rows.
+    const periodTotals = [...periodRows.values()];
+    const barangMasukPcs = periodTotals.reduce((sum, row) => sum + row.inQuantity, 0);
+    const barangKeluarPcs = periodTotals.reduce((sum, row) => sum + row.soldQuantity, 0);
+    const totalIncomingAmount = periodTotals.reduce((sum, row) => sum + Number(row.inValue), 0);
 
     let itemProfitability = allItems.map((it) => {
-      const qty = qtyByItemId.get(it.id) || 0;
-      const catalogPrice = it.price || 0;
-      const purchase = purchasesByItemId.get(it.id);
-      const purchaseQuantity = Number(purchase?.quantity ?? 0);
-      const totalPurchaseAmount = Number(purchase?.amount ?? 0);
-      // Finance uses the immutable sale cost snapshot, or a date-valid cost-history
-      // reconstruction for legacy sales. Current inventory average is display-only.
-      const inventoryAverage = financeAverageByItem.get(it.id) ?? null;
-      const avgPurchasePrice = inventoryAverage != null && Number.isFinite(inventoryAverage) ? inventoryAverage : 0;
-      const totalSellingAmount = salesAmountByItemId.get(it.id) || 0;
-      const missingCostQuantity = missingCostByItemId.get(it.id) || 0;
-      const totalCogsAmount = cogsByItemId.get(it.id) || 0;
-      const totalProfit = missingCostQuantity > 0 ? null : totalSellingAmount - totalCogsAmount;
-
+      // Stock columns stay warehouse-wide; sales columns follow the outlet filter.
+      const p = forOutlets(periodRows.get(it.id)!, outletIds);
       return {
         itemId: it.id,
         itemName: it.itemName,
         category: it.category,
         itemCode: it.itemCode,
-        currentStock: it.currentStock,
-        quantity: qty,
-        purchaseQuantity,
-        totalCogsAmount,
-        missingCostQuantity,
-        avgPurchasePrice,
-        totalPurchaseAmount,
-        catalogPrice,
-        totalSellingAmount,
-        averageSellingPrice: qty ? totalSellingAmount / qty : 0,
-        totalProfit,
+        openingStock: p.openingStock,
+        openingAvgCost: p.openingAverage,
+        purchaseQuantity: p.inQuantity,
+        totalPurchaseAmount: Number(p.inValue),
+        correctionQuantity: p.correctionQuantity,
+        quantity: p.soldQuantity,
+        systemStock: p.systemStock,
+        physicalStock: p.physicalStock,
+        difference: p.difference,
+        differenceValue: p.differenceValue,
+        closingStock: p.closingStock,
+        closingValue: p.closingValue,
+        periodAverage: p.closingAverage,
+        avgPurchasePrice: Number(p.closingAverage ?? 0),
+        catalogPrice: it.price || 0,
+        totalSellingAmountExact: p.sales,
+        totalSellingAmount: Number(p.sales),
+        averageSellingPrice: p.soldQuantity ? Number(p.sales) / p.soldQuantity : 0,
+        totalCogsAmountExact: p.cogs,
+        totalCogsAmount: Number(p.cogs ?? 0),
+        missingCostQuantity: p.missingCostQuantity,
+        totalProfitExact: p.profit,
+        totalProfit: p.profit === null ? null : Number(p.profit),
+        // Per outlet (outlet 0 = sales without an outlet), already limited to the filter.
+        outletBreakdown: p.outlets,
       };
     });
 
@@ -3157,12 +3123,10 @@ export async function getWarehouseDashboardStats(startDate?: string, endDate?: s
     const hasMissingCostData = missingCostQuantity > 0;
     const totalProfit = hasMissingCostData ? null : totalSellingAmount - totalCogsAmount;
     const manualEntries = await getManualFinanceEntries({
-      startDate: financePeriod ? undefined : startDate,
-      endDate: financePeriod ? undefined : endDate,
       startAt: financePeriod?.status !== 'All' ? financePeriod?.startAt || undefined : undefined,
       endAt: financePeriod?.status !== 'All' ? financePeriod?.endAt || undefined : undefined,
       outletIds,
-    });
+    }, false);
     const manualByCode = new Map<string, number>();
     for (const entry of manualEntries) manualByCode.set(entry.accountCode, (manualByCode.get(entry.accountCode) || 0) + entry.amount);
     const otherIncome = manualByCode.get('OI') || 0;
@@ -3179,18 +3143,7 @@ export async function getWarehouseDashboardStats(startDate?: string, endDate?: s
       return { category, code, amount: rows.reduce((sum, item) => sum + Number(item.totalCogsAmount || 0), 0), missingCostQuantity: rows.reduce((sum, item) => sum + Number((item as any).missingCostQuantity || 0), 0) };
     });
 
-    const adjustmentRows = await db.select({ cutoffAt: inventoryCostPeriods.cutoffAt, adjustmentValue: inventoryCostPeriods.adjustmentValue })
-      .from(inventoryCostPeriods).where(eq(inventoryCostPeriods.status, 'Closed'));
-    const periodStartMs = financePeriod?.startAt ? new Date(financePeriod.startAt).getTime() : null;
-    const periodEndMs = financePeriod?.endAt ? new Date(financePeriod.endAt).getTime() : null;
-    const inventoryAdjustmentAmount = adjustmentRows.reduce((sum, row) => {
-      if (financePeriod?.status === 'All') return sum + Number(row.adjustmentValue || 0);
-      const timestamp = transactionTimestamp(row.cutoffAt, null);
-      if (timestamp == null || (periodStartMs != null && timestamp < periodStartMs)) return sum;
-      if (periodEndMs != null && timestamp > periodEndMs) return sum;
-      if (financePeriod?.status === 'Open' && periodStartMs != null && timestamp <= periodStartMs) return sum;
-      return sum + Number(row.adjustmentValue || 0);
-    }, 0);
+    const inventoryAdjustmentAmount = [...periodRows.values()].reduce((sum, row) => sum + Number(row.differenceValue ?? 0), 0);
 
     return {
       totalStock,
@@ -3202,6 +3155,7 @@ export async function getWarehouseDashboardStats(startDate?: string, endDate?: s
       totalCogsAmount,
       inventoryAdjustmentAmount,
       financePeriod: financePeriod || null,
+      periodLock,
       missingCostQuantity,
       hasMissingCostData,
       totalIncomingAmount,
@@ -3229,25 +3183,7 @@ export async function getWarehouseDashboardStats(startDate?: string, endDate?: s
       categoryPurchaseTotals,
     };
   } catch (err) {
-    console.error('getWarehouseDashboardStats error:', err);
-    return {
-      totalStock: 0,
-      barangMasukPcs: 0,
-      barangKeluarPcs: 0,
-      requestPending: 0,
-      recentTransactions: [],
-      totalPurchaseAmount: 0,
-      totalIncomeReceived: null,
-      totalSellingAmount: 0,
-      totalProfit: 0,
-      totalQuantity: 0,
-      itemProfitability: [],
-      itemList: [],
-      categoryPurchaseTotals: ITEM_CATEGORIES.map((category) => ({
-        category,
-        code: ITEM_CATEGORY_CODES[category],
-        totalAmount: 0,
-      })),
-    };
+    // Never turn query/schema failures into a successful zero-purchase report.
+    throw new Error('Data Finance Warehouse gagal dibaca. Periksa query dan schema sumber.');
   }
 }

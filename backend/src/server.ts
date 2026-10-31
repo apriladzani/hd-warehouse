@@ -1,4 +1,9 @@
 import 'dotenv/config';
+import { createAdminSessionAccess } from './finance/adminSessionAccess.ts';
+import { dashboardSessionAccess } from './finance/dashboardSessionAccess.ts';
+import { pool as operationalPool } from './db/index.ts';
+import { mysqlSelectExecutor } from './finance/WarehouseFinanceDataSource.ts';
+import { createOperationalSessions } from './finance/operationalSession.ts';
 import express from 'express';
 import type { Request, Response } from 'express';
 import cors from 'cors';
@@ -28,7 +33,6 @@ import {
   resetFinancePassword,
   createFinanceAccessSession,
   validateFinanceAccessSession,
-  getFinanceAccessSessionSeconds,
   revokeFinanceAccessSession,
   getFinanceAccessLock,
   recordFinanceAccessFailure,
@@ -64,19 +68,23 @@ import {
   voidManualFinanceEntry,
   FINANCE_MANUAL_ACCOUNT_CODES,
   ITEM_CATEGORIES,
-  migrateLegacyUserRoles,
   getStockOpnameHistory,
   saveStockOpname,
+  pendingRequestsAtClosing,
+  recordPeriodCorrection,
   registerHDReceiving,
   registerUser,
 } from './db/repository.ts';
+import { loadLedger } from './db/periodClosing.ts';
+import { createFinanceScope, outletView } from './finance/outletScope.ts';
 import type { ItemCategory } from './db/repository.ts';
 import { canAccessDashboard, canReadFinanceDashboard } from './dashboardAccess.ts';
+import { mountFinanceReadOnly } from './finance/mount.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
+export const app = express();
 const PORT = Number(
   process.env.BACKEND_PORT ||
   (process.env.PORT && process.env.PORT !== '3000' ? process.env.PORT : 5001)
@@ -89,29 +97,16 @@ const todayJakarta = () => {
   return `${part('year')}-${part('month')}-${part('day')}`;
 };
 
+// A transaction dated in a closed period is a conflict, not a server failure.
+const errorStatus = (err: any) => /sudah ditutup\. Gunakan form koreksi\./.test(String(err?.message)) ? 409 : 500;
+
 app.use(cors());
 app.use(express.json());
 app.set('trust proxy', 1);
+const operationalSessions = createOperationalSessions(mysqlSelectExecutor(operationalPool));
+const financeReadAuth = mountFinanceReadOnly(app, undefined, operationalSessions);
 
-async function getAdminUser(req: Request, res: Response) {
-  const email = String(req.header('X-Auth-Email') || '');
-  const password = String(req.header('X-Auth-Password') || '');
-  if (!email || !password) {
-    res.status(401).json({ error: 'Autentikasi diperlukan' });
-    return null;
-  }
-  try {
-    const user = await authenticateUser(email, password);
-    if (!user || String(user.role).toUpperCase() !== 'ADMIN') {
-      res.status(403).json({ error: 'Akses administrasi hanya untuk role Admin' });
-      return null;
-    }
-    return user;
-  } catch {
-    res.status(403).json({ error: 'Akses administrasi hanya untuk role Admin' });
-    return null;
-  }
-}
+const getAdminUser = createAdminSessionAccess(operationalSessions.identity);
 
 const publicUser = (user: any) => ({
   id: user.id,
@@ -139,16 +134,17 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     if (!email || !password) {
       return res.status(400).json({ error: 'Email dan password wajib diisi' });
     }
-    const user = await authenticateUser(email, password);
+    const user = await operationalSessions.login(req, res, email, password);
     if (!user) {
       return res.status(401).json({ error: 'Email atau password salah' });
     }
-    res.json({ user });
+    res.json({ user: publicUser(user) });
   } catch (err: any) {
-    console.error('Login error:', err);
-    res.status(500).json({ error: err.message || 'Gagal login' });
+    res.status(503).json({ error: 'Sumber autentikasi operasional tidak tersedia.' });
   }
 });
+
+app.post('/api/auth/logout', (req, res) => { operationalSessions.logout(req, res); res.json({ success: true }); });
 
 app.post('/api/auth/register', async (req: Request, res: Response) => {
   try {
@@ -185,9 +181,9 @@ app.get('/api/outlets', async (_req: Request, res: Response) => {
 
 app.get('/api/outlet/profile', async (req: Request, res: Response) => {
   try {
-    const account = await authenticateUser(String(req.header('X-Auth-Email') || ''), String(req.header('X-Auth-Password') || ''));
-    if (!account) return res.status(401).json({ error: 'Autentikasi diperlukan' });
-    if (String(account.role).toUpperCase() !== 'OUTLET' || Number(account.isActive) === 0) {
+    const account = await operationalSessions.identity(req);
+    if (!account) return res.status(401).json({ error: 'Sesi login tidak tersedia atau berakhir. Silakan login kembali.' });
+    if (account.role !== 'OUTLET') {
       return res.status(403).json({ error: 'Akses hanya untuk akun Outlet aktif' });
     }
     const profile = await getOutletRequestProfile(Number(account.id));
@@ -215,6 +211,15 @@ app.get('/api/inventory/stock-opname', async (_req: Request, res: Response) => {
     res.json({ history });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Gagal memuat riwayat Stock Opname' });
+  }
+});
+
+// Checked before closing so the warning can be shown while it still can be acted on.
+app.get('/api/inventory/stock-opname/pending-requests', async (_req: Request, res: Response) => {
+  try {
+    res.json(await pendingRequestsAtClosing());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Gagal memeriksa request yang belum di-approve' });
   }
 });
 
@@ -248,7 +253,7 @@ app.post('/api/inventory/stock-opname', async (req: Request, res: Response) => {
     });
     res.status(201).json({ opname });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Gagal menyimpan Stock Opname' });
+    res.status(errorStatus(err)).json({ error: err.message || 'Gagal menyimpan Stock Opname' });
   }
 });
 
@@ -430,7 +435,7 @@ app.post('/api/inventory/incoming', async (req: Request, res: Response) => {
     res.json({ success: true, purchase });
   } catch (err: any) {
     console.error('Incoming goods error:', err);
-    res.status(500).json({ error: err.message || 'Gagal menyimpan barang masuk' });
+    res.status(errorStatus(err)).json({ error: err.message || 'Gagal menyimpan barang masuk' });
   }
 });
 
@@ -451,7 +456,7 @@ app.post('/api/inventory/hd-receiving', async (req: Request, res: Response) => {
     res.json({ success: true, purchases });
   } catch (err: any) {
     console.error('HD Receiving error:', err);
-    res.status(500).json({ error: err.message || 'Gagal menyimpan penerimaan HD R&S' });
+    res.status(errorStatus(err)).json({ error: err.message || 'Gagal menyimpan penerimaan HD R&S' });
   }
 });
 
@@ -485,9 +490,9 @@ app.get('/api/requests/:id', async (req: Request, res: Response) => {
 
 app.post('/api/requests', async (req: Request, res: Response) => {
   try {
-    const account = await authenticateUser(String(req.header('X-Auth-Email') || ''), String(req.header('X-Auth-Password') || ''));
-    if (!account) return res.status(401).json({ error: 'Autentikasi diperlukan' });
-    if (String(account.role).toUpperCase() !== 'OUTLET' || Number(account.isActive) === 0) {
+    const account = await operationalSessions.identity(req);
+    if (!account) return res.status(401).json({ error: 'Sesi login tidak tersedia atau berakhir. Silakan login kembali.' });
+    if (account.role !== 'OUTLET') {
       return res.status(403).json({ error: 'Hanya akun Outlet aktif yang dapat membuat request' });
     }
     const assignment = await getOutletRequestProfile(Number(account.id));
@@ -505,7 +510,7 @@ app.post('/api/requests', async (req: Request, res: Response) => {
     });
     res.json({ success: true, request: newReq });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Gagal membuat permintaan' });
+    res.status(errorStatus(err)).json({ error: err.message || 'Gagal membuat permintaan' });
   }
 });
 
@@ -593,12 +598,11 @@ app.get('/api/dashboard/user-stats', async (req: Request, res: Response) => {
   }
 });
 
-app.get('/api/dashboard/warehouse-ops-stats', async (req: Request, res: Response) => {
+app.get('/api/dashboard/warehouse-ops-stats', dashboardSessionAccess(async (req) => {
+  const user = await operationalSessions.identity(req);
+  return user ? { role: user.role, warehouseGateVerified: false } : null;
+}), async (req: Request, res: Response) => {
   try {
-    const user = await authenticateUser(String(req.header('X-Auth-Email') || ''), String(req.header('X-Auth-Password') || ''));
-    if (!user || !canAccessDashboard(String(user.role), 'WAREHOUSE')) {
-      return res.status(403).json({ error: 'Akses dashboard operasional hanya untuk role Warehouse' });
-    }
     const startDate = req.query.startDate ? String(req.query.startDate) : undefined;
     const endDate = req.query.endDate ? String(req.query.endDate) : undefined;
     const [items, purchases] = await Promise.all([
@@ -627,9 +631,9 @@ const clearFinanceAccessCookie = (res: Response) => {
 };
 const authenticateWarehouseForFinance = async (req: Request, res: Response) => {
   let user;
-  try { user = await authenticateUser(String(req.header('X-Auth-Email') || ''), String(req.header('X-Auth-Password') || '')); }
-  catch { res.status(403).json({ error: 'Autentikasi Warehouse tidak valid.' }); return null; }
-  if (!user || String(user.role).toUpperCase() !== 'WAREHOUSE' || Number(user.isActive) === 0) {
+  try { user = await financeReadAuth.identity(req); }
+  catch { res.status(503).json({ error: 'Pembaca autentikasi Finance tidak tersedia.' }); return null; }
+  if (!user || user.role !== 'WAREHOUSE') {
     res.status(403).json({ error: 'Akses Finance hanya tersedia untuk akun Warehouse aktif.' });
     return null;
   }
@@ -638,14 +642,10 @@ const authenticateWarehouseForFinance = async (req: Request, res: Response) => {
 
 app.get('/api/finance/access/status', async (req: Request, res: Response) => {
   try {
-    const user = await authenticateWarehouseForFinance(req, res);
-    if (!user) return;
-    const [security, expiresIn] = await Promise.all([
-      getFinanceSecurityStatus(),
-      getFinanceAccessSessionSeconds(getCookie(req, FINANCE_ACCESS_COOKIE), Number(user.id)),
-    ]);
-    res.json({ configured: security.configured, active: expiresIn > 0, expiresIn });
-  } catch (error: any) { res.status(500).json({ error: error.message || 'Gagal memeriksa akses Finance.' }); }
+    const status = await financeReadAuth.status(req);
+    if (!status) { res.status(403).json({ error: 'Akses Finance hanya tersedia untuk akun Warehouse aktif.' }); return; }
+    res.json(status);
+  } catch { res.status(503).json({ error: 'Pembaca akses Finance tidak tersedia. Periksa konfigurasi koneksi SELECT-only.' }); }
 });
 
 app.post('/api/finance/access/verify', async (req: Request, res: Response) => {
@@ -677,44 +677,37 @@ app.post('/api/finance/access/logout', async (req: Request, res: Response) => {
   } catch (error: any) { res.status(500).json({ error: error.message || 'Gagal mencabut akses Finance.' }); }
 });
 
+const financeScope = createFinanceScope({
+  identity: operationalSessions.identity,
+  authenticate: operationalSessions.authenticate,
+  outletOf: async (userId) => { const profile = await getOutletRequestProfile(userId); return profile?.outletId ? Number(profile.outletId) : null; },
+  outletCanViewCost: async () => Boolean((await getApplicationConfig()).system.outletCanViewCost),
+});
+
 const financeDashboardStatsHandler = async (req: Request, res: Response) => {
+  const scope = await financeScope(req, res);
+  if (!scope) return;
   try {
-    const user = await authenticateUser(String(req.header('X-Auth-Email') || ''), String(req.header('X-Auth-Password') || ''));
-    if (!user || !canReadFinanceDashboard(String(user.role))) {
-      return res.status(403).json({ error: 'Akses dashboard Finance hanya untuk role Warehouse atau Finance' });
-    }
-    if (String(user.role).toUpperCase() === 'WAREHOUSE' && !(await validateFinanceAccessSession(getCookie(req, FINANCE_ACCESS_COOKIE), Number(user.id)))) {
-      return res.status(403).json({ code: 'FINANCE_ACCESS_REQUIRED', error: 'Verifikasi password Finance untuk melanjutkan.' });
-    }
-  } catch {
-    return res.status(403).json({ error: 'Akses dashboard Finance hanya untuk role Warehouse atau Finance' });
-  }
-  try {
-    const periods = await getFinancePeriods();
+    const ledger = await loadLedger();
+    const periods = await getFinancePeriods(ledger);
     const requestedPeriod = String(req.query.periodId || 'running');
     const selectedPeriod = periods.find((period) => period.id === requestedPeriod) || periods.find((period) => period.id === 'running');
-    const startDate = req.query.startDate ? String(req.query.startDate) : undefined;
-    const endDate = req.query.endDate ? String(req.query.endDate) : undefined;
     const itemIds = req.query.itemIds ? String(req.query.itemIds).split(',').map(Number).filter(Number.isFinite) : undefined;
-    const outletIds = req.query.outletIds ? String(req.query.outletIds).split(',').map(Number).filter(Number.isFinite) : undefined;
-    const outletNames = req.query.outletNames ? String(req.query.outletNames).split(',').map((name) => name.trim()).filter(Boolean) : undefined;
+    const outletIds = scope.outletIds;
     const categories = req.query.categories
       ? String(req.query.categories).split(',').map((category) => category.trim()).filter((category): category is ItemCategory => ITEM_CATEGORIES.includes(category as ItemCategory))
       : undefined;
-    const stats = await getWarehouseDashboardStats(startDate, endDate, itemIds, outletIds, categories, outletNames, selectedPeriod);
-    res.json({ ...stats, financePeriods: periods, financePeriod: selectedPeriod });
+    const stats = await getWarehouseDashboardStats({ itemIds, outletIds, categories, financePeriod: selectedPeriod, ledger });
+    const viewer = { lockedOutletId: scope.lockedOutletId, showCost: scope.showCost, outletIds: outletIds ?? [] };
+    res.json(scope.lockedOutletId ? { ...outletView({ ...stats, financePeriods: periods, financePeriod: selectedPeriod }, scope), viewer } : { ...stats, financePeriods: periods, financePeriod: selectedPeriod, viewer });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 };
 
 const financePeriodsHandler = async (req: Request, res: Response) => {
+  if (!await financeScope(req, res)) return;
   try {
-    const user = await authenticateUser(String(req.header('X-Auth-Email') || ''), String(req.header('X-Auth-Password') || ''));
-    if (!user || !canReadFinanceDashboard(String(user.role))) return res.status(403).json({ error: 'Akses Finance tidak diizinkan.' });
-    if (String(user.role).toUpperCase() === 'WAREHOUSE' && !(await validateFinanceAccessSession(getCookie(req, FINANCE_ACCESS_COOKIE), Number(user.id)))) {
-      return res.status(403).json({ code: 'FINANCE_ACCESS_REQUIRED', error: 'Verifikasi password Finance untuk melanjutkan.' });
-    }
     res.json({ periods: await getFinancePeriods() });
   } catch (error: any) {
     res.status(403).json({ error: error.message || 'Akses Finance tidak diizinkan.' });
@@ -722,9 +715,26 @@ const financePeriodsHandler = async (req: Request, res: Response) => {
 };
 
 // Both dashboard endpoints serve the shared Finance view to Warehouse and Finance.
+// Warehouse (with Finance gate), Finance and Admin see every outlet; an Outlet
+// account only its own outlet, and only sales unless its role setting allows cost.
 app.get('/api/dashboard/warehouse-stats', financeDashboardStatsHandler);
 app.get('/api/dashboard/finance-stats', financeDashboardStatsHandler);
 app.get('/api/dashboard/finance-periods', financePeriodsHandler);
+
+// Corrections to a closed period are booked in the open period; the closed snapshot stays as is.
+app.post('/api/finance/period-corrections', dashboardSessionAccess(operationalSessions.authenticate), async (req: Request, res: Response) => {
+  try {
+    const user = await operationalSessions.identity(req);
+    if (!user) return res.status(401).json({ error: 'Sesi login tidak tersedia atau berakhir. Silakan login kembali.' });
+    const itemId = Number(req.body?.itemId), quantity = Number(req.body?.quantity), sourceOpnameId = Number(req.body?.sourceOpnameId);
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (!Number.isInteger(itemId) || itemId <= 0 || !Number.isInteger(sourceOpnameId) || sourceOpnameId <= 0) return res.status(400).json({ error: 'Barang dan periode asal wajib diisi.' });
+    if (!Number.isInteger(quantity) || quantity === 0) return res.status(400).json({ error: 'Jumlah koreksi harus bilangan bulat selain nol.' });
+    if (!reason || reason.length > 500) return res.status(400).json({ error: 'Alasan koreksi wajib diisi (maksimal 500 karakter).' });
+    const correction = await recordPeriodCorrection({ itemId, quantity, sourceOpnameId, reason, createdBy: user.name, createdByUserId: user.id });
+    res.status(201).json({ correction });
+  } catch (error: any) { res.status(400).json({ error: error.message || 'Gagal mencatat koreksi periode.' }); }
+});
 
 async function getFinanceUser(req: Request, res: Response) {
   try {
@@ -954,7 +964,7 @@ app.put('/api/admin/system-settings', async (req: Request, res: Response) => {
   const actor = await getAdminUser(req, res); if (!actor) return;
   try {
     const body = req.body || {};
-    const system = { systemName: String(body.systemName || '').trim().slice(0, 120), dateFormat: String(body.dateFormat || ''), timeZone: String(body.timeZone || ''), currency: String(body.currency || ''), organizationInfo: String(body.organizationInfo || '').trim().slice(0, 500) };
+    const system = { systemName: String(body.systemName || '').trim().slice(0, 120), dateFormat: String(body.dateFormat || ''), timeZone: String(body.timeZone || ''), currency: String(body.currency || ''), organizationInfo: String(body.organizationInfo || '').trim().slice(0, 500), outletCanViewCost: body.outletCanViewCost === true };
     if (!system.systemName || !['DD MMM YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD'].includes(system.dateFormat) || system.timeZone !== 'Asia/Jakarta' || system.currency !== 'IDR') return res.status(400).json({ error: 'Pengaturan tanggal, zona waktu, atau mata uang tidak valid' });
     await saveApplicationConfig('system', system, actor.id);
     await logAdminActivity({ actorId: actor.id, actorName: actor.name, action: 'SYSTEM_SETTINGS_CHANGED', targetType: 'system_settings', details: system });
@@ -1067,7 +1077,10 @@ if (process.env.NODE_ENV === 'production') {
   }
 }
 
-void migrateLegacyUserRoles();
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Backend server running on http://0.0.0.0:${PORT}`);
-});
+// No eager data/schema migration at startup. Finance GET requests must remain
+// read-only; legacy operational workflows retain their existing behavior.
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Backend server running on http://0.0.0.0:${PORT}`);
+  });
+}

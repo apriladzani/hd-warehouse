@@ -57,7 +57,7 @@ export const purchaseTransactions = mysqlTable('purchase_transactions', {
   transactionDate: varchar('transaction_date', { length: 50 }).notNull(),
   totalAmount: int('total_amount').notNull().default(0),
   createdBy: varchar('created_by', { length: 100 }).notNull().default('Warehouse'),
-  createdAt: timestamp('created_at').defaultNow(),
+  createdAt: timestamp('created_at', { fsp: 3 }).defaultNow(), // ms: ordering against opname cut-offs
 });
 
 export const purchaseItems = mysqlTable('purchase_items', {
@@ -80,7 +80,7 @@ export const requests = mysqlTable('requests', {
   requestDate: varchar('request_date', { length: 50 }).notNull(),
   status: varchar('status', { length: 50 }).notNull().default('Pending'), // 'Pending' | 'Partially Approved' | 'Approved' | 'Rejected'
   totalAmount: int('total_amount').notNull().default(0),
-  createdAt: timestamp('created_at').defaultNow(),
+  createdAt: timestamp('created_at', { fsp: 3 }).defaultNow(), // ms: ordering against opname cut-offs
 });
 
 export const requestItems = mysqlTable('request_items', {
@@ -109,7 +109,7 @@ export const stockMovements = mysqlTable('stock_movements', {
   createdByUserId: int('created_by_user_id'),
   referenceId: varchar('reference_id', { length: 100 }).notNull(),
   createdBy: varchar('created_by', { length: 100 }).notNull(),
-  createdAt: timestamp('created_at').defaultNow(),
+  createdAt: timestamp('created_at', { fsp: 3 }).defaultNow(), // ms: ordering against opname cut-offs
 });
 
 export const stockOpnames = mysqlTable('stock_opnames', {
@@ -120,7 +120,7 @@ export const stockOpnames = mysqlTable('stock_opnames', {
   createdByUserId: int('created_by_user_id'),
   submissionKey: varchar('submission_key', { length: 64 }),
   itemsJson: longtext('items_json').notNull(),
-  createdAt: timestamp('created_at').defaultNow(),
+  createdAt: timestamp('created_at', { fsp: 3 }).defaultNow(), // ms: ordering against opname cut-offs
 }, (table) => [uniqueIndex('uq_stock_opnames_submission_key').on(table.submissionKey)]);
 
 export const inventoryCostPeriods = mysqlTable('inventory_cost_periods', {
@@ -161,6 +161,49 @@ export const inventoryCostSnapshots = mysqlTable('inventory_cost_snapshots', {
   index('idx_inventory_cost_snapshot_item').on(table.itemId),
   index('idx_inventory_cost_snapshot_cutoff').on(table.cutoffPeriodId),
 ]);
+
+// Permanent period close ("tutup buku"), one row per stock opname and item.
+// Rows are only ever inserted; a closed period is read-only.
+const money = (name: string) => decimal(name, { precision: 24, scale: 6, mode: 'string' });
+export const financePeriodSnapshots = mysqlTable('finance_period_snapshots', {
+  id: int('id').autoincrement().primaryKey(),
+  stockOpnameId: int('stock_opname_id').notNull(),
+  itemId: int('item_id').notNull(),
+  periodStartAt: timestamp('period_start_at', { mode: 'date', fsp: 3 }),
+  periodEndAt: timestamp('period_end_at', { mode: 'date', fsp: 3 }).notNull(),
+  stokAwal: int('stok_awal').notNull(),
+  avgAwal: money('avg_awal'),
+  qtyMasuk: int('qty_masuk').notNull(),
+  nilaiMasuk: money('nilai_masuk').notNull(),
+  qtyKoreksi: int('qty_koreksi').notNull().default(0),
+  qtyTerjual: int('qty_terjual').notNull(),
+  totalHpp: money('total_hpp'),
+  totalPenjualan: money('total_penjualan').notNull(),
+  missingCostQty: int('missing_cost_qty').notNull().default(0),
+  stokSistem: int('stok_sistem').notNull(),
+  stokFisik: int('stok_fisik'),
+  selisih: int('selisih'),
+  nilaiSelisih: money('nilai_selisih'),
+  stokAkhir: int('stok_akhir').notNull(),
+  avgAkhir: money('avg_akhir'),
+  nilaiAkhir: money('nilai_akhir'),
+  estimasiKeuntungan: money('estimasi_keuntungan'),
+  source: varchar('source', { length: 20 }).notNull(),
+  closedAt: timestamp('closed_at', { mode: 'date', fsp: 3 }).notNull().defaultNow(),
+  closedBy: varchar('closed_by', { length: 255 }).notNull(),
+}, (table) => [uniqueIndex('uq_finance_period_snapshot').on(table.stockOpnameId, table.itemId)]);
+
+// Outlet 0 holds sales without an outlet.
+export const financePeriodOutletSnapshots = mysqlTable('finance_period_outlet_snapshots', {
+  id: int('id').autoincrement().primaryKey(),
+  stockOpnameId: int('stock_opname_id').notNull(),
+  itemId: int('item_id').notNull(),
+  outletId: int('outlet_id').notNull(),
+  qtyTerjual: int('qty_terjual').notNull(),
+  totalHpp: money('total_hpp'),
+  totalPenjualan: money('total_penjualan').notNull(),
+  estimasiKeuntungan: money('estimasi_keuntungan'),
+}, (table) => [uniqueIndex('uq_finance_period_outlet_snapshot').on(table.stockOpnameId, table.itemId, table.outletId)]);
 
 // Relations
 export const usersRelations = relations(users, ({ many, one }) => ({

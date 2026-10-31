@@ -28,7 +28,7 @@ export const FinanceAccessGate: React.FC<{ currentUser: User; onBack: () => void
       setStatus(data);
       setExpiresAt(data.active ? Date.now() + Number(data.expiresIn || 0) * 1000 : 0);
     } catch (reason) {
-      setStatus({ configured: false, active: false, expiresIn: 0 });
+      setStatus(null);
       setError(reason instanceof Error ? reason.message : 'Gagal memeriksa akses Finance.');
     } finally { setLoading(false); }
   }, [currentUser.email, credentials.password]);
@@ -77,6 +77,7 @@ export const FinanceAccessGate: React.FC<{ currentUser: User; onBack: () => void
   };
 
   if (loading && !status) return <div className="hd-surface mx-auto max-w-md p-5 text-sm text-[#64748B]">Memeriksa akses Finance…</div>;
+  if (!status) return <section className="hd-surface p-5"><p role="alert">{error || 'Status akses Finance belum tersedia.'}</p><button onClick={() => { setLoading(true); setError(''); void refreshStatus(); }}>Coba lagi</button><button onClick={onBack}>Kembali</button></section>;
   if (status?.active) return <>{children}</>;
 
   return <section className="hd-finance-access hd-surface mx-auto w-full max-w-md p-4 sm:p-5" aria-labelledby="finance-access-heading">

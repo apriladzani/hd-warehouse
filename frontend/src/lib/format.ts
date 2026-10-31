@@ -1,9 +1,8 @@
 export function formatRupiah(amount: number): string {
-  const num = Number(amount || 0);
-  if (num < 0) {
-    return '-Rp ' + Math.abs(num).toLocaleString('id-ID');
-  }
-  return 'Rp ' + num.toLocaleString('id-ID');
+  const num = Number(amount);
+  if (!Number.isFinite(num)) return '—';
+  const rounded = Math.abs(num).toLocaleString('id-ID', { maximumFractionDigits: 0, minimumFractionDigits: 0 });
+  return `${num < 0 && rounded !== '0' ? '−' : ''}Rp${rounded}`;
 }
 
 export function formatDateIndo(dateStr?: string): string {
