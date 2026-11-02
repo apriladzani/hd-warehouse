@@ -14,7 +14,7 @@
     "test:api": "NODE_ENV=test node --import tsx --test --test-concurrency=1 tests/api-smoke.test.ts",
     "db:migrate-timestamps": "node --import tsx scripts/migrate-timestamps.ts",
     "finance:backfill-outlets": "node --import tsx scripts/backfill-request-outlets.ts",
-    "test:db": "DB_TESTS=1 node --import tsx --test --test-concurrency=1 tests/outlet-attribution.db.test.ts",
+    "test:db": "DB_TESTS=1 node --import tsx --test --test-concurrency=1 tests/outlet-attribution.db.test.ts tests/password-reset.test.ts tests/google-oauth.test.ts || NODE_ENV=test node --import tsx --test --test-concurrency=1 tests/api-smoke.test.ts",
     "finance:rebuild-periods": "node --import tsx scripts/rebuild-period-snapshots.ts",
     "test:finance": "node --import tsx --test tests/outlet-scope.test.ts tests/period-ledger.test.ts tests/finance.test.ts tests/finance-readonly.test.ts tests/finance-outlet-http.test.ts tests/operational-session.test.ts tests/finance-transactions.test.ts tests/period-inventory.test.ts tests/warehouse-reconciliation.test.ts tests/warehouse-simple-finance.test.ts tests/dashboard-access.test.ts"
   },
@@ -27,12 +27,14 @@
     "drizzle-orm": "^0.45.2",
     "express": "^4.21.2",
     "mysql2": "^3.24.4",
+    "nodemailer": "^7.0.7",
     "pg": "^8.23.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
+    "@types/nodemailer": "^7.0.2",
     "@types/pg": "^8.23.1",
     "esbuild": "^0.25.0",
     "tsx": "^4.21.0",

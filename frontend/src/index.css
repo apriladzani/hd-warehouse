@@ -243,7 +243,7 @@ body {
   .hd-auth-field { min-width: 0; }
   .hd-auth-field > label { display: block; margin-bottom: 6px; color: #334155; font-size: 12px; line-height: 1.35; font-weight: 600; }
   .hd-auth-input-wrap { position: relative; display: block; width: 100%; min-width: 0; }
-  .hd-auth-input { box-sizing: border-box; display: block; width: 100%; min-width: 0; height: 44px; min-height: 44px; padding: 0 12px; border: 1px solid #E2E8F0; border-radius: 8px; background: #FFFFFF; color: #1E293B; font-family: inherit; font-size: 13px; line-height: normal; outline: none; transition: border-color 120ms, box-shadow 120ms; }
+  .hd-auth-input { box-sizing: border-box; display: block; width: 100%; min-width: 0; height: 44px; min-height: 44px; padding: 0 12px; border: 1px solid #E2E8F0; border-radius: 8px; background: #FFFFFF; color: #1E293B; font-family: inherit; font-size: 13px; line-height: normal; caret-color: #F0002B; outline: none; transition: border-color 120ms, box-shadow 120ms; }
   .hd-auth-input--icon { padding-left: 40px; }
   .hd-auth-input--trailing { padding-right: 42px; }
   .hd-auth-input::placeholder { color: #94A3B8; }
@@ -261,6 +261,16 @@ body {
   .hd-auth-message--error { border-color: #FECDD3; background: #FFF1F2; color: #BE123C; }
   .hd-auth-message--success { border-color: #BBF7D0; background: #F0FDF4; color: #166534; }
   .hd-auth-message--info { border-color: #BFDBFE; background: #EFF6FF; color: #1E40AF; }
+  .hd-auth-input--invalid { border-color: #FDA4AF; }
+  .hd-auth-input--invalid:focus { border-color: #BE123C; box-shadow: 0 0 0 3px #BE123C14; }
+  .hd-auth-hint { display: flex; align-items: flex-start; gap: 6px; margin: 7px 0 0; color: #64748B; font-size: 11px; line-height: 1.45; }
+  .hd-auth-hint > svg { flex-shrink: 0; margin-top: 1px; }
+  .hd-auth-hint--warn { color: #B45309; }
+  .hd-auth ::selection { background: #F0002B22; color: #1E293B; }
+  .hd-auth-divider { display: flex; align-items: center; gap: 12px; margin: 18px 0 14px; color: #94A3B8; font-size: 11px; }
+  .hd-auth-divider::before, .hd-auth-divider::after { content: ""; flex: 1; height: 1px; background: #E2E8F0; }
+  .hd-auth-google { box-sizing: border-box; display: flex; width: 100%; height: 44px; align-items: center; justify-content: center; gap: 10px; border: 1px solid #CBD5E1; border-radius: 8px; background: #FFFFFF; color: #1E293B; font-size: 13px; font-weight: 600; text-decoration: none; transition: background-color 120ms, border-color 120ms; }
+  .hd-auth-google:hover { border-color: #94A3B8; background: #F8FAFC; }
   .hd-auth-role-note { margin: -4px 0 0; color: #64748B; font-size: 11px; line-height: 1.45; }
   .hd-auth-role-display { box-sizing: border-box; display: flex; min-width: 0; height: 44px; align-items: center; gap: 9px; padding: 0 12px; border: 1px solid #E2E8F0; border-radius: 8px; background: #F8FAFC; color: #1E293B; font-size: 13px; font-weight: 600; }
   .hd-auth-role-display > svg:first-child { color: #64748B; }

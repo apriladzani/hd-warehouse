@@ -4,5 +4,6 @@ export { DateFilter } from './DateFilter.tsx';
 export { LoginPage } from './LoginPage.tsx';
 export { RegisterPage } from './RegisterPage.tsx';
 export { ForgotPasswordPage } from './ForgotPasswordPage.tsx';
+export { ResetPasswordPage } from './ResetPasswordPage.tsx';
 export { AuthLayout, AuthHeader, AuthInput, PasswordInput, AuthButton, AuthMessage } from './AuthUI.tsx';
 export { Button, IconButton, Input, Surface, Toolbar, KpiCard, StateMessage } from './UI.tsx';

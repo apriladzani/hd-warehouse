@@ -5,11 +5,13 @@ import { FinanceAccessGate } from './components/warehouse/FinanceAccessGate.tsx'
 import { FinanceEntry } from './finance/FinanceEntry.tsx';
 import { financePath, financePage, isFinancePath, type FinancePage } from './finance/model.ts';
 import './finance/finance.css';
+import { clearGoogleOutcome, readGoogleOutcome } from './lib/googleSignIn.ts';
 import {
   Navbar,
   LoginPage,
   RegisterPage,
   ForgotPasswordPage,
+  ResetPasswordPage,
   UserDashboard,
   UserRequestForm,
   UserRiwayat,
@@ -138,7 +140,7 @@ export default function App() {
 
   useEffect(() => {
     if (!currentUser) {
-      const authPath = ['/login', '/register', '/forgot-password'].includes(pathname) ? pathname : '/login';
+      const authPath = ['/login', '/register', '/forgot-password', '/reset-password'].includes(pathname) ? pathname : '/login';
       if (authPath !== pathname) navigateTo(authPath, true);
       return;
     }
@@ -152,6 +154,23 @@ export default function App() {
     setCurrentUser(normalizedUser);
     navigateTo(pagePath(normalizedUser.role, 'dashboard'), true);
   };
+
+  // Google sign-in returns by redirect to /login?oauth=ok with the session
+  // already in an HttpOnly cookie, so the page asks the server who it is.
+  const [googleOutcome] = useState(() => readGoogleOutcome());
+  const [googleError, setGoogleError] = useState<string | null>(googleOutcome.error);
+  useEffect(() => {
+    clearGoogleOutcome();
+    if (!googleOutcome.ok || currentUser) return;
+    let active = true;
+    fetch('/api/auth/session', { credentials: 'same-origin' })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('no session')))
+      .then((data) => { if (active && data?.user) handleLoginSuccess(data.user); })
+      .catch(() => { if (active) setGoogleError('server'); });
+    return () => { active = false; };
+    // Runs once for the redirect that loaded the page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleLogout = () => {
     void fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => undefined);
@@ -175,11 +194,23 @@ export default function App() {
     if (pathname === '/forgot-password') {
       return <ForgotPasswordPage onNavigateToLogin={() => navigateTo('/login')} />;
     }
+    if (pathname === '/reset-password') {
+      // The token lives in the query string. navigateTo pushes a bare path, so
+      // leaving this screen also drops the token out of the address bar.
+      return (
+        <ResetPasswordPage
+          token={new URLSearchParams(window.location.search).get('token') || ''}
+          onNavigateToLogin={() => navigateTo('/login')}
+          onNavigateToForgotPassword={() => navigateTo('/forgot-password')}
+        />
+      );
+    }
     return (
       <LoginPage
         onLoginSuccess={handleLoginSuccess}
         onNavigateToRegister={() => navigateTo('/register')}
         onNavigateToForgotPassword={() => navigateTo('/forgot-password')}
+        googleError={googleError}
       />
     );
   }

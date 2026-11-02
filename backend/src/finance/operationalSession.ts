@@ -26,16 +26,29 @@ export function createOperationalSessions(source: SelectExecutor, now = Date.now
     if (rows.length !== 1 || Number(row.isActive) !== 1 || typeof row.password !== 'string' || hash(row.password) !== entry.credential) { sessions.delete(key); return null; }
     return { id: entry.id, name: String(row.name), username: String(row.username ?? ''), email: String(row.email), role: String(row.role).toUpperCase() === 'USER' ? 'OUTLET' : String(row.role).toUpperCase() };
   }
+  function start(req: Request, res: Response, row: any) {
+    prune(); if (sessions.size >= 10000) throw new Error('Session capacity exceeded');
+    const raw = randomBytes(32).toString('base64url'); sessions.delete(hash(token(req)));
+    sessions.set(hash(raw), { id: Number(row.id), credential: hash(String(row.password)), expires: now() + 8 * 3600000 }); cookie(res, raw, 8 * 3600);
+    return { id: Number(row.id), name: String(row.name), username: String(row.username ?? ''), email: String(row.email), role: String(row.role).toUpperCase() === 'USER' ? 'OUTLET' : String(row.role).toUpperCase() };
+  }
   return {
     async login(req: Request, res: Response, login: unknown, password: unknown) {
       if (typeof login !== 'string' || typeof password !== 'string' || !password || login.length > 255 || Buffer.byteLength(password) > 1024) return null;
       const rows = await db.select('SELECT id, name, username, email, role, password, is_active AS isActive FROM users WHERE (LOWER(email) = ? OR LOWER(username) = ?) LIMIT 2', [login.trim().toLowerCase(), login.trim().toLowerCase()]);
       const row = rows[0];
       if (rows.length !== 1 || Number(row.isActive) !== 1 || !Number.isSafeInteger(Number(row.id)) || Number(row.id) <= 0 || !await verifyFinanceLoginPassword(password, row.password)) return null;
-      prune(); if (sessions.size >= 10000) throw new Error('Session capacity exceeded');
-      const raw = randomBytes(32).toString('base64url'); sessions.delete(hash(token(req)));
-      sessions.set(hash(raw), { id: Number(row.id), credential: hash(String(row.password)), expires: now() + 8 * 3600000 }); cookie(res, raw, 8 * 3600);
-      return { id: Number(row.id), name: String(row.name), username: String(row.username ?? ''), email: String(row.email), role: String(row.role).toUpperCase() === 'USER' ? 'OUTLET' : String(row.role).toUpperCase() };
+      return start(req, res, row);
+    },
+    // For a user already proven by another means (Google sign-in). The session
+    // is still bound to the stored password hash, so a later password change
+    // ends it exactly like a password login.
+    async loginVerifiedUser(req: Request, res: Response, userId: number) {
+      if (!Number.isSafeInteger(userId) || userId <= 0) return null;
+      const rows = await db.select('SELECT id, name, username, email, role, password, is_active AS isActive FROM users WHERE id = ? LIMIT 2', [userId]);
+      const row = rows[0];
+      if (rows.length !== 1 || Number(row.isActive) !== 1 || typeof row.password !== 'string' || !row.password) return null;
+      return start(req, res, row);
     },
     logout(req: Request, res: Response) { sessions.delete(hash(token(req))); cookie(res, '', 0); },
     identity,

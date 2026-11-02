@@ -243,9 +243,9 @@ export function ensureAdminOutletSchema() {
 }
 
 let adminSettingsSchemaReady: Promise<void> | null = null;
-export const DEFAULT_BRANDING = { appName: 'HD Management System', subtitle: 'Inventory & Operations', mainLogo: '', sidebarLogo: '', favicon: '' };
+export const DEFAULT_BRANDING = { appName: 'HD Hub Management', subtitle: 'Inventory & Operations', mainLogo: '', sidebarLogo: '', favicon: '' };
 // outletCanViewCost: Outlet accounts may see HPP and estimated profit of their own outlet.
-export const DEFAULT_SYSTEM_SETTINGS = { systemName: 'HD Management System', dateFormat: 'DD MMM YYYY', timeZone: 'Asia/Jakarta', currency: 'IDR', organizationInfo: '', outletCanViewCost: false };
+export const DEFAULT_SYSTEM_SETTINGS = { systemName: 'HD Hub Management', dateFormat: 'DD MMM YYYY', timeZone: 'Asia/Jakarta', currency: 'IDR', organizationInfo: '', outletCanViewCost: false };
 export async function ensureAdminSettingsSchema() {
   if (!adminSettingsSchemaReady) adminSettingsSchemaReady = (async () => {
     await pool.query(`CREATE TABLE IF NOT EXISTS system_settings (
@@ -408,6 +408,139 @@ export async function recordFinanceAccessFailure(userId: number) {
 export async function clearFinanceAccessFailures(userId: number) {
   await ensureFinanceAccessSchema();
   await pool.query('DELETE FROM finance_access_attempts WHERE user_id = ?', [userId]);
+}
+
+// Self-service password reset. Only the SHA-256 of the token is stored, so a
+// leaked database row cannot be replayed as a reset link. Changing the password
+// also ends every live session, because operationalSession binds each session
+// to a hash of the stored password.
+export const PASSWORD_RESET_MINUTES = 60;
+export const PASSWORD_RESET_COLUMNS = `
+      token_hash CHAR(64) NOT NULL PRIMARY KEY,
+      user_id INT NOT NULL,
+      expires_at DATETIME NOT NULL,
+      used_at DATETIME NULL DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_password_reset_user (user_id),
+      INDEX idx_password_reset_expiry (expires_at)`;
+let passwordResetSchemaReady: Promise<void> | null = null;
+
+export async function ensurePasswordResetSchema() {
+  if (!passwordResetSchemaReady) passwordResetSchemaReady = (async () => {
+    // CREATE TABLE IF NOT EXISTS ignores a connection-local TEMPORARY table of
+    // the same name and would build a real one beside it. Reaching for the
+    // table first means tests that shadow it never touch the server's schema.
+    try {
+      await pool.query('SELECT 1 FROM password_reset_tokens LIMIT 0');
+      return;
+    } catch {
+      // Not reachable yet, so create it.
+    }
+    await pool.query(`CREATE TABLE IF NOT EXISTS password_reset_tokens (${PASSWORD_RESET_COLUMNS}
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  })();
+  await passwordResetSchemaReady;
+}
+
+const hashResetToken = (token: string) => createHash('sha256').update(token).digest('hex');
+
+export async function createPasswordResetToken(login: string) {
+  await ensurePasswordResetSchema();
+  const cleanLogin = login.trim().toLowerCase();
+  if (!cleanLogin || cleanLogin.length > 255) return null;
+  const [rows] = await pool.query(
+    'SELECT id, name, email FROM users WHERE (LOWER(email) = ? OR LOWER(username) = ?) AND is_active = 1 LIMIT 2',
+    [cleanLogin, cleanLogin],
+  );
+  const matches = rows as any[];
+  if (matches.length !== 1) return null;
+  const user = matches[0];
+  await pool.query('DELETE FROM password_reset_tokens WHERE expires_at <= UTC_TIMESTAMP() OR used_at IS NOT NULL');
+  // A new request supersedes any link already in the user's inbox.
+  await pool.query('DELETE FROM password_reset_tokens WHERE user_id = ?', [Number(user.id)]);
+  const token = randomBytes(32).toString('base64url');
+  await pool.query(
+    'INSERT INTO password_reset_tokens (token_hash, user_id, expires_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE))',
+    [hashResetToken(token), Number(user.id), PASSWORD_RESET_MINUTES],
+  );
+  return { token, userId: Number(user.id), name: String(user.name || ''), email: String(user.email) };
+}
+
+export async function findPasswordResetToken(token: string) {
+  if (!token || token.length > 128) return null;
+  await ensurePasswordResetSchema();
+  const [rows] = await pool.query(
+    `SELECT t.user_id AS userId, u.name AS name FROM password_reset_tokens t
+     JOIN users u ON u.id = t.user_id AND u.is_active = 1
+     WHERE t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > UTC_TIMESTAMP() LIMIT 1`,
+    [hashResetToken(token)],
+  );
+  const row = (rows as any[])[0];
+  return row ? { userId: Number(row.userId), name: String(row.name || '') } : null;
+}
+
+export async function consumePasswordResetToken(token: string, password: string) {
+  const match = await findPasswordResetToken(token);
+  if (!match) return false;
+  // Claim the token first: if two requests race, only one marks it used and
+  // only that one is allowed to write the new password.
+  const [claim] = await pool.query(
+    'UPDATE password_reset_tokens SET used_at = UTC_TIMESTAMP() WHERE token_hash = ? AND used_at IS NULL AND expires_at > UTC_TIMESTAMP()',
+    [hashResetToken(token)],
+  );
+  if (!(claim as any)?.affectedRows) return false;
+  await pool.query('UPDATE users SET password = ? WHERE id = ?', [hashPassword(password), match.userId]);
+  await pool.query('DELETE FROM password_reset_tokens WHERE user_id = ?', [match.userId]);
+  return true;
+}
+
+// Google sign-in. The account is found by its Google subject id, stored in the
+// otherwise unused users.uid as "google:<sub>". An account that has not been
+// linked yet is found by its email, which the caller has already required
+// Google to have verified. A new account gets the same Outlet role as public
+// registration, and a random password nobody knows: the user can sign in with
+// Google, or set a real password through the reset flow.
+export type GoogleSignInResult =
+  | { status: 'ok'; userId: number; created: boolean; linked: boolean }
+  | { status: 'inactive' }
+  | { status: 'conflict' };
+
+const googleUid = (sub: string) => `google:${sub}`;
+
+async function uniqueUsername(email: string) {
+  const stem = (email.split('@')[0] || 'user').toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 40) || 'user';
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const candidate = attempt === 0 ? stem : `${stem}${attempt + 1}`;
+    const [rows] = await pool.query('SELECT 1 FROM users WHERE LOWER(username) = ? LIMIT 1', [candidate]);
+    if (!(rows as any[]).length) return candidate;
+  }
+  return `${stem}-${randomBytes(3).toString('hex')}`;
+}
+
+export async function signInWithGoogle(profile: { sub: string; email: string; name: string }): Promise<GoogleSignInResult> {
+  const uid = googleUid(profile.sub);
+  const [byUid] = await pool.query('SELECT id, is_active AS isActive FROM users WHERE uid = ? LIMIT 1', [uid]);
+  const linked = (byUid as any[])[0];
+  if (linked) return Number(linked.isActive) === 1 ? { status: 'ok', userId: Number(linked.id), created: false, linked: false } : { status: 'inactive' };
+
+  const [byEmail] = await pool.query('SELECT id, uid, is_active AS isActive FROM users WHERE LOWER(email) = ? LIMIT 2', [profile.email]);
+  const matches = byEmail as any[];
+  if (matches.length > 1) return { status: 'conflict' };
+  if (matches.length === 1) {
+    const existing = matches[0];
+    // Already tied to a different Google account: never re-point it silently.
+    if (existing.uid) return { status: 'conflict' };
+    if (Number(existing.isActive) !== 1) return { status: 'inactive' };
+    await pool.query('UPDATE users SET uid = ? WHERE id = ? AND uid IS NULL', [uid, Number(existing.id)]);
+    return { status: 'ok', userId: Number(existing.id), created: false, linked: true };
+  }
+
+  const username = await uniqueUsername(profile.email);
+  const [result] = await pool.query(
+    "INSERT INTO users (uid, name, username, email, password, role, is_active) VALUES (?, ?, ?, ?, ?, 'OUTLET', 1)",
+    [uid, profile.name.slice(0, 255) || username, username, profile.email, hashPassword(randomBytes(32).toString('base64url'))],
+  );
+  return { status: 'ok', userId: Number((result as any).insertId), created: true, linked: false };
 }
 
 export async function getAdminActivityLogs(limit = 200) {

@@ -2,8 +2,8 @@ import React, { createContext, useContext, useEffect, useMemo, useState, type Re
 
 export type BrandingConfig = { appName: string; subtitle: string; mainLogo: string; sidebarLogo: string; favicon: string };
 export type SystemConfig = { systemName: string; dateFormat: string; timeZone: string; currency: string; organizationInfo: string; outletCanViewCost?: boolean };
-const defaultBranding: BrandingConfig = { appName: 'HD Management System', subtitle: 'Inventory & Operations', mainLogo: '', sidebarLogo: '', favicon: '' };
-const defaultSystem: SystemConfig = { systemName: 'HD Management System', dateFormat: 'DD MMM YYYY', timeZone: 'Asia/Jakarta', currency: 'IDR', organizationInfo: '', outletCanViewCost: false };
+const defaultBranding: BrandingConfig = { appName: 'HD Hub Management', subtitle: 'Inventory & Operations', mainLogo: '', sidebarLogo: '', favicon: '' };
+const defaultSystem: SystemConfig = { systemName: 'HD Hub Management', dateFormat: 'DD MMM YYYY', timeZone: 'Asia/Jakarta', currency: 'IDR', organizationInfo: '', outletCanViewCost: false };
 const BrandingContext = createContext<{ branding: BrandingConfig; system: SystemConfig; setConfig: (value: { branding: BrandingConfig; system?: SystemConfig }) => void }>({ branding: defaultBranding, system: defaultSystem, setConfig: () => undefined });
 
 export function BrandingProvider({ children }: { children: ReactNode }) {

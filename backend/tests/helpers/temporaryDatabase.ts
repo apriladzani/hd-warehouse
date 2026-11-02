@@ -1,6 +1,7 @@
 import { mock } from 'node:test';
 import { createPool } from '../../src/db/index.ts';
 import { MILLISECOND_COLUMN_DEFINITION, MILLISECOND_TIMESTAMP_TABLES } from '../../src/db/timestampPrecision.ts';
+import { PASSWORD_RESET_COLUMNS } from '../../src/db/repository.ts';
 
 // Runs a test against the configured MySQL server without touching its data:
 // every table is shadowed by a connection-local TEMPORARY copy that disappears
@@ -25,6 +26,9 @@ export async function withTemporaryDatabase(run: (connection: any) => Promise<vo
         .replace(/,\n\)/g, '\n)');
       await connection.query(ddl);
     }
+    // Created by ensurePasswordResetSchema at runtime, so there is no real
+    // table to copy: build the shadow from the same column definition.
+    await connection.query(`CREATE TEMPORARY TABLE password_reset_tokens (${PASSWORD_RESET_COLUMNS}) ENGINE=InnoDB`);
     await connection.query('ALTER TABLE items MODIFY avg_purchase_price DECIMAL(18,6) NOT NULL DEFAULT 0');
     await connection.query('ALTER TABLE stock_movements MODIFY movement_type VARCHAR(40) NOT NULL');
     // Independent of whether the server itself has had db:migrate-timestamps run.

@@ -108,7 +108,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ currentUser, act
         <div className="min-w-0">
           {monitorType && <button type="button" onClick={() => onNavigate('dashboard')} className="mb-1 inline-flex items-center gap-1 text-xs font-semibold text-[#64748B] hover:text-[#1E293B]"><ArrowLeft size={14} /> Kembali ke Overview</button>}
           <h1>{title}</h1>
-          <p className="mt-1 text-xs text-[#64748B]">Pemantauan HD Management System berbasis data aktual.</p>
+          <p className="mt-1 text-xs text-[#64748B]">Pemantauan HD Hub Management berbasis data aktual.</p>
         </div>
         <span className="inline-flex items-center gap-1.5 rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[11px] font-medium text-[#64748B]"><ShieldCheck size={14} /> Akses Admin</span>
       </header>
@@ -351,7 +351,7 @@ function BrandingSettingsEditor({ branding, headers, onSaved }: { branding: Bran
     } catch (reason) { setFeedback(reason instanceof Error ? reason.message : 'Gagal menyimpan branding.'); }
     finally { setSaving(false); }
   };
-  const reset = () => void save({ appName: 'HD Management System', subtitle: 'Inventory & Operations', mainLogo: '', sidebarLogo: '', favicon: '' });
+  const reset = () => void save({ appName: 'HD Hub Management', subtitle: 'Inventory & Operations', mainLogo: '', sidebarLogo: '', favicon: '' });
   const field = (key: 'mainLogo' | 'sidebarLogo' | 'favicon', label: string) => <label key={key} className="hd-surface flex min-w-0 flex-col gap-2 p-3"><span className="text-xs font-semibold text-[#334155]">{label}</span><div className="grid min-h-20 place-items-center rounded-lg border border-dashed border-[#CBD5E1] bg-[#F8FAFC] p-2">{form[key] ? <img src={form[key]} alt={`Preview ${label}`} className="max-h-16 max-w-full object-contain" /> : <ImagePlus size={22} className="text-[#94A3B8]" />}</div><input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" onChange={(event) => selectFile(key, event.target.files?.[0])} className="text-[11px] text-[#64748B]" /><small className="text-[10px] text-[#64748B]">PNG, JPG, WEBP, SVG · maks. 2 MB</small></label>;
   return <section className="hd-surface space-y-3 p-3 sm:p-4"><div><h2>Branding Aplikasi</h2><p className="mt-0.5 text-[11px] text-[#64748B]">Konfigurasi ini digunakan bersama oleh halaman autentikasi dan seluruh role.</p></div><div className="grid gap-2 sm:grid-cols-2"><label className="text-xs font-medium text-[#475569]">Nama aplikasi<input className="hd-input mt-1" maxLength={120} value={form.appName} onChange={(event) => setForm((old) => ({ ...old, appName: event.target.value }))} /></label><label className="text-xs font-medium text-[#475569]">Subtitle / tagline<input className="hd-input mt-1" maxLength={180} value={form.subtitle} onChange={(event) => setForm((old) => ({ ...old, subtitle: event.target.value }))} /></label></div><div className="grid gap-2 md:grid-cols-3">{field('mainLogo', 'Logo utama aplikasi')}{field('sidebarLogo', 'Logo sidebar / header')}{field('favicon', 'Favicon browser')}</div>{feedback && <p role="status" className="text-xs text-[#475569]">{feedback}</p>}<div className="flex flex-wrap justify-end gap-2"><button type="button" onClick={reset} disabled={saving} className="hd-button hd-button--secondary"><RotateCcw size={14} />Reset ke Default</button><button type="button" onClick={() => void save(form)} disabled={saving} className="hd-button hd-button--primary"><Save size={14} />{saving ? 'Menyimpan…' : 'Simpan Branding'}</button></div></section>;
 }

@@ -57,7 +57,7 @@ async function seed(connection: any) {
   await connection.query('INSERT INTO finance_security (id, password_hash, password_version) VALUES (1, ?, 1) ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), password_version = VALUES(password_version)', [await bcrypt.hash(FINANCE_PASSWORD, 10)]);
 }
 
-async function withApi(run: (api: { outlet: ReturnType<typeof client>; warehouse: ReturnType<typeof client>; anonymous: ReturnType<typeof client>; connection: any }) => Promise<void>) {
+async function withApi(run: (api: { outlet: ReturnType<typeof client>; warehouse: ReturnType<typeof client>; anonymous: ReturnType<typeof client>; connection: any; base: string }) => Promise<void>) {
   process.env.NODE_ENV = 'test';
   await withTemporaryDatabase(async (connection) => {
     await seed(connection);
@@ -69,7 +69,7 @@ async function withApi(run: (api: { outlet: ReturnType<typeof client>; warehouse
       const outlet = client(base), warehouse = client(base), anonymous = client(base);
       assert.equal((await outlet.call('POST', '/api/auth/login', { email: 'outlet@smoke.test', password: 'outlet-pass' })).status, 200);
       assert.equal((await warehouse.call('POST', '/api/auth/login', { email: 'warehouse@smoke.test', password: 'warehouse-pass' })).status, 200);
-      await run({ outlet, warehouse, anonymous, connection });
+      await run({ outlet, warehouse, anonymous, connection, base });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -273,4 +273,58 @@ test('closing a period warns about the requests still waiting for approval', asy
     const periods = (await warehouse.call('GET', '/api/dashboard/finance-periods')).body;
     assert.equal(periods.status ?? 200, 200);
   });
+});
+
+test('Google sign-in: hidden until configured, state is enforced, and every outcome lands on /login', async () => {
+  const saved = { id: process.env.GOOGLE_CLIENT_ID, secret: process.env.GOOGLE_CLIENT_SECRET, redirect: process.env.GOOGLE_REDIRECT_URI };
+  const raw = (base: string, path: string, cookie?: string) => fetch(`${base}${path}`, { redirect: 'manual', headers: cookie ? { cookie } : {} });
+  try {
+    await withApi(async ({ anonymous, warehouse, base }) => {
+      delete process.env.GOOGLE_CLIENT_ID; delete process.env.GOOGLE_CLIENT_SECRET; delete process.env.GOOGLE_REDIRECT_URI;
+      assert.deepEqual((await anonymous.call('GET', '/api/auth/providers')).body, { google: false });
+      const off = await raw(base, '/api/auth/google');
+      assert.equal(off.status, 303);
+      assert.equal(off.headers.get('location'), '/login?oauth_error=unconfigured');
+
+      process.env.GOOGLE_CLIENT_ID = 'smoke-client';
+      process.env.GOOGLE_CLIENT_SECRET = 'smoke-secret';
+      process.env.GOOGLE_REDIRECT_URI = `${base}/api/auth/google/callback`;
+      assert.deepEqual((await anonymous.call('GET', '/api/auth/providers')).body, { google: true });
+
+      const start = await raw(base, '/api/auth/google');
+      assert.equal(start.status, 302);
+      const google = new URL(start.headers.get('location')!);
+      assert.equal(google.origin, 'https://accounts.google.com');
+      const stateCookie = start.headers.getSetCookie().find((header) => header.startsWith('hd_google_oauth='))!;
+      assert.match(stateCookie, /HttpOnly/);
+      assert.match(stateCookie, /SameSite=Lax/);
+      assert.match(stateCookie, /Path=\/api\/auth\/google/);
+      const cookie = stateCookie.split(';')[0];
+      const state = google.searchParams.get('state');
+
+      const landing = async (path: string, withCookie = true) => {
+        const reply = await raw(base, path, withCookie ? cookie : undefined);
+        assert.equal(reply.status, 303, path);
+        assert.ok(!reply.headers.getSetCookie().some((header) => header.startsWith('hd_operational_session=') && !/Max-Age=0/.test(header)), `${path} must not open a session`);
+        return reply.headers.get('location');
+      };
+      // A forged or replayed callback: the state does not match the cookie.
+      assert.equal(await landing('/api/auth/google/callback?code=x&state=forged'), '/login?oauth_error=state');
+      // No cookie at all, as when the callback is opened in another browser.
+      assert.equal(await landing(`/api/auth/google/callback?code=x&state=${state}`, false), '/login?oauth_error=state');
+      // The user pressed cancel on Google's screen.
+      assert.equal(await landing('/api/auth/google/callback?error=access_denied'), '/login?oauth_error=cancelled');
+
+      // The page asks who it is after a redirect; only a real session answers.
+      assert.equal((await anonymous.call('GET', '/api/auth/session')).status, 401);
+      const me = await warehouse.call('GET', '/api/auth/session');
+      assert.equal(me.status, 200);
+      assert.equal(me.body.user.email, 'warehouse@smoke.test');
+      assert.equal(me.body.user.password, undefined);
+    });
+  } finally {
+    for (const [key, value] of [['GOOGLE_CLIENT_ID', saved.id], ['GOOGLE_CLIENT_SECRET', saved.secret], ['GOOGLE_REDIRECT_URI', saved.redirect]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });

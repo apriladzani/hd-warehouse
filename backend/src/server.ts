@@ -12,6 +12,8 @@ import fs from 'fs';
 import { randomUUID } from 'crypto';
 import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'url';
+import { isMailConfigured, sendPasswordResetEmail } from './mail.ts';
+import { finishGoogleSignIn, GoogleSignInError, readGoogleSettings, readStateCookie, startGoogleSignIn } from './googleOAuth.ts';
 import {
   authenticateUser,
   getAllUsers,
@@ -37,6 +39,11 @@ import {
   getFinanceAccessLock,
   recordFinanceAccessFailure,
   clearFinanceAccessFailures,
+  createPasswordResetToken,
+  findPasswordResetToken,
+  consumePasswordResetToken,
+  PASSWORD_RESET_MINUTES,
+  signInWithGoogle,
   DEFAULT_BRANDING,
   DEFAULT_SYSTEM_SETTINGS,
   getInventory,
@@ -158,6 +165,142 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Register error:', err);
     res.status(400).json({ error: err.message || 'Gagal mendaftar' });
+  }
+});
+
+// Password reset. The request endpoint answers the same way whether or not the
+// account exists, so it cannot be used to find out who has an account here.
+const RESET_NEUTRAL_REPLY = {
+  message: 'Jika akun dengan data tersebut terdaftar dan aktif, tautan untuk membuat password baru sudah dikirim ke emailnya. Periksa juga folder spam.',
+};
+const resetAttempts = new Map<string, { count: number; windowStart: number }>();
+const RESET_WINDOW_MS = 15 * 60 * 1000;
+const RESET_MAX_PER_WINDOW = 5;
+
+const resetRateLimited = (key: string) => {
+  const now = Date.now();
+  for (const [entry, value] of resetAttempts) if (now - value.windowStart > RESET_WINDOW_MS) resetAttempts.delete(entry);
+  const current = resetAttempts.get(key);
+  if (!current || now - current.windowStart > RESET_WINDOW_MS) {
+    resetAttempts.set(key, { count: 1, windowStart: now });
+    return false;
+  }
+  current.count += 1;
+  return current.count > RESET_MAX_PER_WINDOW;
+};
+
+app.post('/api/auth/password-reset/request', async (req: Request, res: Response) => {
+  try {
+    if (!isMailConfigured()) {
+      return res.status(503).json({ error: 'Pengiriman email belum dikonfigurasi di server. Hubungi administrator.' });
+    }
+    const login = typeof req.body?.login === 'string' ? req.body.login : '';
+    if (!login.trim()) return res.status(400).json({ error: 'Masukkan username atau email akun Anda.' });
+    if (resetRateLimited(`${req.ip}`)) {
+      return res.status(429).json({ error: 'Terlalu banyak permintaan. Tunggu 15 menit, lalu coba lagi.' });
+    }
+    const created = await createPasswordResetToken(login);
+    if (created) {
+      try {
+        await sendPasswordResetEmail(created.email, created.name, created.token, PASSWORD_RESET_MINUTES);
+      } catch (err: any) {
+        // A send failure is the server's problem, not a hint about the account.
+        console.error('[password-reset] gagal mengirim email:', err?.message);
+        return res.status(502).json({ error: 'Email tidak bisa dikirim saat ini. Coba lagi nanti atau hubungi administrator.' });
+      }
+    }
+    res.json(RESET_NEUTRAL_REPLY);
+  } catch (err: any) {
+    console.error('[password-reset] request gagal:', err?.message);
+    res.status(500).json({ error: 'Permintaan tidak bisa diproses. Coba lagi nanti.' });
+  }
+});
+
+// The session cookie is HttpOnly, so after a redirect-based sign-in the page
+// asks here who it is instead of reading the answer from a fetch reply.
+app.get('/api/auth/session', async (req: Request, res: Response) => {
+  try {
+    const user = await operationalSessions.identity(req);
+    if (!user) return res.status(401).json({ error: 'Belum masuk.' });
+    res.json({ user: publicUser(user) });
+  } catch {
+    res.status(503).json({ error: 'Sesi tidak bisa diperiksa saat ini.' });
+  }
+});
+
+app.get('/api/auth/providers', (_req: Request, res: Response) => {
+  res.json({ google: readGoogleSettings() !== null });
+});
+
+// Google sign-in. Every outcome ends in a redirect back to /login, carrying
+// either oauth=ok or a short oauth_error code the page turns into a sentence.
+const GOOGLE_STATE_COOKIE = 'hd_google_oauth';
+const setGoogleStateCookie = (res: Response, value: string, maxAge: number) => {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  // Lax, not Strict: the callback is a top-level navigation arriving from
+  // accounts.google.com, and a Strict cookie would not be sent with it.
+  res.append('Set-Cookie', `${GOOGLE_STATE_COOKIE}=${value}; Path=/api/auth/google; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`);
+};
+const backToLogin = (res: Response, query: string) => res.redirect(303, `/login?${query}`);
+
+app.get('/api/auth/google', (_req: Request, res: Response) => {
+  const settings = readGoogleSettings();
+  if (!settings) return backToLogin(res, 'oauth_error=unconfigured');
+  const { url, cookieValue } = startGoogleSignIn(settings);
+  setGoogleStateCookie(res, cookieValue, 600);
+  res.setHeader('Cache-Control', 'no-store');
+  res.redirect(302, url);
+});
+
+app.get('/api/auth/google/callback', async (req: Request, res: Response) => {
+  const settings = readGoogleSettings();
+  const saved = readStateCookie(getCookie(req, GOOGLE_STATE_COOKIE));
+  setGoogleStateCookie(res, '', 0);
+  res.setHeader('Cache-Control', 'no-store');
+  if (!settings) return backToLogin(res, 'oauth_error=unconfigured');
+  if (typeof req.query.error === 'string') return backToLogin(res, 'oauth_error=cancelled');
+  const code = typeof req.query.code === 'string' ? req.query.code : '';
+  if (!saved || !code || req.query.state !== saved.state) return backToLogin(res, 'oauth_error=state');
+  try {
+    const profile = await finishGoogleSignIn(settings, code, saved.verifier);
+    const result = await signInWithGoogle(profile);
+    if (result.status !== 'ok') return backToLogin(res, `oauth_error=${result.status}`);
+    const user = await operationalSessions.loginVerifiedUser(req, res, result.userId);
+    if (!user) return backToLogin(res, 'oauth_error=inactive');
+    backToLogin(res, 'oauth=ok');
+  } catch (err: any) {
+    if (err instanceof GoogleSignInError) return backToLogin(res, `oauth_error=${err.reason}`);
+    console.error('[google-oauth] gagal:', err?.message);
+    backToLogin(res, 'oauth_error=server');
+  }
+});
+
+app.get('/api/auth/password-reset/verify', async (req: Request, res: Response) => {
+  try {
+    const match = await findPasswordResetToken(String(req.query.token || ''));
+    res.json({ valid: Boolean(match), name: match?.name || null });
+  } catch (err: any) {
+    console.error('[password-reset] verify gagal:', err?.message);
+    res.status(500).json({ error: 'Tautan tidak bisa diperiksa. Coba lagi nanti.' });
+  }
+});
+
+app.post('/api/auth/password-reset/confirm', async (req: Request, res: Response) => {
+  try {
+    const token = typeof req.body?.token === 'string' ? req.body.token : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (password.length < 6) return res.status(400).json({ error: 'Password minimal 6 karakter.' });
+    if (Buffer.byteLength(password, 'utf8') > 1024) return res.status(400).json({ error: 'Password terlalu panjang.' });
+    if (resetRateLimited(`confirm:${req.ip}`)) {
+      return res.status(429).json({ error: 'Terlalu banyak percobaan. Tunggu 15 menit, lalu coba lagi.' });
+    }
+    if (!await consumePasswordResetToken(token, password)) {
+      return res.status(400).json({ error: 'Tautan sudah dipakai atau kedaluwarsa. Minta tautan baru dari halaman Lupa Password.' });
+    }
+    res.json({ success: true, message: 'Password berhasil diubah. Silakan masuk dengan password baru Anda.' });
+  } catch (err: any) {
+    console.error('[password-reset] confirm gagal:', err?.message);
+    res.status(500).json({ error: 'Password tidak bisa diubah. Coba lagi nanti.' });
   }
 });
 
