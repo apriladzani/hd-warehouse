@@ -36,7 +36,7 @@ interface KpiCardProps {
   value: React.ReactNode;
   icon?: LucideIcon;
   tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'info';
-  description?: string;
+  description?: React.ReactNode;
   className?: string;
 }
 

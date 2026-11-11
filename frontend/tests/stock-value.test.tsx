@@ -28,3 +28,8 @@ test('Nilai Stok sorts highest or lowest first, and an unpriced item always sink
   assert.equal(sortByStockValue(items, 'none'), items, 'no sort keeps the page order');
   assert.deepEqual(['none', 'desc', 'asc'].map((state) => nextValueSort(state as any)), ['desc', 'asc', 'none']);
 });
+
+test('the overview card: every item at stock 0 totals Rp0, and items without a price are only counted', () => {
+  const empty = [{ stockValue: 0 }, { stockValue: 0 }, { stockValue: null }, { stockValue: null }];
+  assert.deepEqual(totalStockValue(empty), { total: 0, unpriced: 2 });
+});

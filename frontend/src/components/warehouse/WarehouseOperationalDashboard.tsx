@@ -1,5 +1,5 @@
 import { Button, Input, KpiCard, StateMessage, Toolbar } from '../common/UI.tsx';
-import { ArrowDown, ArrowUp, ArrowUpDown, Boxes, Search, ShoppingBag, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Boxes, Search, TriangleAlert, Wallet } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { CalendarDays, ChevronDown, RotateCcw } from 'lucide-react';
 import type { InventoryItem, PurchaseTransaction, User } from '../../types.ts';
@@ -70,11 +70,11 @@ export const WarehouseOperationalDashboard: React.FC<{ currentUser: User }> = ({
     (!selectedCategories.length || selectedCategories.includes(item.category))
   ), [data.items, selectedItemIds, selectedCategories]);
 
-  const filteredItemIds = useMemo(() => new Set(selectedInventory.map((item) => item.id)), [selectedInventory]);
-  const totalPurchases = useMemo(() => data.purchases.reduce((total, purchase) =>
-    total + (purchase.items || []).reduce((sum, line) =>
-      sum + (filteredItemIds.has(line.itemId) ? Number(line.quantity) * Number(line.price) : 0), 0), 0
-  ), [data.purchases, filteredItemIds]);
+  // Same per-item values and the same sum as the table's Nilai Stok total, so
+  // the card and the table agree to the rupiah. The card follows the Barang
+  // and Kategori filters like the other cards; the date range does not apply,
+  // because this is the stock position now, not activity in a period.
+  const overviewStockValue = useMemo(() => totalStockValue(selectedInventory), [selectedInventory]);
   const outOfStockCount = selectedInventory.filter((item) => Number(item.currentStock || 0) <= 0).length;
 
   const resetFilters = () => {
@@ -92,7 +92,7 @@ export const WarehouseOperationalDashboard: React.FC<{ currentUser: User }> = ({
       <header className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <h1 className="text-lg sm:text-xl font-bold tracking-tight text-[#1E293B]">Warehouse Overview</h1>
-          <p className="mt-0.5 text-xs text-[#64748B]">Pantau pembelian dan ketersediaan stok gudang.</p>
+          <p className="mt-0.5 text-xs text-[#64748B]">Pantau nilai dan ketersediaan stok gudang.</p>
         </div>
         <Button onClick={() => void loadDashboard()} variant="secondary" className="px-3 py-2">
           <RotateCcw className="h-3.5 w-3.5" /> Muat ulang
@@ -100,7 +100,7 @@ export const WarehouseOperationalDashboard: React.FC<{ currentUser: User }> = ({
       </header>
 
       <section aria-label="Ringkasan operasional gudang" className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <KpiCard label="Total Pembelian Barang" value={loading ? 'Memuat…' : formatRupiah(totalPurchases)} icon={ShoppingBag} description="Sesuai periode dan filter barang/kategori" />
+        <KpiCard label="Total Nilai Stok" value={loading ? 'Memuat…' : formatRupiah(overviewStockValue.total)} icon={Wallet} description="Stok saat ini × harga rata-rata, sesuai filter barang/kategori" />
         <KpiCard label="Total Jenis Barang" value={loading ? 'Memuat…' : selectedInventory.length.toLocaleString('id-ID')} icon={Boxes} description="Barang sesuai filter operasional" />
         <KpiCard label="Barang Stok Habis" value={loading ? 'Memuat…' : outOfStockCount.toLocaleString('id-ID')} icon={TriangleAlert} tone={outOfStockCount ? 'warning' : 'success'} description="Stok saat ini bernilai nol" />
       </section>
@@ -150,7 +150,7 @@ export const WarehouseOperationalDashboard: React.FC<{ currentUser: User }> = ({
             <span>{loading ? 'Memuat…' : `${filteredItems.length} barang`}</span>
             {!loading && <>
               <span aria-hidden="true"> · </span>
-              <span>Total Nilai Stok: <strong className="tabular-nums text-[#1E293B]">{formatRupiah(stockValue.total)}</strong></span>
+              <span>Total Nilai Stok{stockSearch.trim() ? ' (hasil pencarian)' : ''}: <strong className="tabular-nums text-[#1E293B]">{formatRupiah(stockValue.total)}</strong></span>
               {stockValue.unpriced > 0 && <span className="block text-[10px] text-[#94A3B8]">{stockValue.unpriced} barang belum punya harga, tidak dihitung</span>}
             </>}
           </div>

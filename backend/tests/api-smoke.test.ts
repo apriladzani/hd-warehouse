@@ -564,3 +564,14 @@ test('Nilai stok: an item never bought has no price, and an empty one is worth R
     assert.deepEqual([empty.currentStock, empty.avgCost, empty.stockValue], [0, 9000, 0]);
   });
 });
+
+test('Total Nilai Stok: the date range never changes stock values, only the purchase list', async () => {
+  await withApi(async ({ warehouse }) => {
+    const all = (await warehouse.call('GET', '/api/dashboard/warehouse-ops-stats')).body;
+    const ranged = (await warehouse.call('GET', '/api/dashboard/warehouse-ops-stats?startDate=2020-01-01&endDate=2020-01-31')).body;
+    const values = (body: any) => body.items.map((item: any) => [item.id, item.currentStock, item.avgCost, item.stockValue]);
+    assert.deepEqual(values(ranged), values(all), 'stock position is the same whatever period is picked');
+    assert.equal(ranged.purchases.length, 0, 'while the purchases in that empty period do follow the dates');
+    assert.ok(all.purchases.length > 0);
+  });
+});
