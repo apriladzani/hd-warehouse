@@ -93,7 +93,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, activeNav, onNaviga
           ))}
         </nav>
         <div className="hd-sidebar-footer">
-          <div className="hd-sidebar-label hd-footer-copy"><span className="hd-footer-caption">HD MANAGEMENT SYSTEM</span><span>Satu workspace, semua aktivitas.</span></div>
+          <div className="hd-sidebar-label hd-footer-copy"><span className="hd-footer-caption">{branding.appName.toUpperCase()}</span><span>Satu workspace, semua aktivitas.</span></div>
           <button className="hd-sidebar-collapse" onClick={() => setCollapsed((value) => !value)} aria-label={collapsed ? 'Perluas sidebar' : 'Lipat sidebar'} aria-expanded={!collapsed}>
             {collapsed ? <ChevronRight size={17} /> : <PanelLeftClose size={17} />}<span className="hd-sidebar-label">Lipat sidebar</span>
           </button>

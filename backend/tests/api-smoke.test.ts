@@ -102,72 +102,119 @@ test('login is required and the role decides who may create a request', async ()
   });
 });
 
-test('deciding one line closes the request: the rest is auto-rejected, stock and history follow', async () => {
+// The scenario from the bug report: one outlet request, Barang A qty 3 and
+// Barang B qty 3. Each test returns the two line ids and a reader for them.
+async function requestAB(outlet: ReturnType<typeof client>, connection: any) {
+  const request = (await outlet.call('POST', '/api/requests', {
+    paymentMethod: 'Transfer', requestDate: todayJakarta(),
+    items: [{ itemId: 1, quantity: 3, price: 45000 }, { itemId: 2, quantity: 3, price: 12000 }],
+  })).body.request;
+  const [lines]: any = await connection.query('SELECT id FROM request_items WHERE request_id = ? ORDER BY id', [request.id]);
+  return { id: request.id as number, a: lines[0].id as number, b: lines[1].id as number };
+}
+const lineState = (detail: any, lineId: number) => {
+  const line = detail.items.find((item: any) => item.id === lineId);
+  return [line.status, Number(line.approvedQuantity || 0)];
+};
+const stockOf = async (connection: any) => {
+  const [rows]: any = await connection.query('SELECT current_stock FROM items WHERE id IN (1, 2) ORDER BY id');
+  return rows.map((row: any) => Number(row.current_stock));
+};
+
+test('Kasus 1: approving part of one line leaves the other line pending', async () => {
   await withApi(async ({ outlet, warehouse, connection }) => {
-    const request = (await twoLineRequest(outlet)).body.request;
-    const [lines]: any = await connection.query('SELECT id, item_id FROM request_items WHERE request_id = ? ORDER BY id', [request.id]);
-    const [ayam, box] = lines;
+    const r = await requestAB(outlet, connection);
+    const detailOf = async () => (await warehouse.call('GET', `/api/requests/${r.id}`)).body.request;
 
-    // Partial approval: 3 of the 5 requested.
-    const approved = await warehouse.call('POST', `/api/requests/${request.id}/items/${ayam.id}/approve`, { staffName: 'Gudang', approvedQuantity: 3 });
-    assert.equal(approved.status, 200);
-
-    const detail = (await warehouse.call('GET', `/api/requests/${request.id}`)).body.request;
-    assert.equal(detail.status, 'Partially Approved');
-    assert.equal(detail.items.find((item: any) => item.id === ayam.id).approvedQuantity, 3);
-    // By design ("a request is processed once"): the untouched second line is
-    // closed as rejected rather than left pending.
-    assert.equal(detail.items.find((item: any) => item.id === box.id).status, 'Rejected');
-    assert.equal(detail.items.find((item: any) => item.id === box.id).approvedQuantity, 0);
-
-    const [stock]: any = await connection.query('SELECT id, current_stock FROM items ORDER BY id');
-    assert.equal(Number(stock[0].current_stock), 97); // only the approved 3 left the warehouse
-    assert.equal(Number(stock[1].current_stock), 100);
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/items/${r.a}/approve`, { staffName: 'Gudang', approvedQuantity: 2 })).status, 200);
+    let detail = await detailOf();
+    assert.deepEqual(lineState(detail, r.a), ['Approved', 2]);
+    assert.deepEqual(lineState(detail, r.b), ['Pending', 0], 'Barang B is untouched');
+    assert.equal(detail.status, 'Pending', 'a request with a pending line is still in progress');
+    assert.deepEqual(await stockOf(connection), [98, 100], 'only the 2 approved units of A left the warehouse');
 
     // The cost of the sale is fixed at approval, from the purchase history.
-    const [cost]: any = await connection.query('SELECT unit_cost, cogs_amount FROM inventory_cost_snapshots WHERE request_item_id = ?', [ayam.id]);
+    const [cost]: any = await connection.query('SELECT unit_cost, cogs_amount FROM inventory_cost_snapshots WHERE request_item_id = ?', [r.a]);
     assert.equal(Number(cost[0].unit_cost), 20000);
-    assert.equal(Number(cost[0].cogs_amount), 60000);
+    assert.equal(Number(cost[0].cogs_amount), 40000);
 
-    // Consequence of that rule: nothing in this request can be decided again,
-    // so a multi-line request has to go through approve-all to approve more than
-    // one of its lines.
-    assert.equal((await warehouse.call('POST', `/api/requests/${request.id}/items/${box.id}/approve`, {})).status, 400);
-    assert.equal((await warehouse.call('POST', `/api/requests/${request.id}/items/${box.id}/reject`, { staffName: 'Gudang' })).status, 400);
-    assert.equal((await warehouse.call('POST', `/api/requests/${request.id}/items/${ayam.id}/approve`, {})).status, 400);
+    // A decided line cannot be decided again; the pending one still can.
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/items/${r.a}/approve`, {})).status, 400);
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/items/${r.a}/reject`, {})).status, 400);
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/items/${r.b}/approve`, { staffName: 'Gudang' })).status, 200);
+    detail = await detailOf();
+    assert.deepEqual(lineState(detail, r.b), ['Approved', 3]);
+    assert.equal(detail.status, 'Partially Approved', 'A was only partly approved');
+    assert.deepEqual(await stockOf(connection), [98, 97]);
 
     const outgoing = (await warehouse.call('GET', '/api/history/outgoing')).body.history;
     const soldLines = outgoing.flatMap((entry: any) => entry.items ?? []).filter((line: any) => line.status === 'Approved');
-    assert.equal(soldLines.length, 1);
-    assert.equal(soldLines[0].approvedQuantity, 3);
+    assert.deepEqual(soldLines.map((line: any) => line.approvedQuantity).sort(), [2, 3]);
   });
 });
 
-test('approve-all decides every pending line at once, with per-line quantities', async () => {
+test('Kasus 2: rejecting one line leaves the other line pending, and moves no stock', async () => {
   await withApi(async ({ outlet, warehouse, connection }) => {
-    const request = (await twoLineRequest(outlet)).body.request;
-    const [lines]: any = await connection.query('SELECT id FROM request_items WHERE request_id = ? ORDER BY id', [request.id]);
+    const r = await requestAB(outlet, connection);
+    const detailOf = async () => (await warehouse.call('GET', `/api/requests/${r.id}`)).body.request;
 
-    // Second line cut to 0: approve-all closes it as rejected rather than approving it.
-    const result = await warehouse.call('POST', `/api/requests/${request.id}/approve-all`, { staffName: 'Gudang', customQuantities: { [lines[0].id]: 2, [lines[1].id]: 0 } });
-    assert.equal(result.status, 200);
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/items/${r.a}/reject`, { staffName: 'Gudang' })).status, 200);
+    let detail = await detailOf();
+    assert.deepEqual(lineState(detail, r.a), ['Rejected', 0]);
+    assert.deepEqual(lineState(detail, r.b), ['Pending', 0], 'Barang B is neither approved nor rejected');
+    assert.equal(detail.status, 'Pending');
+    assert.deepEqual(await stockOf(connection), [100, 100]);
+    const [booked]: any = await connection.query('SELECT COUNT(*) AS n FROM inventory_cost_snapshots WHERE request_item_id IN (?, ?)', [r.a, r.b]);
+    assert.equal(Number(booked[0].n), 0, 'no sale is booked for either line');
 
-    const detail = (await warehouse.call('GET', `/api/requests/${request.id}`)).body.request;
-    assert.equal(detail.status, 'Partially Approved');
-    assert.deepEqual(detail.items.map((item: any) => [item.status, item.approvedQuantity]), [['Approved', 2], ['Rejected', 0]]);
-    const [stock]: any = await connection.query('SELECT current_stock FROM items ORDER BY id');
-    assert.equal(Number(stock[0].current_stock), 98);
+    // Rejecting the other line too: every line rejected means the request is Rejected.
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/items/${r.b}/reject`, { staffName: 'Gudang' })).status, 200);
+    detail = await detailOf();
+    assert.equal(detail.status, 'Rejected');
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/approve-all`, {})).status, 400, 'nothing left to approve');
+  });
+});
 
-    // HPP is captured at approval time, by this route as well as the per-line one.
-    const [cost]: any = await connection.query('SELECT unit_cost, approved_quantity FROM inventory_cost_snapshots WHERE request_item_id = ?', [lines[0].id]);
-    assert.equal(Number(cost[0].unit_cost), 20000);
-    assert.equal(Number(cost[0].approved_quantity), 2);
-    // The line cut to 0 is rejected, so it books no cost at all.
-    const [none]: any = await connection.query('SELECT COUNT(*) AS n FROM inventory_cost_snapshots WHERE request_item_id = ?', [lines[1].id]);
-    assert.equal(Number(none[0].n), 0);
+test('Kasus 3: Approve Semua approves every line in full', async () => {
+  await withApi(async ({ outlet, warehouse, connection }) => {
+    const r = await requestAB(outlet, connection);
+    // Quantities sent by an older client are ignored: Approve Semua is always the full request.
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/approve-all`, { staffName: 'Gudang', customQuantities: { [r.a]: 1, [r.b]: 0 } })).status, 200);
+    const detail = (await warehouse.call('GET', `/api/requests/${r.id}`)).body.request;
+    assert.deepEqual(lineState(detail, r.a), ['Approved', 3]);
+    assert.deepEqual(lineState(detail, r.b), ['Approved', 3]);
+    assert.equal(detail.status, 'Approved');
+    assert.deepEqual(await stockOf(connection), [97, 97]);
+    // HPP is captured at approval time by this route as well.
+    const [cost]: any = await connection.query('SELECT request_item_id, unit_cost, approved_quantity FROM inventory_cost_snapshots WHERE request_item_id IN (?, ?) ORDER BY request_item_id', [r.a, r.b]);
+    assert.deepEqual(cost.map((row: any) => [Number(row.unit_cost), Number(row.approved_quantity)]), [[20000, 3], [9000, 3]]);
 
-    assert.equal((await warehouse.call('POST', `/api/requests/${request.id}/approve-all`, {})).status, 400);
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/approve-all`, {})).status, 400, 'a finished request cannot be approved again');
     assert.equal((await warehouse.call('POST', '/api/requests/999999/approve-all', {})).status, 400);
+  });
+});
+
+test('Approve Semua after a per-line decision never overwrites that decision', async () => {
+  await withApi(async ({ outlet, warehouse, connection }) => {
+    // A approved for 2 of 3, then Approve Semua: A keeps 2, B gets its full 3.
+    const partly = await requestAB(outlet, connection);
+    await warehouse.call('POST', `/api/requests/${partly.id}/items/${partly.a}/approve`, { approvedQuantity: 2 });
+    assert.equal((await warehouse.call('POST', `/api/requests/${partly.id}/approve-all`, {})).status, 200);
+    let detail = (await warehouse.call('GET', `/api/requests/${partly.id}`)).body.request;
+    assert.deepEqual([lineState(detail, partly.a), lineState(detail, partly.b)], [['Approved', 2], ['Approved', 3]]);
+    assert.equal(detail.status, 'Partially Approved');
+    const [aSales]: any = await connection.query('SELECT COUNT(*) AS n FROM inventory_cost_snapshots WHERE request_item_id = ?', [partly.a]);
+    assert.equal(Number(aSales[0].n), 1, 'A is not sold a second time');
+
+    // A rejected, then Approve Semua: A stays rejected, B is approved.
+    const rejected = await requestAB(outlet, connection);
+    await warehouse.call('POST', `/api/requests/${rejected.id}/items/${rejected.a}/reject`, {});
+    assert.equal((await warehouse.call('POST', `/api/requests/${rejected.id}/approve-all`, {})).status, 200);
+    detail = (await warehouse.call('GET', `/api/requests/${rejected.id}`)).body.request;
+    assert.deepEqual([lineState(detail, rejected.a), lineState(detail, rejected.b)], [['Rejected', 0], ['Approved', 3]]);
+    assert.equal(detail.status, 'Partially Approved');
+    // Stock: 2 + 3 from the first request, 3 from the second.
+    assert.deepEqual(await stockOf(connection), [98, 94]);
   });
 });
 
@@ -226,24 +273,6 @@ test('finance password gate: Warehouse only, wrong password refused, session ope
   });
 });
 
-test('a rejection closes the request the same way, and moves no stock', async () => {
-  await withApi(async ({ outlet, warehouse, connection }) => {
-    const request = (await twoLineRequest(outlet)).body.request;
-    const [lines]: any = await connection.query('SELECT id FROM request_items WHERE request_id = ? ORDER BY id', [request.id]);
-
-    assert.equal((await warehouse.call('POST', `/api/requests/${request.id}/items/${lines[0].id}/reject`, { staffName: 'Gudang' })).status, 200);
-    const detail = (await warehouse.call('GET', `/api/requests/${request.id}`)).body.request;
-    assert.deepEqual(detail.items.map((item: any) => item.status), ['Rejected', 'Rejected']);
-    // The status describes the lines as they finally are: nothing was approved,
-    // so the request is Rejected rather than 'Partially Approved'.
-    assert.equal(detail.status, 'Rejected');
-    // No stock moves on a rejection.
-    const [stock]: any = await connection.query("SELECT current_stock FROM items WHERE item_code = 'RM-801'");
-    assert.equal(Number(stock[0].current_stock), 100);
-    assert.equal((await warehouse.call('POST', `/api/requests/${request.id}/items/${lines[1].id}/reject`, {})).status, 400);
-  });
-});
-
 test('closing a period warns about the requests still waiting for approval', async () => {
   await withApi(async ({ outlet, warehouse }) => {
     assert.deepEqual((await warehouse.call('GET', '/api/inventory/stock-opname/pending-requests')).body, { count: 0, requests: [] });
@@ -253,12 +282,18 @@ test('closing a period warns about the requests still waiting for approval', asy
     const settled = await warehouse.call('POST', `/api/requests/${decided.id}/approve-all`, { staffName: 'Gudang' });
     assert.equal(settled.status, 200);
 
+    // Half decided: one line approved, the other still waiting.
+    const half = (await twoLineRequest(outlet)).body.request;
+    const halfLines = (await warehouse.call('GET', `/api/requests/${half.id}`)).body.request.items;
+    assert.equal((await warehouse.call('POST', `/api/requests/${half.id}/items/${halfLines[0].id}/approve`, {})).status, 200);
+
     const warning = (await warehouse.call('GET', '/api/inventory/stock-opname/pending-requests')).body;
-    assert.equal(warning.count, 1); // only the request nobody has decided on
-    assert.equal(warning.requests[0].requestCode, undecided.requestCode);
-    assert.equal(warning.requests[0].outletName, 'Smoke Outlet');
-    assert.equal(warning.requests[0].pendingItems, 2);
-    assert.equal(warning.requests[0].pendingQuantity, 9);
+    assert.equal(warning.count, 2); // the undecided request and the half-decided one, not the settled one
+    const byCode = (code: string) => warning.requests.find((request: any) => request.requestCode === code);
+    assert.equal(byCode(decided.requestCode), undefined);
+    assert.equal(byCode(undecided.requestCode).outletName, 'Smoke Outlet');
+    assert.deepEqual([byCode(undecided.requestCode).pendingItems, byCode(undecided.requestCode).pendingQuantity], [2, 9]);
+    assert.deepEqual([byCode(half.requestCode).pendingItems, byCode(half.requestCode).pendingQuantity], [1, 4], 'only the line still waiting');
 
     // The same list comes back with the closing itself, read inside its transaction.
     const closed = await warehouse.call('POST', '/api/inventory/stock-opname', {
@@ -269,7 +304,7 @@ test('closing a period warns about the requests still waiting for approval', asy
     assert.deepEqual(closed.body.opname.pendingRequests, warning);
 
     // Still pending after the closing, so it falls into the period that just opened.
-    assert.equal((await warehouse.call('GET', '/api/inventory/stock-opname/pending-requests')).body.count, 1);
+    assert.equal((await warehouse.call('GET', '/api/inventory/stock-opname/pending-requests')).body.count, 2);
     const periods = (await warehouse.call('GET', '/api/dashboard/finance-periods')).body;
     assert.equal(periods.status ?? 200, 200);
   });

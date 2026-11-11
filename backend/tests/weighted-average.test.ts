@@ -142,12 +142,18 @@ test('Inventory weighted average, approvals and the period report', async () => 
 
     const [partialRequest]: any = await connection.query("INSERT INTO requests (request_code, requester_name, request_date, status) VALUES ('TEST-PARTIAL', 'Outlet Test', ?, 'Pending')", [TODAY]);
     const [partialApprovedItem]: any = await connection.query("INSERT INTO request_items (request_id, item_id, requested_quantity, approved_quantity, price, status) VALUES (?, ?, 5, 0, 500, 'Pending')", [partialRequest.insertId, ayam]);
-    const [autoClosedItem]: any = await connection.query("INSERT INTO request_items (request_id, item_id, requested_quantity, approved_quantity, price, status) VALUES (?, ?, 2, 0, 500, 'Pending')", [partialRequest.insertId, beras]);
+    const [otherItem]: any = await connection.query("INSERT INTO request_items (request_id, item_id, requested_quantity, approved_quantity, price, status) VALUES (?, ?, 2, 0, 500, 'Pending')", [partialRequest.insertId, beras]);
     await updateRequestItemStatus(partialRequest.insertId, partialApprovedItem.insertId, 'Approve', 'Tester', 4);
-    const partialDetail = await getRequestDetail(partialRequest.insertId);
+    // Deciding one line leaves the other one pending, and so the request too.
+    let partialDetail = await getRequestDetail(partialRequest.insertId);
+    assert.equal(partialDetail.status, 'Pending');
+    assert.equal(partialDetail.items.find((item: any) => item.id === otherItem.insertId).status, 'Pending');
+    // The other line is then decided on its own; with every line decided the
+    // request is closed and nothing in it can be decided again.
+    await updateRequestItemStatus(partialRequest.insertId, otherItem.insertId, 'Reject', 'Tester');
+    partialDetail = await getRequestDetail(partialRequest.insertId);
     assert.equal(partialDetail.status, 'Partially Approved');
-    assert.equal(partialDetail.items.find((item: any) => item.id === autoClosedItem.insertId).status, 'Rejected');
-    await assert.rejects(updateRequestItemStatus(partialRequest.insertId, autoClosedItem.insertId, 'Approve'), /sudah diproses/);
+    await assert.rejects(updateRequestItemStatus(partialRequest.insertId, otherItem.insertId, 'Approve'), /sudah diproses/);
 
     // Zero-cost receipts contribute quantity and never fall back to catalog selling price.
     await connection.query("INSERT INTO items (item_name, category, item_code, price, current_stock) VALUES ('Gratis', 'Support Material', 'SM-901', 90000, 0)");

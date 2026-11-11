@@ -15,7 +15,6 @@ import { StatusBadge } from '../common/StatusBadge.tsx';
 import { formatDateIndo, formatRupiah } from '../../lib/format.ts';
 import { PrintableTransactionA4 } from './PrintableTransactionA4.tsx';
 import { buildApprovedRequestPrintData, canPrintApprovedRequest } from '../../lib/requestPrint.ts';
-import { ApproveSubsetConfirm, linesAutoRejected } from './ApproveSubsetConfirm.tsx';
 
 interface WarehouseRequestDetailModalProps {
   isOpen: boolean;
@@ -38,8 +37,6 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [showPrintA4, setShowPrintA4] = useState(false);
-  // Set when approving one line would auto-reject others, so the user decides first.
-  const [pendingApproval, setPendingApproval] = useState<{ item: any; autoRejected: any[] } | null>(null);
 
   const fetchDetail = async () => {
     if (!requestId) return;
@@ -71,7 +68,6 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
     if (isOpen && requestId) {
       setError(null);
       setSuccessMsg(null);
-      setPendingApproval(null);
       fetchDetail();
     }
   }, [isOpen, requestId]);
@@ -115,11 +111,13 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
         throw new Error(data.error || `Gagal memproses ${decision}`);
       }
 
+      // Only this line changed; every other line keeps its own status.
+      const line = request?.items?.find((it: any) => it.id === requestItemId);
       const itemQty = quantities[requestItemId];
       setSuccessMsg(
         decision === 'Approve'
-          ? `Berhasil menyetujui barang (${itemQty ?? 'sesuai'} pcs)!`
-          : 'Berhasil menolak barang!'
+          ? `${line?.itemName ?? 'Barang'} disetujui ${itemQty ?? 'sesuai'} pcs.`
+          : `${line?.itemName ?? 'Barang'} ditolak.`
       );
       await fetchDetail();
       onUpdated();
@@ -130,15 +128,8 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
     }
   };
 
-  // Approving one line closes the request, so the other undecided lines are
-  // named before the decision rather than silently rejected by the backend.
-  const requestApproval = (item: any) => {
-    const autoRejected = linesAutoRejected(request?.items ?? [], item.id);
-    if (!autoRejected.length) return handleDecision(item.id, 'Approve');
-    setPendingApproval({ item, autoRejected });
-  };
-
-  // Batch Decision: Approve ALL Pending Items
+  // Batch decision: every line still pending is approved for its full
+  // requested quantity. Lines already decided are left untouched by the server.
   const handleApproveAll = async () => {
     if (!requestId) return;
     setError(null);
@@ -149,10 +140,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
       const res = await fetch(`/api/requests/${requestId}/approve-all`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          staffName: 'Staff Gudang',
-          customQuantities: quantities,
-        }),
+        body: JSON.stringify({ staffName: 'Staff Gudang' }),
       });
 
       const data = await res.json();
@@ -160,8 +148,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
         throw new Error(data.error || 'Gagal menyetujui semua barang');
       }
 
-      setSuccessMsg('Semua barang dalam pengajuan berhasil disetujui!');
-      setPendingApproval(null);
+      setSuccessMsg('Semua barang yang masih pending disetujui penuh sesuai jumlah request.');
       await fetchDetail();
       onUpdated();
     } catch (err: any) {
@@ -177,8 +164,12 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
   const hasPending = request?.status === 'Pending' && pendingItems.length > 0;
   const approvedItems = request?.items?.filter((it: any) => Number(it.approvedQuantity) > 0) || [];
   const approvedQty = approvedItems.reduce((sum: number, it: any) => sum + Number(it.approvedQuantity || 0), 0);
-  const notApprovedItems = request?.items?.filter((it: any) => Number(it.requestedQuantity) > Number(it.approvedQuantity || 0)) || [];
+  // Lines are decided one at a time, so a request can hold decided and pending
+  // lines together. Only a decided line can be "not approved"; a pending one is
+  // still waiting.
+  const notApprovedItems = request?.items?.filter((it: any) => it.status !== 'Pending' && Number(it.requestedQuantity) > Number(it.approvedQuantity || 0)) || [];
   const notApprovedQty = notApprovedItems.reduce((sum: number, it: any) => sum + Math.max(0, Number(it.requestedQuantity) - Number(it.approvedQuantity || 0)), 0);
+  const waitingQty = pendingItems.reduce((sum: number, it: any) => sum + Number(it.requestedQuantity || 0), 0);
 
   return (
     <div className="hd-modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/40 backdrop-blur-xs">
@@ -269,6 +260,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-[11px]">
               <span className="font-semibold text-[#15803D]">Disetujui: {approvedItems.length} barang · {approvedQty} pcs</span>
               <span className="font-semibold text-[#64748B]">Tidak disetujui: {notApprovedItems.length} barang · {notApprovedQty} pcs</span>
+              {pendingItems.length > 0 && <span className="font-semibold text-[#B45309]">Menunggu: {pendingItems.length} barang · {waitingQty} pcs</span>}
             </div>
           )}
 
@@ -281,7 +273,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                   <span>Persetujuan Sekaligus</span>
                 </span>
                 <p className="text-[10px] sm:text-xs text-[#2D6A4F] mt-0.5">
-                  Terdapat <strong>{pendingItems.length} barang</strong> yang menunggu persetujuan. Klik tombol di kanan untuk approve semua langsung.
+                  <strong>{pendingItems.length} barang</strong> masih pending. Approve Semua menyetujui semuanya dengan jumlah penuh sesuai request; barang yang sudah disetujui atau ditolak tidak berubah.
                 </p>
               </div>
 
@@ -446,7 +438,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                           <button
                             id={`btn-approve-item-${item.id}`}
                             type="button"
-                            onClick={() => requestApproval(item)}
+                            onClick={() => handleDecision(item.id, 'Approve')}
                             disabled={isItemLoading || isOutOfStock}
                             className="px-3.5 py-1.5 sm:px-4 sm:py-1.5 rounded-[8px] sm:rounded-xl text-[10px] sm:text-xs font-bold transition-colors bg-[#20B26B] hover:bg-[#1b9a5c] text-white  disabled:opacity-40 flex items-center space-x-1"
                           >
@@ -510,21 +502,6 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
           </button>
         </div>
       </div>
-      {pendingApproval && (
-        <ApproveSubsetConfirm
-          item={pendingApproval.item}
-          autoRejected={pendingApproval.autoRejected}
-          approvedQuantity={quantities[pendingApproval.item.id] ?? pendingApproval.item.requestedQuantity}
-          busy={batchLoading || actionLoadingId !== null}
-          onApproveAll={() => void handleApproveAll()}
-          onApproveSelected={() => {
-            const itemId = pendingApproval.item.id;
-            setPendingApproval(null);
-            void handleDecision(itemId, 'Approve');
-          }}
-          onCancel={() => setPendingApproval(null)}
-        />
-      )}
       {showPrintA4 && canPrintApprovedRequest(request) && (
         <PrintableTransactionA4
           isOpen={showPrintA4}

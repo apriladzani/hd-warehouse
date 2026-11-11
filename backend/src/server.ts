@@ -682,13 +682,9 @@ app.post('/api/requests/:requestId/items/:requestItemId/approve', async (req: Re
 app.post('/api/requests/:requestId/approve-all', async (req: Request, res: Response) => {
   try {
     const requestId = Number(req.params.requestId);
-    const { staffName, customQuantities } = req.body;
+    const { staffName } = req.body;
 
-    const result = await approveAllRequestItems(
-      requestId,
-      customQuantities,
-      staffName || 'Staff Gudang'
-    );
+    const result = await approveAllRequestItems(requestId, staffName || 'Staff Gudang');
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Gagal menyetujui semua barang' });

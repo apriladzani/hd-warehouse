@@ -1,4 +1,6 @@
 import { inventoryReceiptAverage, opnameAverage } from '../finance/warehouseSimpleFinance.ts';
+import { deriveRequestStatus } from '../requestStatus.ts';
+export { deriveRequestStatus, type RequestStatusLine } from '../requestStatus.ts';
 import { eq, desc, and, gt, inArray, sql } from 'drizzle-orm';
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { db, pool } from './index.ts';
@@ -2736,20 +2738,8 @@ export async function updateRequestItemStatus(
         .where(eq(requestItems.id, requestItemId));
     }
 
-    // A request is processed once. Unresolved lines are explicitly closed as
-    // rejected so they cannot remain pending after a partial decision. This runs
-    // before the status is recalculated, so the status describes the lines as
-    // they finally are: a request whose every line ended up rejected is
-    // 'Rejected', not 'Partially Approved'.
-    const processedAt = todayJakarta();
-    await tx.update(requestItems).set({
-      status: 'Rejected',
-      approvedQuantity: 0,
-      approvedBy: staffName,
-      approvedAt: processedAt,
-    }).where(and(eq(requestItems.requestId, requestId), eq(requestItems.status, 'Pending')));
-
-    // Recalculate overall request status
+    // Only this line was decided above. The other lines keep their own status;
+    // the header is recalculated from all of them.
     const allItemsInReq = await tx
       .select({
         status: requestItems.status,
@@ -2758,31 +2748,7 @@ export async function updateRequestItemStatus(
       })
       .from(requestItems)
       .where(eq(requestItems.requestId, requestId));
-
-    let newStatus: 'Pending' | 'Partially Approved' | 'Approved' | 'Rejected' = 'Pending';
-    const statuses = allItemsInReq.map((i) => i.status);
-    const hasPending = statuses.includes('Pending');
-    const hasApproved = statuses.includes('Approved');
-    const hasRejected = statuses.includes('Rejected');
-    const anyPartialQty = allItemsInReq.some(
-      (i) => i.status === 'Approved' && i.approvedQuantity < i.requestedQuantity
-    );
-
-    if (hasPending) {
-      if (hasApproved || hasRejected) {
-        newStatus = 'Partially Approved';
-      } else {
-        newStatus = 'Pending';
-      }
-    } else {
-      if (hasApproved && !hasRejected) {
-        newStatus = anyPartialQty ? 'Partially Approved' : 'Approved';
-      } else if (!hasApproved && hasRejected) {
-        newStatus = 'Rejected';
-      } else if (hasApproved && hasRejected) {
-        newStatus = 'Partially Approved';
-      }
-    }
+    const newStatus = deriveRequestStatus(allItemsInReq);
 
     await tx.update(requests).set({ status: newStatus }).where(eq(requests.id, requestId));
 
@@ -2829,9 +2795,11 @@ export async function recordPeriodCorrection(data: { itemId: number; quantity: n
 }
 
 // Batch Approve All Items in a Request
+// "Approve Semua": every line that is still pending is approved for the full
+// quantity requested. Lines already decided - approved, partly approved or
+// rejected - are left exactly as they are.
 export async function approveAllRequestItems(
   requestId: number,
-  customQuantities?: Record<number, number>,
   staffName: string = 'Staff Gudang'
 ) {
   try {
@@ -2872,11 +2840,7 @@ export async function approveAllRequestItems(
     // 1. Validate the combined quantity for repeated item lines before processing.
     const plannedQuantityByItem = new Map<number, number>();
     for (const it of pendingItems) {
-      const desiredQty =
-        customQuantities && customQuantities[it.id] !== undefined
-          ? Math.min(Number(customQuantities[it.id]), it.requestedQuantity)
-          : it.requestedQuantity;
-      if (desiredQty > 0) plannedQuantityByItem.set(it.itemId, (plannedQuantityByItem.get(it.itemId) || 0) + desiredQty);
+      plannedQuantityByItem.set(it.itemId, (plannedQuantityByItem.get(it.itemId) || 0) + it.requestedQuantity);
     }
     for (const [itemId, desiredQty] of plannedQuantityByItem) {
       const item = pendingItems.find((entry) => entry.itemId === itemId)!;
@@ -2889,76 +2853,58 @@ export async function approveAllRequestItems(
 
     // 2. Eksekusi persetujuan setiap item
     for (const it of pendingItems) {
-      const desiredQty =
-        customQuantities && customQuantities[it.id] !== undefined
-          ? Math.min(Number(customQuantities[it.id]), it.requestedQuantity)
-          : it.requestedQuantity;
+      const qtyToApprove = it.requestedQuantity;
+      // Kurangi stok
+      await tx
+        .update(items)
+        .set({
+          currentStock: sql`${items.currentStock} - ${qtyToApprove}`,
+        })
+        .where(eq(items.id, it.itemId));
 
-      const qtyToApprove = Math.max(0, desiredQty);
+      // HPP is fixed at the weighted average of the moment of sale.
+      const [costHistory] = await tx.select({ id: purchaseItems.id }).from(purchaseItems)
+        .where(and(eq(purchaseItems.itemId, it.itemId), sql`${purchaseItems.quantity} > 0`, sql`${purchaseItems.price} > 0`))
+        .limit(1);
+      const unitCostSnapshot = costHistory && Number(it.avgPurchasePrice ?? 0) > 0 ? Number(it.avgPurchasePrice) : null;
 
-      if (qtyToApprove === 0) {
-        await tx
-          .update(requestItems)
-          .set({
-            approvedQuantity: 0,
-            status: 'Rejected',
-            approvedBy: staffName,
-            approvedAt: today,
-          })
-          .where(eq(requestItems.id, it.id));
-      } else {
-        // Kurangi stok
-        await tx
-          .update(items)
-          .set({
-            currentStock: sql`${items.currentStock} - ${qtyToApprove}`,
-          })
-          .where(eq(items.id, it.itemId));
-
-        // HPP is fixed at the weighted average of the moment of sale.
-        const [costHistory] = await tx.select({ id: purchaseItems.id }).from(purchaseItems)
-          .where(and(eq(purchaseItems.itemId, it.itemId), sql`${purchaseItems.quantity} > 0`, sql`${purchaseItems.price} > 0`))
-          .limit(1);
-        const unitCostSnapshot = costHistory && Number(it.avgPurchasePrice ?? 0) > 0 ? Number(it.avgPurchasePrice) : null;
-
-        // Update request item
-        await tx
-          .update(requestItems)
-          .set({
-            approvedQuantity: qtyToApprove,
-            status: 'Approved',
-            approvedBy: staffName,
-            approvedAt: today,
-            unitCostSnapshot,
-          })
-          .where(eq(requestItems.id, it.id));
-
-        const [activeCostPeriod] = await tx.select({ id: inventoryCostPeriods.id }).from(inventoryCostPeriods)
-          .where(eq(inventoryCostPeriods.itemId, it.itemId))
-          .orderBy(desc(inventoryCostPeriods.cutoffAt), desc(inventoryCostPeriods.id)).limit(1);
-        const salesAmount = qtyToApprove * Number(it.price || 0);
-        const cogsAmount = unitCostSnapshot == null ? null : Number((qtyToApprove * unitCostSnapshot).toFixed(6));
-        await tx.insert(inventoryCostSnapshots).values({
-          requestItemId: it.id,
-          itemId: it.itemId,
-          cutoffPeriodId: activeCostPeriod?.id || null,
+      // Update request item
+      await tx
+        .update(requestItems)
+        .set({
           approvedQuantity: qtyToApprove,
-          unitCost: unitCostSnapshot,
-          salesAmount,
-          cogsAmount,
-          profitAmount: cogsAmount == null ? null : Number((salesAmount - cogsAmount).toFixed(6)),
-          source: unitCostSnapshot == null ? 'MISSING' : 'SALE_APPROVAL',
-        });
+          status: 'Approved',
+          approvedBy: staffName,
+          approvedAt: today,
+          unitCostSnapshot,
+        })
+        .where(eq(requestItems.id, it.id));
 
-        // Catat mutasi barang keluar
-        await tx.insert(stockMovements).values({
-          itemId: it.itemId,
-          movementType: 'OUT',
-          quantity: qtyToApprove,
-          referenceId: it.requestCode,
-          createdBy: staffName,
-        });
-      }
+      const [activeCostPeriod] = await tx.select({ id: inventoryCostPeriods.id }).from(inventoryCostPeriods)
+        .where(eq(inventoryCostPeriods.itemId, it.itemId))
+        .orderBy(desc(inventoryCostPeriods.cutoffAt), desc(inventoryCostPeriods.id)).limit(1);
+      const salesAmount = qtyToApprove * Number(it.price || 0);
+      const cogsAmount = unitCostSnapshot == null ? null : Number((qtyToApprove * unitCostSnapshot).toFixed(6));
+      await tx.insert(inventoryCostSnapshots).values({
+        requestItemId: it.id,
+        itemId: it.itemId,
+        cutoffPeriodId: activeCostPeriod?.id || null,
+        approvedQuantity: qtyToApprove,
+        unitCost: unitCostSnapshot,
+        salesAmount,
+        cogsAmount,
+        profitAmount: cogsAmount == null ? null : Number((salesAmount - cogsAmount).toFixed(6)),
+        source: unitCostSnapshot == null ? 'MISSING' : 'SALE_APPROVAL',
+      });
+
+      // Catat mutasi barang keluar
+      await tx.insert(stockMovements).values({
+        itemId: it.itemId,
+        movementType: 'OUT',
+        quantity: qtyToApprove,
+        referenceId: it.requestCode,
+        createdBy: staffName,
+      });
     }
 
     // 3. Hitung ulang status keseluruhan permintaan
@@ -2971,26 +2917,7 @@ export async function approveAllRequestItems(
       .from(requestItems)
       .where(eq(requestItems.requestId, requestId));
 
-    const statuses = allItemsInReq.map((i) => i.status);
-    const hasPending = statuses.includes('Pending');
-    const hasApproved = statuses.includes('Approved');
-    const hasRejected = statuses.includes('Rejected');
-    const anyPartialQty = allItemsInReq.some(
-      (i) => i.status === 'Approved' && i.approvedQuantity < i.requestedQuantity
-    );
-
-    let newStatus: 'Pending' | 'Partially Approved' | 'Approved' | 'Rejected' = 'Pending';
-    if (hasPending) {
-      newStatus = hasApproved || hasRejected ? 'Partially Approved' : 'Pending';
-    } else {
-      if (hasApproved && !hasRejected) {
-        newStatus = anyPartialQty ? 'Partially Approved' : 'Approved';
-      } else if (!hasApproved && hasRejected) {
-        newStatus = 'Rejected';
-      } else if (hasApproved && hasRejected) {
-        newStatus = 'Partially Approved';
-      }
-    }
+    const newStatus = deriveRequestStatus(allItemsInReq);
 
     await tx.update(requests).set({ status: newStatus }).where(eq(requests.id, requestId));
 
