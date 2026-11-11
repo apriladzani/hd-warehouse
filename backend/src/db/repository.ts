@@ -2515,6 +2515,13 @@ export async function createRequest(data: {
   }
 }
 
+// Items that have ever been bought. Only these have an average cost; an item
+// with none is shown without a price rather than valued at zero.
+export async function getPurchasedItemIds() {
+  const [rows] = await pool.query('SELECT DISTINCT item_id AS itemId FROM purchase_items WHERE quantity > 0');
+  return new Set((rows as any[]).map((row) => Number(row.itemId)));
+}
+
 export async function getRequests(filters?: {
   userId?: number;
   startDate?: string;
@@ -2551,10 +2558,14 @@ export async function getRequests(filters?: {
       .leftJoin(items, eq(requestItems.itemId, items.id));
 
     const outletRows = await db.select({ id: outlets.id, name: outlets.outletName }).from(outlets);
+    const cancelledIds = reqs.filter((r) => r.status === 'Cancelled').map((r) => r.id);
+    const cancellations = new Map<number, Awaited<ReturnType<typeof getRequestCancellation>>>();
+    for (const id of cancelledIds) cancellations.set(id, await getRequestCancellation(id));
     return reqs.map((r) => {
       const matchingItems = allItems.filter((it) => it.requestId === r.id);
       return {
         ...r,
+        cancellation: cancellations.get(r.id) ?? null,
         outletName: outletRows.find((outlet) => outlet.id === r.outletId)?.name || null,
         itemCount: matchingItems.length,
         itemSummary: matchingItems.map((i) => i.itemName || 'Barang').join(', '),
@@ -2596,6 +2607,7 @@ export async function getRequestDetail(id: number) {
       ...request,
       outletName: request.outletId ? (await db.select({ name: outlets.outletName }).from(outlets).where(eq(outlets.id, request.outletId)))[0]?.name || null : null,
       items: rItems,
+      cancellation: request.status === 'Cancelled' ? await getRequestCancellation(id) : null,
     };
   } catch (err) {
     console.error('getRequestDetail error:', err);
@@ -2927,6 +2939,134 @@ export async function approveAllRequestItems(
     console.error('approveAllRequestItems error:', err);
     throw err;
   }
+}
+
+// Cancelling an approved request. The outlet that owns the request, or the
+// warehouse, can take back a request that was approved in full or in part.
+//
+// A cancelled request is not a sale. Its approved lines become 'Cancelled', so
+// every report that counts sales (status = 'Approved') stops counting them, and
+// the approved quantity goes back into stock as a CANCEL_RETURN movement - the
+// mirror of the OUT movement the approval wrote. Rejected lines took no stock
+// and return none. Because the sale disappears from the ledger, the open period
+// is repriced exactly as for a backdated transaction. A sale inside a period
+// that is already closed is never undone here: closed periods stay as closed.
+export const REQUEST_CANCEL_RETURN = 'CANCEL_RETURN';
+export const REQUEST_CANCELLATION_COLUMNS = `
+      request_id INT NOT NULL PRIMARY KEY,
+      cancelled_by_user_id INT NULL,
+      cancelled_by_name VARCHAR(255) NOT NULL,
+      cancelled_by_role VARCHAR(50) NOT NULL,
+      reason VARCHAR(500) NULL,
+      returned_quantity INT NOT NULL DEFAULT 0,
+      cancelled_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      INDEX idx_request_cancellations_at (cancelled_at)`;
+let requestCancellationSchemaReady: Promise<void> | null = null;
+
+export async function ensureRequestCancellationSchema() {
+  if (!requestCancellationSchemaReady) requestCancellationSchemaReady = (async () => {
+    // Reach for the table first: CREATE TABLE IF NOT EXISTS would build a real
+    // table beside a test's TEMPORARY one.
+    try {
+      await pool.query('SELECT 1 FROM request_cancellations LIMIT 0');
+      return;
+    } catch {
+      // Not reachable yet, so create it.
+    }
+    await pool.query(`CREATE TABLE IF NOT EXISTS request_cancellations (${REQUEST_CANCELLATION_COLUMNS}
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  })();
+  await requestCancellationSchemaReady;
+}
+
+export class RequestCancelError extends Error {
+  constructor(message: string, public readonly status: 403 | 404 | 409) { super(message); }
+}
+
+const CANCELLABLE_STATUSES = ['Approved', 'Partially Approved'];
+const STATUS_LABEL: Record<string, string> = {
+  Pending: 'masih menunggu persetujuan', Rejected: 'ditolak', Cancelled: 'sudah dibatalkan',
+};
+
+export async function cancelRequest(
+  requestId: number,
+  actor: { id: number; name: string; role: string },
+  reason?: string | null,
+) {
+  await ensureRequestCancellationSchema();
+  await ensureInventoryPrecisionSchema();
+  await ensurePeriodSnapshotSchema();
+  const note = String(reason ?? '').trim().slice(0, 500) || null;
+
+  return db.transaction(async (tx) => {
+    // The request row lock makes a second cancellation wait, then see
+    // 'Cancelled' and stop: stock can never come back twice.
+    const [request] = await tx.select({ id: requests.id, status: requests.status, userId: requests.userId, requestCode: requests.requestCode })
+      .from(requests).where(eq(requests.id, requestId)).for('update');
+    if (!request) throw new RequestCancelError('Permintaan tidak ditemukan.', 404);
+    if (actor.role === 'OUTLET' ? request.userId !== actor.id : actor.role !== 'WAREHOUSE') {
+      throw new RequestCancelError('Hanya outlet pemilik request atau Warehouse yang dapat membatalkan request ini.', 403);
+    }
+    if (!CANCELLABLE_STATUSES.includes(request.status)) {
+      throw new RequestCancelError(`Request ${request.requestCode} ${STATUS_LABEL[request.status] ?? `berstatus ${request.status}`}, jadi tidak bisa dibatalkan.`, 409);
+    }
+
+    const lines = await tx.select({ id: requestItems.id, itemId: requestItems.itemId, status: requestItems.status, approvedQuantity: requestItems.approvedQuantity })
+      .from(requestItems).where(eq(requestItems.requestId, requestId)).for('update');
+    const returning = lines.filter((line) => line.status === 'Approved' && Number(line.approvedQuantity) > 0);
+
+    // A sale that already sits inside a closed period stays there.
+    const ledger = await loadLedger(tx);
+    const lastEnd = ledger.periods.length ? ledger.periods[ledger.periods.length - 1].end : -Infinity;
+    for (const line of returning) {
+      const sale = (ledger.events.get(line.itemId) ?? []).find((event) => event.kind === 'sale' && event.ref === line.id);
+      if (sale && sale.at < lastEnd) {
+        const closed = (await getFinancePeriods(ledger)).find((period) => period.status === 'Closed' && period.endAt && sale.at < Date.parse(period.endAt));
+        throw new Error(`${closed?.label ?? 'Periode sebelumnya'} sudah ditutup. Gunakan form koreksi.`);
+      }
+    }
+
+    const returned: { requestItemId: number; itemId: number; quantity: number; stockBefore: number; stockAfter: number }[] = [];
+    for (const line of returning) {
+      const quantity = Number(line.approvedQuantity);
+      const [item] = await tx.select({ currentStock: items.currentStock }).from(items).where(eq(items.id, line.itemId)).for('update');
+      const stockBefore = Number(item?.currentStock ?? 0);
+      const stockAfter = stockBefore + quantity;
+      await tx.update(items).set({ currentStock: sql`${items.currentStock} + ${quantity}` }).where(eq(items.id, line.itemId));
+      await tx.insert(stockMovements).values({
+        itemId: line.itemId,
+        movementType: REQUEST_CANCEL_RETURN,
+        quantity,
+        stockBefore,
+        stockAfter,
+        referenceId: request.requestCode,
+        notes: note ? `Pembatalan ${request.requestCode}: ${note}` : `Pembatalan ${request.requestCode}`,
+        createdBy: actor.name.slice(0, 100),
+        createdByUserId: actor.id,
+      });
+      await tx.update(requestItems).set({ status: 'Cancelled' }).where(eq(requestItems.id, line.id));
+      returned.push({ requestItemId: line.id, itemId: line.itemId, quantity, stockBefore, stockAfter });
+    }
+
+    await tx.update(requests).set({ status: 'Cancelled' }).where(eq(requests.id, requestId));
+    await tx.execute(sql`INSERT INTO request_cancellations (request_id, cancelled_by_user_id, cancelled_by_name, cancelled_by_role, reason, returned_quantity)
+      VALUES (${requestId}, ${actor.id}, ${actor.name.slice(0, 255)}, ${actor.role}, ${note}, ${returned.reduce((sum, line) => sum + line.quantity, 0)})`);
+    if (returned.length) await repriceOpenPeriod(tx, returned.map((line) => line.itemId));
+
+    return { requestId, requestCode: request.requestCode, status: 'Cancelled' as const, reason: note, returned };
+  });
+}
+
+export async function getRequestCancellation(requestId: number) {
+  await ensureRequestCancellationSchema();
+  const [rows] = await pool.query(
+    `SELECT cancelled_by_name AS cancelledByName, cancelled_by_role AS cancelledByRole, reason, returned_quantity AS returnedQuantity,
+       UNIX_TIMESTAMP(cancelled_at) * 1000 AS cancelledAtMs
+     FROM request_cancellations WHERE request_id = ? LIMIT 1`, [requestId]);
+  const row = (rows as any[])[0];
+  if (!row) return null;
+  const { cancelledAtMs, ...rest } = row;
+  return { ...rest, returnedQuantity: Number(row.returnedQuantity), cancelledAt: new Date(Number(cancelledAtMs)).toISOString() };
 }
 
 // History Queries

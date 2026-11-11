@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "test:finance": "node --import tsx --test tests/finance.test.tsx tests/opname-warning.test.tsx tests/login-ux.test.tsx tests/password-reset.test.tsx tests/google-sign-in.test.tsx"
+    "test:finance": "node --import tsx --test tests/finance.test.tsx tests/opname-warning.test.tsx tests/login-ux.test.tsx tests/password-reset.test.tsx tests/google-sign-in.test.tsx tests/request-cancel.test.tsx tests/stock-value.test.tsx"
   },
   "dependencies": {
     "lucide-react": "^0.546.0",

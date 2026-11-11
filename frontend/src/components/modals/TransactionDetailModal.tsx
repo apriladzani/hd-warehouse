@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Calendar, User, Building2, CreditCard, Printer } from 'lucide-react';
 import { StatusBadge } from '../common/StatusBadge.tsx';
+import { cancellationSummary } from '../../lib/requestCancel.ts';
 import { formatRupiah, formatDateIndo } from '../../lib/format.ts';
 import { PrintableTransactionA4 } from './PrintableTransactionA4.tsx';
 
@@ -22,6 +23,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
   if (!isOpen || !data) return null;
 
   const isIncoming = type === 'incoming';
+  const isCancelled = !isIncoming && data?.status === 'Cancelled';
 
   return (
     <>
@@ -46,7 +48,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
               </p>
             </div>
             <div className="flex items-center space-x-1.5 sm:space-x-2">
-              <button
+              {!isCancelled && <button
                 id="btn-print-a4-modal-header"
                 onClick={() => setShowPrintA4(true)}
                 className="inline-flex items-center space-x-1 px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-[#F0002B] hover:bg-[#D80027] text-white text-[10px] sm:text-xs font-bold rounded-[8px] sm:rounded-xl  transition-all"
@@ -54,7 +56,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
               >
                 <Printer className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                 <span className="hidden sm:inline">Cetak A4</span>
-              </button>
+              </button>}
               <button
                 id="close-transaction-modal"
                 onClick={onClose}
@@ -67,6 +69,13 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
 
         {/* Modal Body / Metadata Header */}
         <div className="p-3 sm:p-6 overflow-y-auto space-y-3 sm:space-y-4">
+          {isCancelled && (
+            <div role="status" className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2.5 text-[11px] text-[#475569]">
+              <p className="font-bold text-[#1E293B]">Request dibatalkan</p>
+              {data.cancellation && <p className="mt-0.5">{cancellationSummary(data.cancellation)}</p>}
+              {data.cancellation?.reason && <p className="mt-0.5">Alasan: {data.cancellation.reason}</p>}
+            </div>
+          )}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4 p-2.5 sm:p-4 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0]">
             <div>
               <span className="text-[10px] sm:text-[11px] text-[#64748B] block uppercase tracking-wider font-semibold">
@@ -224,14 +233,14 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
 
         {/* Modal Footer */}
         <div className="px-3.5 sm:px-6 py-2.5 sm:py-4 bg-[#F8FAFC] border-t border-[#E2E8F0] flex items-center justify-between">
-          <button
+          {!isCancelled ? <button
             id="btn-print-a4-modal-footer"
             onClick={() => setShowPrintA4(true)}
             className="inline-flex items-center space-x-1 sm:space-x-1.5 px-3 py-1.5 sm:px-4 sm:py-2 bg-[#F0002B] hover:bg-[#D80027] text-white font-bold text-[10px] sm:text-xs rounded-[8px] sm:rounded-xl  transition-all cursor-pointer"
           >
             <Printer className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
             <span>Cetak Dokumen A4</span>
-          </button>
+          </button> : <span />}
 
           <button
             onClick={onClose}

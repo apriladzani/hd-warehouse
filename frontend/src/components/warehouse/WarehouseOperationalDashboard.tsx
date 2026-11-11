@@ -1,9 +1,10 @@
 import { Button, Input, KpiCard, StateMessage, Toolbar } from '../common/UI.tsx';
-import { Boxes, Search, ShoppingBag, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Boxes, Search, ShoppingBag, TriangleAlert } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { CalendarDays, ChevronDown, RotateCcw } from 'lucide-react';
 import type { InventoryItem, PurchaseTransaction, User } from '../../types.ts';
 import { formatRupiah } from '../../lib/format.ts';
+import { nextValueSort, sortByStockValue, totalStockValue, UNPRICED_LABEL, type ValueSort } from '../../lib/stockValue.ts';
 
 const CATEGORIES = ['Raw Material', 'Support Material', 'Packaging'] as const;
 const CATEGORY_ORDER: Record<(typeof CATEGORIES)[number], number> = {
@@ -28,6 +29,7 @@ export const WarehouseOperationalDashboard: React.FC<{ currentUser: User }> = ({
   const [selectedItemIds, setSelectedItemIds] = useState<number[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [stockSearch, setStockSearch] = useState('');
+  const [valueSort, setValueSort] = useState<ValueSort>('none');
 
   const loadDashboard = async (start = startDate, end = endDate) => {
     setLoading(true);
@@ -58,6 +60,10 @@ export const WarehouseOperationalDashboard: React.FC<{ currentUser: User }> = ({
     CATEGORY_ORDER[a.category] - CATEGORY_ORDER[b.category] ||
     a.itemCode.localeCompare(b.itemCode, 'en', { numeric: true, sensitivity: 'base' })
   ), [data.items, selectedItemIds, selectedCategories, stockSearch]);
+  // The total follows exactly the rows on screen: item, category and search filters.
+  const stockValue = useMemo(() => totalStockValue(filteredItems), [filteredItems]);
+  const visibleItems = useMemo(() => sortByStockValue(filteredItems, valueSort), [filteredItems, valueSort]);
+  const SortIcon = valueSort === 'desc' ? ArrowDown : valueSort === 'asc' ? ArrowUp : ArrowUpDown;
 
   const selectedInventory = useMemo(() => data.items.filter((item) =>
     (!selectedItemIds.length || selectedItemIds.includes(item.id)) &&
@@ -140,25 +146,49 @@ export const WarehouseOperationalDashboard: React.FC<{ currentUser: User }> = ({
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#94A3B8]" aria-hidden="true" />
             <Input aria-label="Cari nama atau kode barang" placeholder="Cari nama atau kode barang" value={stockSearch} onChange={(event) => setStockSearch(event.target.value)} className="!min-h-[34px] !pl-8 !text-xs" />
           </label>
-          <span className="text-[11px] text-[#64748B]">{loading ? 'Memuat…' : `${filteredItems.length} barang`}</span>
+          <div className="text-right text-[11px] text-[#64748B]">
+            <span>{loading ? 'Memuat…' : `${filteredItems.length} barang`}</span>
+            {!loading && <>
+              <span aria-hidden="true"> · </span>
+              <span>Total Nilai Stok: <strong className="tabular-nums text-[#1E293B]">{formatRupiah(stockValue.total)}</strong></span>
+              {stockValue.unpriced > 0 && <span className="block text-[10px] text-[#94A3B8]">{stockValue.unpriced} barang belum punya harga, tidak dihitung</span>}
+            </>}
+          </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[620px] text-left text-xs">
+          <table className="w-full min-w-[860px] text-left text-xs">
             <thead className="bg-[#F8FAFC] text-[10px] uppercase tracking-wide text-[#64748B]"><tr>
-              <th className="px-4 py-2.5 font-bold">Kode Barang</th><th className="px-4 py-2.5 font-bold">Nama Barang</th><th className="px-4 py-2.5 font-bold">Kategori</th><th className="px-4 py-2.5 text-right font-bold">Satuan</th><th className="px-4 py-2.5 text-right font-bold">Stok Saat Ini</th>
+              <th className="px-4 py-2.5 font-bold">Kode Barang</th><th className="px-4 py-2.5 font-bold">Nama Barang</th><th className="px-4 py-2.5 font-bold">Kategori</th><th className="px-4 py-2.5 text-right font-bold">Satuan</th><th className="px-4 py-2.5 text-right font-bold">Stok Saat Ini</th><th className="px-4 py-2.5 text-right font-bold" title="Harga beli rata-rata bergerak per satuan">Harga Rata-rata</th>
+              <th className="px-4 py-2.5 text-right font-bold" aria-sort={valueSort === 'desc' ? 'descending' : valueSort === 'asc' ? 'ascending' : 'none'}>
+                <button type="button" onClick={() => setValueSort(nextValueSort)} className="inline-flex items-center gap-1 uppercase hover:text-[#1E293B]"
+                  title={valueSort === 'desc' ? 'Urut: tertinggi dulu' : valueSort === 'asc' ? 'Urut: terendah dulu' : 'Urutkan nilai stok'}>
+                  Nilai Stok <SortIcon className="h-3 w-3" aria-hidden="true" />
+                </button>
+              </th>
             </tr></thead>
             <tbody className="divide-y divide-[#EEF2F7]">
-              {filteredItems.map((item) => {
+              {visibleItems.map((item) => {
                 const stock = Number(item.currentStock || 0);
                 const stockState = stock <= 0 ? 'habis' : stock < 10 ? 'menipis' : 'tersedia';
                 return <tr key={item.id} className="text-[#334155] hover:bg-slate-50/70">
                 <td className="whitespace-nowrap px-4 py-2.5 font-mono text-[11px]">{item.itemCode}</td><td className="px-4 py-2.5 font-semibold text-[#1E293B]">{item.itemName}</td><td className="px-4 py-2.5">{item.category}</td><td className="px-4 py-2.5 text-right text-[#64748B]">pcs</td><td className="px-4 py-2.5 text-right"><span className="inline-flex items-center gap-2 font-bold tabular-nums">{stock.toLocaleString('id-ID')}<span className={`hd-stock-status hd-stock-status--${stockState}`}>{stockState === 'habis' ? 'Habis' : stockState === 'menipis' ? 'Menipis' : 'Tersedia'}</span></span></td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-right tabular-nums">{item.avgCost == null ? <Unpriced /> : formatRupiah(item.avgCost)}</td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-right font-semibold tabular-nums text-[#1E293B]">{item.stockValue == null ? <Unpriced /> : formatRupiah(item.stockValue)}</td>
               </tr>;})}
-              {!loading && filteredItems.length === 0 && <tr><td colSpan={5}><StateMessage>{stockSearch ? 'Tidak ada barang yang cocok dengan pencarian.' : 'Tidak ada barang untuk filter ini.'}</StateMessage></td></tr>}
+              {!loading && filteredItems.length === 0 && <tr><td colSpan={7}><StateMessage>{stockSearch ? 'Tidak ada barang yang cocok dengan pencarian.' : 'Tidak ada barang untuk filter ini.'}</StateMessage></td></tr>}
             </tbody>
+            {!loading && filteredItems.length > 0 && <tfoot className="border-t-2 border-[#E2E8F0] bg-[#F8FAFC] text-[#1E293B]"><tr>
+              <th scope="row" colSpan={6} className="px-4 py-2.5 text-right text-[11px] font-bold">Total Nilai Stok ({filteredItems.length - stockValue.unpriced} barang)</th>
+              <td className="whitespace-nowrap px-4 py-2.5 text-right font-bold tabular-nums">{formatRupiah(stockValue.total)}</td>
+            </tr></tfoot>}
           </table>
         </div>
       </section>
     </div>
   );
 };
+
+// "-" for an item never bought: there is no price yet, which is not Rp 0.
+function Unpriced() {
+  return <span title={UNPRICED_LABEL} aria-label={UNPRICED_LABEL} className="cursor-help text-[#94A3B8]">-</span>;
+}

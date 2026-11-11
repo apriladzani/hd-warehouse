@@ -28,8 +28,8 @@ export interface InventoryItem {
   status: 'Available' | 'Low Stock' | 'Out of Stock';
 }
 
-export type RequestStatus = 'Pending' | 'Partially Approved' | 'Approved' | 'Rejected';
-export type ItemApprovalStatus = 'Pending' | 'Approved' | 'Rejected';
+export type RequestStatus = 'Pending' | 'Partially Approved' | 'Approved' | 'Rejected' | 'Cancelled';
+export type ItemApprovalStatus = 'Pending' | 'Approved' | 'Rejected' | 'Cancelled';
 
 export interface RequestItem {
   id: number;

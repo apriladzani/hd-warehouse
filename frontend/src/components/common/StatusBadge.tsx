@@ -10,6 +10,7 @@ const statusTones: Record<string, string> = {
   Pending: 'warning', 'Low Stock': 'warning',
   'Partially Approved': 'info',
   Rejected: 'danger', 'Out of Stock': 'danger',
+  Cancelled: 'neutral',
 };
 
 export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, className = '' }) => (

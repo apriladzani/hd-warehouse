@@ -5,7 +5,9 @@ import { StatusBadge } from '../common/StatusBadge.tsx';
 import { formatDateIndo } from '../../lib/format.ts';
 import { RequestTransaction } from '../../types.ts';
 import { WarehouseRequestDetailModal } from '../modals/WarehouseRequestDetailModal.tsx';
-import { Store, Check, Printer } from 'lucide-react';
+import { Store, Check, Printer, PackageX } from 'lucide-react';
+import { CancelRequestDialog } from '../modals/CancelRequestDialog.tsx';
+import { canCancelRequest } from '../../lib/requestCancel.ts';
 import { PrintableTransactionA4 } from '../modals/PrintableTransactionA4.tsx';
 import { buildApprovedRequestPrintData, canPrintApprovedRequest } from '../../lib/requestPrint.ts';
 
@@ -24,6 +26,7 @@ export const WarehouseRequests: React.FC<WarehouseRequestsProps> = ({ requestDet
   const [selectedRequestId, setSelectedRequestId] = useState<number | null>(requestDetailId);
   const [quickLoadingId, setQuickLoadingId] = useState<number | null>(null);
   const [printData, setPrintData] = useState<any | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<RequestTransaction | null>(null);
 
   const fetchRequests = async (start = startDate, end = endDate) => {
     try {
@@ -216,6 +219,20 @@ export const WarehouseRequests: React.FC<WarehouseRequestsProps> = ({ requestDet
                       <span>Cetak A4</span>
                     </button>
                   )}
+                  {canCancelRequest(req.status) && (
+                    <button
+                      id={`btn-cancel-request-${req.id}`}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCancelTarget(req);
+                      }}
+                      className="hd-button hd-button--secondary !min-h-[30px] !px-2.5 !py-1 !text-[11px] !text-[#D80027]"
+                    >
+                      <PackageX className="h-3.5 w-3.5" />
+                      <span>Batalkan</span>
+                    </button>
+                  )}
                   {req.status === 'Pending' && (
                     <button
                       id={`btn-quick-approve-${req.id}`}
@@ -257,6 +274,17 @@ export const WarehouseRequests: React.FC<WarehouseRequestsProps> = ({ requestDet
         onClose={closeRequestDetail}
         onUpdated={() => fetchRequests(startDate, endDate)}
       />
+
+      {cancelTarget && (
+        <CancelRequestDialog
+          request={cancelTarget}
+          onClose={() => setCancelTarget(null)}
+          onCancelled={() => {
+            setCancelTarget(null);
+            void fetchRequests(startDate, endDate);
+          }}
+        />
+      )}
 
       {printData && (
         <PrintableTransactionA4

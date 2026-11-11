@@ -363,3 +363,204 @@ test('Google sign-in: hidden until configured, state is enforced, and every outc
     }
   }
 });
+
+// ---- Cancelling an approved request -------------------------------------
+const cancel = (who: ReturnType<typeof client>, requestId: number, reason?: string) =>
+  who.call('POST', `/api/requests/${requestId}/cancel`, reason === undefined ? {} : { reason });
+const returnMovements = async (connection: any, requestCode: string) => {
+  const [rows]: any = await connection.query("SELECT item_id, quantity, stock_before, stock_after, notes, created_by, created_by_user_id FROM stock_movements WHERE movement_type = 'CANCEL_RETURN' AND reference_id = ? ORDER BY item_id", [requestCode]);
+  return rows;
+};
+// The ledger and the warehouse must move together. The smoke seed records a
+// purchase with no matching IN movement, so the open period already ends 100
+// above the real stock before any request; what matters is that approving and
+// cancelling never change that gap, and that a cancelled sale is not sold.
+const ledgerGap = async (connection: any) => {
+  const { loadLedger, ledgerRows } = await import('../src/db/periodClosing.ts');
+  const open = ledgerRows(await loadLedger(), null);
+  const [stock]: any = await connection.query('SELECT id, current_stock FROM items WHERE id IN (1, 2) ORDER BY id');
+  return stock.map((row: any) => ({ gap: Number(open.get(row.id)?.closingStock) - Number(row.current_stock), sold: open.get(row.id)?.soldQuantity }));
+};
+
+test('Batal 1: a fully approved request returns every approved unit and becomes Cancelled', async () => {
+  await withApi(async ({ outlet, warehouse, connection }) => {
+    const before = await ledgerGap(connection);
+    const r = await requestAB(outlet, connection);
+    await warehouse.call('POST', `/api/requests/${r.id}/approve-all`, {});
+    assert.deepEqual(await stockOf(connection), [97, 97]);
+    assert.deepEqual((await ledgerGap(connection)).map((row: any) => row.sold), [3, 3]);
+    const code = (await warehouse.call('GET', `/api/requests/${r.id}`)).body.request.requestCode;
+
+    const result = await cancel(outlet, r.id, '  Tidak jadi dipakai  ');
+    assert.equal(result.status, 200);
+    assert.equal(result.body.status, 'Cancelled');
+    assert.deepEqual(await stockOf(connection), [100, 100]);
+
+    const detail = (await outlet.call('GET', `/api/requests/${r.id}`)).body.request;
+    assert.equal(detail.status, 'Cancelled');
+    // Approved lines become Cancelled and keep the quantity that was returned.
+    assert.deepEqual([lineState(detail, r.a), lineState(detail, r.b)], [['Cancelled', 3], ['Cancelled', 3]]);
+    assert.equal(detail.cancellation.cancelledByName, 'Outlet Smoke');
+    assert.equal(detail.cancellation.cancelledByRole, 'OUTLET');
+    assert.equal(detail.cancellation.reason, 'Tidak jadi dipakai');
+    assert.equal(detail.cancellation.returnedQuantity, 6);
+    assert.ok(!Number.isNaN(Date.parse(detail.cancellation.cancelledAt)));
+
+    const moves = await returnMovements(connection, code);
+    assert.deepEqual(moves.map((m: any) => [m.item_id, m.quantity, m.stock_before, m.stock_after]), [[1, 3, 97, 100], [2, 3, 97, 100]]);
+    assert.equal(moves[0].created_by, 'Outlet Smoke');
+    assert.equal(moves[0].created_by_user_id, 1);
+    assert.match(moves[0].notes, /Tidak jadi dipakai/);
+
+    // Not a sale any more: nothing sold, and the ledger moved with the stock.
+    assert.deepEqual(await ledgerGap(connection), before);
+  });
+});
+
+test('Batal 2: a partly approved request returns only what was approved; the rejected line returns nothing', async () => {
+  await withApi(async ({ outlet, warehouse, connection }) => {
+    const before = await ledgerGap(connection);
+    const r = await requestAB(outlet, connection);
+    await warehouse.call('POST', `/api/requests/${r.id}/items/${r.a}/approve`, { approvedQuantity: 2 });
+    await warehouse.call('POST', `/api/requests/${r.id}/items/${r.b}/reject`, {});
+    assert.equal((await warehouse.call('GET', `/api/requests/${r.id}`)).body.request.status, 'Partially Approved');
+    assert.deepEqual(await stockOf(connection), [98, 100]);
+
+    // The warehouse may cancel on the outlet's behalf.
+    const result = await cancel(warehouse, r.id);
+    assert.equal(result.status, 200);
+    assert.deepEqual(await stockOf(connection), [100, 100], 'A gets its 2 back (not the 3 requested); B was never cut');
+    const detail = (await warehouse.call('GET', `/api/requests/${r.id}`)).body.request;
+    assert.equal(detail.status, 'Cancelled');
+    assert.deepEqual([lineState(detail, r.a), lineState(detail, r.b)], [['Cancelled', 2], ['Rejected', 0]]);
+    assert.equal(detail.cancellation.cancelledByRole, 'WAREHOUSE');
+    assert.equal(detail.cancellation.reason, null);
+    const moves = await returnMovements(connection, detail.requestCode);
+    assert.deepEqual(moves.map((m: any) => [m.item_id, m.quantity]), [[1, 2]]);
+    assert.deepEqual(await ledgerGap(connection), before);
+  });
+});
+
+test('Batal 3: a request cannot be cancelled twice, so stock never comes back twice', async () => {
+  await withApi(async ({ outlet, warehouse, connection }) => {
+    const r = await requestAB(outlet, connection);
+    await warehouse.call('POST', `/api/requests/${r.id}/approve-all`, {});
+    assert.equal((await cancel(outlet, r.id)).status, 200);
+    const again = await cancel(outlet, r.id);
+    assert.equal(again.status, 409);
+    assert.match(again.body.error, /sudah dibatalkan/);
+    assert.equal((await cancel(warehouse, r.id)).status, 409);
+    assert.deepEqual(await stockOf(connection), [100, 100]);
+    assert.equal((await returnMovements(connection, (await outlet.call('GET', `/api/requests/${r.id}`)).body.request.requestCode)).length, 2);
+    // Simultaneous cancellations are serialised by the FOR UPDATE lock on the
+    // request row. This harness runs every query on one connection, so it
+    // cannot reproduce true concurrency; the sequential repeat above is the
+    // same check the second transaction makes once the first commits.
+    // A cancelled request cannot be decided again either.
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/approve-all`, {})).status, 400);
+  });
+});
+
+test('Batal 4: rejected and pending requests cannot be cancelled', async () => {
+  await withApi(async ({ outlet, warehouse, connection }) => {
+    const rejected = await requestAB(outlet, connection);
+    await warehouse.call('POST', `/api/requests/${rejected.id}/items/${rejected.a}/reject`, {});
+    await warehouse.call('POST', `/api/requests/${rejected.id}/items/${rejected.b}/reject`, {});
+    const refused = await cancel(outlet, rejected.id);
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.error, /ditolak/);
+
+    const pending = await requestAB(outlet, connection);
+    const notYet = await cancel(outlet, pending.id);
+    assert.equal(notYet.status, 409);
+    assert.match(notYet.body.error, /menunggu persetujuan/);
+    assert.equal((await outlet.call('GET', `/api/requests/${pending.id}`)).body.request.status, 'Pending');
+    assert.deepEqual(await stockOf(connection), [100, 100]);
+  });
+});
+
+test('Batal: only the owning outlet or the warehouse may cancel', async () => {
+  await withApi(async ({ outlet, warehouse, anonymous, connection, base }) => {
+    await connection.query("INSERT INTO users (id, name, username, email, password, role, outlet_id, is_active) VALUES (3, 'Outlet Lain', 'other-outlet', 'other@smoke.test', 'other-pass', 'OUTLET', 1, 1)");
+    const other = client(base);
+    assert.equal((await other.call('POST', '/api/auth/login', { email: 'other@smoke.test', password: 'other-pass' })).status, 200);
+    const r = await requestAB(outlet, connection);
+    await warehouse.call('POST', `/api/requests/${r.id}/approve-all`, {});
+
+    assert.equal((await cancel(anonymous, r.id)).status, 401);
+    assert.equal((await cancel(other, r.id)).status, 403, 'another outlet');
+    assert.equal((await cancel(outlet, 999999)).status, 404);
+    assert.deepEqual(await stockOf(connection), [97, 97], 'refusals change nothing');
+    assert.equal((await cancel(outlet, r.id)).status, 200);
+  });
+});
+
+test('Batal: a sale inside a closed period is not undone', async () => {
+  await withApi(async ({ outlet, warehouse, connection }) => {
+    const r = await requestAB(outlet, connection);
+    await warehouse.call('POST', `/api/requests/${r.id}/approve-all`, {});
+    const closed = await warehouse.call('POST', '/api/inventory/stock-opname', {
+      examinationDate: todayJakarta(), createdBy: 'Gudang', createdByUserId: 2, submissionKey: 'cancel-closing',
+      physicalStocks: [{ itemId: 1, physicalStock: 97 }, { itemId: 2, physicalStock: 97 }],
+    });
+    assert.equal(closed.status, 201);
+    const refused = await cancel(outlet, r.id);
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.error, /sudah ditutup\. Gunakan form koreksi\./);
+    assert.equal((await outlet.call('GET', `/api/requests/${r.id}`)).body.request.status, 'Approved');
+    assert.deepEqual(await stockOf(connection), [97, 97], 'the whole cancellation rolled back');
+    const [rows]: any = await connection.query('SELECT COUNT(*) AS n FROM request_cancellations');
+    assert.equal(Number(rows[0].n), 0);
+  });
+});
+
+// ---- Stock value on the current-stock page -------------------------------
+test('Nilai stok: a second purchase moves the average; approving and cancelling move only the stock', async () => {
+  await withApi(async ({ outlet, warehouse, connection }) => {
+    const row = async (itemId: number) => (await warehouse.call('GET', '/api/dashboard/warehouse-ops-stats')).body.items.find((item: any) => item.id === itemId);
+    // The shared seed records its purchase without the IN movement a real
+    // receipt writes, so the ledger would count those 100 pcs twice when a new
+    // receipt reprices the period. Give it the movement a real receipt has.
+    await connection.query("INSERT INTO stock_movements (item_id, movement_type, quantity, reference_id, created_by) VALUES (1, 'IN', 100, 'IN-SEED', 'seed')");
+
+    // Seeded: 100 pcs bought at Rp20.000.
+    let a = await row(1);
+    assert.deepEqual([a.currentStock, a.avgCost, a.stockValue], [100, 20000, 2000000]);
+
+    // Second purchase: 50 at Rp30.000 → (100 × 20.000 + 50 × 30.000) ÷ 150.
+    const bought = await warehouse.call('POST', '/api/inventory/incoming', {
+      vendorCode: 'VND-SMOKE', vendorName: 'Vendor Smoke', paymentMethod: 'Transfer', transactionDate: todayJakarta(),
+      items: [{ itemId: 1, itemName: 'Ayam Mentah (kg)', quantity: 50, price: 30000 }],
+    });
+    assert.equal(bought.status, 200);
+    a = await row(1);
+    assert.deepEqual([a.currentStock, a.avgCost, a.stockValue], [150, 23333.333333, 3500000]);
+
+    // Approving 3 takes stock out at the average; the average itself stays.
+    const r = await requestAB(outlet, connection);
+    await warehouse.call('POST', `/api/requests/${r.id}/items/${r.a}/approve`, {});
+    a = await row(1);
+    assert.deepEqual([a.currentStock, a.avgCost, a.stockValue], [147, 23333.333333, 3430000]);
+
+    // Cancelling brings the 3 back: value returns, average unchanged.
+    await warehouse.call('POST', `/api/requests/${r.id}/items/${r.b}/reject`, {});
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/cancel`, {})).status, 200);
+    a = await row(1);
+    assert.deepEqual([a.currentStock, a.avgCost, a.stockValue], [150, 23333.333333, 3500000]);
+  });
+});
+
+test('Nilai stok: an item never bought has no price, and an empty one is worth Rp0', async () => {
+  await withApi(async ({ warehouse, connection }) => {
+    const items = (await warehouse.call('GET', '/api/dashboard/warehouse-ops-stats')).body.items;
+    // The filler items in the seed have no purchase at all.
+    const unbought = items.filter((item: any) => item.id > 2);
+    assert.ok(unbought.length > 0);
+    for (const item of unbought) assert.deepEqual([item.avgCost, item.stockValue], [null, null], item.itemCode);
+
+    // An item that was bought but is now empty: Rp0, with its average still there.
+    await connection.query('UPDATE items SET current_stock = 0 WHERE id = 2');
+    const empty = (await warehouse.call('GET', '/api/dashboard/warehouse-ops-stats')).body.items.find((item: any) => item.id === 2);
+    assert.deepEqual([empty.currentStock, empty.avgCost, empty.stockValue], [0, 9000, 0]);
+  });
+});

@@ -15,6 +15,7 @@ import { StatusBadge } from '../common/StatusBadge.tsx';
 import { formatDateIndo, formatRupiah } from '../../lib/format.ts';
 import { PrintableTransactionA4 } from './PrintableTransactionA4.tsx';
 import { buildApprovedRequestPrintData, canPrintApprovedRequest } from '../../lib/requestPrint.ts';
+import { cancellationSummary } from '../../lib/requestCancel.ts';
 
 interface WarehouseRequestDetailModalProps {
   isOpen: boolean;
@@ -162,7 +163,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
 
   const pendingItems = request?.items?.filter((it: any) => it.status === 'Pending') || [];
   const hasPending = request?.status === 'Pending' && pendingItems.length > 0;
-  const approvedItems = request?.items?.filter((it: any) => Number(it.approvedQuantity) > 0) || [];
+  const approvedItems = request?.items?.filter((it: any) => it.status === 'Approved' && Number(it.approvedQuantity) > 0) || [];
   const approvedQty = approvedItems.reduce((sum: number, it: any) => sum + Number(it.approvedQuantity || 0), 0);
   // Lines are decided one at a time, so a request can hold decided and pending
   // lines together. Only a decided line can be "not approved"; a pending one is
@@ -256,7 +257,15 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
             </div>
           )}
 
-          {request && (
+          {request?.status === 'Cancelled' && (
+            <div role="status" className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2.5 text-[11px] text-[#475569]">
+              <p className="font-bold text-[#1E293B]">Request dibatalkan</p>
+              {request.cancellation && <p className="mt-0.5">{cancellationSummary(request.cancellation)}</p>}
+              {request.cancellation?.reason && <p className="mt-0.5">Alasan: {request.cancellation.reason}</p>}
+            </div>
+          )}
+
+          {request && request.status !== 'Cancelled' && (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-[11px]">
               <span className="font-semibold text-[#15803D]">Disetujui: {approvedItems.length} barang · {approvedQty} pcs</span>
               <span className="font-semibold text-[#64748B]">Tidak disetujui: {notApprovedItems.length} barang · {notApprovedQty} pcs</span>
@@ -473,6 +482,12 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
                             Oleh: {item.approvedBy}
                           </span>
                         )}
+                      </div>
+                    ) : item.status === 'Cancelled' ? (
+                      /* Disetujui lalu dibatalkan: stoknya sudah kembali ke gudang */
+                      <div className="pt-2 border-t border-[#E2E8F0] text-[11px] text-[#64748B] font-semibold flex items-center space-x-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-[#64748B]" />
+                        <span>Dibatalkan: <strong className="text-[#1E293B]">{item.approvedQuantity} pcs</strong> dikembalikan ke gudang.</span>
                       </div>
                     ) : (
                       /* Keterangan jika sudah Rejected */

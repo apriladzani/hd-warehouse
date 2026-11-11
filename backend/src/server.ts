@@ -13,6 +13,7 @@ import { randomUUID } from 'crypto';
 import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'url';
 import { isMailConfigured, sendPasswordResetEmail } from './mail.ts';
+import { stockValuation } from './finance/stockValue.ts';
 import { finishGoogleSignIn, GoogleSignInError, readGoogleSettings, readStateCookie, startGoogleSignIn } from './googleOAuth.ts';
 import {
   authenticateUser,
@@ -65,6 +66,9 @@ import {
   getRequestDetail,
   updateRequestItemStatus,
   approveAllRequestItems,
+  getPurchasedItemIds,
+  cancelRequest,
+  RequestCancelError,
   getIncomingHistory,
   getOutgoingHistory,
   getUserDashboardStats,
@@ -704,6 +708,26 @@ app.post('/api/requests/:requestId/items/:requestItemId/reject', async (req: Req
   }
 });
 
+// Cancel an approved request: the owning outlet or the warehouse. The rules
+// (who, which status, once only, open period only) live in cancelRequest, so
+// they hold however the endpoint is called.
+app.post('/api/requests/:requestId/cancel', async (req: Request, res: Response) => {
+  try {
+    const account = await operationalSessions.identity(req);
+    if (!account) return res.status(401).json({ error: 'Sesi login tidak tersedia atau berakhir. Silakan login kembali.' });
+    const requestId = Number(req.params.requestId);
+    if (!Number.isSafeInteger(requestId) || requestId <= 0) return res.status(404).json({ error: 'Permintaan tidak ditemukan.' });
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : null;
+    const result = await cancelRequest(requestId, { id: Number(account.id), name: account.name, role: account.role }, reason);
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    if (err instanceof RequestCancelError) return res.status(err.status).json({ error: err.message });
+    const status = errorStatus(err);
+    if (status === 500) console.error('[cancel-request] gagal:', err?.message);
+    res.status(status).json({ error: status === 500 ? 'Request gagal dibatalkan. Tidak ada stok yang berubah.' : err.message });
+  }
+});
+
 // History endpoints (Transaction-based)
 app.get('/api/history/incoming', async (req: Request, res: Response) => {
   try {
@@ -745,10 +769,17 @@ app.get('/api/dashboard/warehouse-ops-stats', dashboardSessionAccess(async (req)
   try {
     const startDate = req.query.startDate ? String(req.query.startDate) : undefined;
     const endDate = req.query.endDate ? String(req.query.endDate) : undefined;
-    const [items, purchases] = await Promise.all([
+    const [inventory, purchases, purchased] = await Promise.all([
       getInventory(),
       getIncomingHistory(startDate, endDate),
+      getPurchasedItemIds(),
     ]);
+    // Stock value is computed here, not in the browser: average cost × current
+    // stock, null for an item that has never been bought.
+    const items = inventory.map((item: any) => ({
+      ...item,
+      ...stockValuation(Number(item.currentStock || 0), item.avgPurchasePrice, purchased.has(Number(item.id))),
+    }));
     res.json({ items, purchases });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Gagal memuat dashboard operasional' });

@@ -33,6 +33,9 @@ export interface InventoryItem {
   price: number; // Harga Katalog (digunakan untuk Request Outlet)
   avgPurchasePrice?: number; // Harga Rata-Rata Pembelian (Weighted Average dari Transaksi Masuk)
   currentStock: number;
+  // From the warehouse dashboard: null when the item has never been bought.
+  avgCost?: number | null;
+  stockValue?: number | null;
   vendorId?: number;
   vendorName?: string;
   vendorCode?: string;
@@ -42,8 +45,8 @@ export interface InventoryItem {
   status: 'Available' | 'Low Stock' | 'Out of Stock';
 }
 
-export type RequestStatus = 'Pending' | 'Partially Approved' | 'Approved' | 'Rejected';
-export type ItemApprovalStatus = 'Pending' | 'Approved' | 'Rejected';
+export type RequestStatus = 'Pending' | 'Partially Approved' | 'Approved' | 'Rejected' | 'Cancelled';
+export type ItemApprovalStatus = 'Pending' | 'Approved' | 'Rejected' | 'Cancelled';
 
 export interface RequestItem {
   id: number;
@@ -72,6 +75,8 @@ export interface RequestTransaction {
   itemCount?: number;
   itemSummary?: string;
   items?: RequestItem[];
+  // Set once the request has been cancelled: who, when, why, and what came back.
+  cancellation?: { cancelledByName: string; cancelledByRole: string; reason: string | null; returnedQuantity: number; cancelledAt: string } | null;
 }
 
 export interface PurchaseItem {

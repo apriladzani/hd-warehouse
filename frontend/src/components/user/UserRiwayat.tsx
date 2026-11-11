@@ -2,7 +2,9 @@ import { Toolbar } from '../common/UI.tsx';
 import { StateMessage } from '../common/UI.tsx';
 import React, { useEffect, useState } from 'react';
 import { User, RequestTransaction } from '../../types.ts';
-import { SlidersHorizontal, X } from 'lucide-react';
+import { CheckCircle2, PackageX, SlidersHorizontal, X } from 'lucide-react';
+import { CancelRequestDialog } from '../modals/CancelRequestDialog.tsx';
+import { canCancelRequest } from '../../lib/requestCancel.ts';
 import { DateFilter } from '../common/DateFilter.tsx';
 import { StatusBadge } from '../common/StatusBadge.tsx';
 import { formatDateIndo, formatRupiah } from '../../lib/format.ts';
@@ -20,6 +22,8 @@ export const UserRiwayat: React.FC<UserRiwayatProps> = ({ currentUser }) => {
   const [statusFilter, setStatusFilter] = useState('Semua Status');
   const [selectedTx, setSelectedTx] = useState<RequestTransaction | null>(null);
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<RequestTransaction | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const fetchRequests = async (start = startDate, end = endDate, status = statusFilter) => {
     try {
@@ -97,10 +101,17 @@ export const UserRiwayat: React.FC<UserRiwayatProps> = ({ currentUser }) => {
             <option value="Partially Approved">Partially Approved</option>
             <option value="Approved">Approved</option>
             <option value="Rejected">Rejected</option>
+            <option value="Cancelled">Cancelled</option>
           </select>
         </div>
         </div>
       </Toolbar>
+
+      {notice && (
+        <p role="status" className="flex items-center gap-1.5 rounded-lg border border-[#A7E4C4] bg-[#EAF8F1] px-3 py-2 text-xs font-semibold text-[#1B9357]">
+          <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />{notice}
+        </p>
+      )}
 
       {/* Transactions List */}
       <div className="bg-white rounded-xl border border-[#E2E8F0] overflow-hidden ">
@@ -121,7 +132,10 @@ export const UserRiwayat: React.FC<UserRiwayatProps> = ({ currentUser }) => {
                 <td className="max-w-[280px] truncate">{req.itemSummary || `${req.itemCount || 1} Barang`}</td>
                 <td><StatusBadge status={req.status} /></td>
                 <td className="whitespace-nowrap text-right font-semibold tabular-nums">{formatRupiah(req.totalAmount)}</td>
-                <td className="text-right"><button onClick={() => setSelectedTx(req)} className="hd-button hd-button--secondary !min-h-[30px] !px-2.5">Detail</button></td>
+                <td className="text-right"><div className="flex justify-end gap-1.5">
+                  {canCancelRequest(req.status) && <button type="button" id={`btn-cancel-request-${req.id}`} onClick={() => setCancelTarget(req)} className="hd-button hd-button--secondary !min-h-[30px] !px-2.5 !text-[#D80027]"><PackageX size={14} aria-hidden="true" />Batalkan</button>}
+                  <button onClick={() => setSelectedTx(req)} className="hd-button hd-button--secondary !min-h-[30px] !px-2.5">Detail</button>
+                </div></td>
               </tr>)}</tbody>
             </table>
           </div>
@@ -137,7 +151,10 @@ export const UserRiwayat: React.FC<UserRiwayatProps> = ({ currentUser }) => {
                 </div>
                 <div className="mt-2 flex items-center justify-between gap-2">
                   <span className="min-w-0 truncate text-[11px] text-[#64748B]">{req.itemSummary || `${req.itemCount || 1} Barang`}</span>
-                  <button onClick={() => setSelectedTx(req)} className="hd-button hd-button--secondary hd-history-detail">Detail</button>
+                  <div className="flex shrink-0 gap-1.5">
+                    {canCancelRequest(req.status) && <button type="button" onClick={() => setCancelTarget(req)} className="hd-button hd-button--secondary hd-history-detail !text-[#D80027]">Batalkan</button>}
+                    <button onClick={() => setSelectedTx(req)} className="hd-button hd-button--secondary hd-history-detail">Detail</button>
+                  </div>
                 </div>
               </article>
             ))}
@@ -145,6 +162,18 @@ export const UserRiwayat: React.FC<UserRiwayatProps> = ({ currentUser }) => {
           </>
         ) : <StateMessage>Tidak ada transaksi permintaan yang sesuai dengan filter.</StateMessage>}
       </div>
+
+      {cancelTarget && (
+        <CancelRequestDialog
+          request={cancelTarget}
+          onClose={() => setCancelTarget(null)}
+          onCancelled={() => {
+            setNotice(`${cancelTarget.requestCode} dibatalkan. Stok yang sudah disetujui dikembalikan ke warehouse.`);
+            setCancelTarget(null);
+            void fetchRequests(startDate, endDate, statusFilter);
+          }}
+        />
+      )}
 
       {/* Transaction Detail Modal */}
       <TransactionDetailModal
