@@ -909,6 +909,72 @@ export async function createManagedOutlet(input: { code: string; name: string; a
   }
 }
 
+// Removing an outlet. Requests, the per-outlet finance report and the outlet
+// snapshots of closed periods all carry the outlet id, so an outlet that has
+// ever been used keeps its row and is deactivated instead - the same rule as
+// deleting a user. A never-used outlet is deleted outright, but not while
+// accounts are still placed there: deleting would quietly leave them without a
+// placement (users.outlet_id is ON DELETE SET NULL).
+export class OutletDeleteError extends Error {
+  constructor(message: string, public readonly status: 400 | 404 | 409) { super(message); }
+}
+
+export async function deleteManagedOutlet(id: number) {
+  await ensureAdminOutletSchema();
+  if (!Number.isInteger(id) || id <= 0) throw new OutletDeleteError('ID outlet tidak valid', 400);
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.query('SELECT id, outlet_name AS name, is_active AS isActive FROM outlets WHERE id = ? LIMIT 1 FOR UPDATE', [id]);
+    const outlet = (rows as any[])[0];
+    if (!outlet) throw new OutletDeleteError('Outlet tidak ditemukan', 404);
+
+    const [requestRows] = await connection.query('SELECT 1 FROM requests WHERE outlet_id = ? LIMIT 1', [id]);
+    let hasHistory = (requestRows as any[]).length > 0;
+    // Closed-period outlet snapshots have no foreign key, so they are checked by
+    // name, and only when the table exists on this server.
+    const [snapshotTable] = await connection.query("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'finance_period_outlet_snapshots' LIMIT 1");
+    if (!hasHistory && (snapshotTable as any[]).length) {
+      const [snapshotRows] = await connection.query('SELECT 1 FROM finance_period_outlet_snapshots WHERE outlet_id = ? LIMIT 1', [id]);
+      hasHistory = (snapshotRows as any[]).length > 0;
+    }
+    // Any other table that points at outlets.id counts as history too.
+    if (!hasHistory) {
+      const [references] = await connection.query(`
+        SELECT TABLE_NAME AS tableName, COLUMN_NAME AS columnName
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_SCHEMA = DATABASE()
+          AND REFERENCED_TABLE_NAME = 'outlets' AND REFERENCED_COLUMN_NAME = 'id'
+          AND NOT (TABLE_NAME = 'users' AND COLUMN_NAME = 'outlet_id')
+          AND NOT (TABLE_NAME = 'requests' AND COLUMN_NAME = 'outlet_id')`);
+      for (const reference of references as any[]) {
+        const tableName = `\`${String(reference.tableName).replace(/`/g, '``')}\``;
+        const columnName = `\`${String(reference.columnName).replace(/`/g, '``')}\``;
+        const [linked] = await connection.query(`SELECT 1 FROM ${tableName} WHERE ${columnName} = ? LIMIT 1`, [id]);
+        if ((linked as any[]).length) { hasHistory = true; break; }
+      }
+    }
+
+    if (hasHistory) {
+      if (Number(outlet.isActive) !== 1) throw new OutletDeleteError(`Outlet ${outlet.name} sudah nonaktif. Outlet yang punya riwayat transaksi tidak bisa dihapus permanen.`, 409);
+      await connection.query('UPDATE outlets SET is_active = 0 WHERE id = ?', [id]);
+      await connection.commit();
+      return { id, mode: 'deactivated' as const, name: String(outlet.name) };
+    }
+
+    const [placed] = await connection.query('SELECT COUNT(*) AS n FROM users WHERE outlet_id = ?', [id]);
+    const placedCount = Number((placed as any[])[0]?.n || 0);
+    if (placedCount > 0) throw new OutletDeleteError(`Masih ada ${placedCount} akun yang ditempatkan di outlet ${outlet.name}. Pindahkan penempatannya dulu di User Management.`, 409);
+
+    await connection.query('DELETE FROM outlets WHERE id = ?', [id]);
+    await connection.commit();
+    return { id, mode: 'deleted' as const, name: String(outlet.name) };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally { connection.release(); }
+}
+
 export async function updateManagedOutlet(id: number, input: { code: string; name: string; address?: string; isActive: boolean }) {
   await ensureAdminOutletSchema();
   if (!Number.isInteger(id) || id <= 0) throw new Error('ID outlet tidak valid');

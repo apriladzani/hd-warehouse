@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowLeft, ArrowRight, Boxes, CircleAlert, ImagePlus, Package, Pencil, Plus, RotateCcw, Save, ShieldCheck, ShoppingCart, Store, Trash2, Users, X } from 'lucide-react';
 import type { Outlet, User } from '../../types.ts';
 import { KpiCard, StateMessage } from '../common/UI.tsx';
@@ -41,11 +41,18 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ currentUser, act
   const brandingContext = useBranding();
   // Same-origin fetch sends the HttpOnly operational session automatically.
   const headers = useMemo<Record<string, string>>(() => ({}), []);
+  // A refresh after an action on the same page (save, add, delete) reloads in
+  // place. Showing the loading state there would unmount the panel and drop
+  // the success message it just set; moving to another page still shows it.
+  const lastLoad = useRef({ view: '', token: -1 });
 
   useEffect(() => {
     let cancelled = false;
+    const view = `${activeTab}|${monitorType}`;
+    const silent = lastLoad.current.view === view && lastLoad.current.token !== refreshToken;
+    lastLoad.current = { view, token: refreshToken };
     const load = async (endpoint: string) => {
-      setLoading(true);
+      if (!silent) setLoading(true);
       setError('');
       try {
         const response = await fetch(endpoint, { headers });
@@ -55,7 +62,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ currentUser, act
       } catch (reason) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : 'Terjadi kesalahan saat memuat data.');
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && !silent) setLoading(false);
       }
       return null;
     };
@@ -271,6 +278,9 @@ function OutletManagementPanel({ outlets, headers, onRefresh }: { outlets: Manag
   const [savingNew, setSavingNew] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [createForm, setCreateForm] = useState({ code: '', name: '', address: '' });
+  const [deleting, setDeleting] = useState<ManagedOutlet | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   useEffect(() => {
     const next: Record<number, OutletDraft> = {};
     outlets.forEach((outlet) => { next[outlet.id] = { code: outlet.code, name: outlet.name, address: outlet.address || '', isActive: Boolean(outlet.isActive) }; });
@@ -300,6 +310,16 @@ function OutletManagementPanel({ outlets, headers, onRefresh }: { outlets: Manag
     } catch (reason) { setFeedback(reason instanceof Error ? reason.message : 'Gagal menambahkan outlet.'); }
     finally { setSavingNew(false); }
   };
+  const deleteOutlet = async (outlet: ManagedOutlet) => {
+    setDeleteBusy(true); setDeleteError(''); setFeedback('');
+    try {
+      const response = await fetch(`/api/admin/outlets/${outlet.id}`, { method: 'DELETE', headers });
+      const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Gagal menghapus outlet.');
+      setFeedback(result.mode === 'deactivated' ? `Outlet ${outlet.name} dinonaktifkan karena memiliki riwayat transaksi.` : `Outlet ${outlet.name} berhasil dihapus.`);
+      setDeleting(null); onRefresh();
+    } catch (reason) { setDeleteError(reason instanceof Error ? reason.message : 'Gagal menghapus outlet.'); }
+    finally { setDeleteBusy(false); }
+  };
   return <section className="hd-surface overflow-hidden">
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E2E8F0] px-3 py-2.5 sm:px-4"><div><h2>Outlet Management</h2><p className="mt-0.5 text-[11px] text-[#64748B]">{outlets.length} outlet · outlet bertransaksi dipertahankan untuk riwayat.</p></div><button type="button" onClick={() => setShowCreate((value) => !value)} className="hd-button hd-button--primary"><Plus size={15} />Tambah Outlet</button></div>
     {showCreate && <form onSubmit={createOutlet} className="grid gap-2 border-b border-[#E2E8F0] bg-[#F8FAFC] p-3 sm:grid-cols-2 lg:grid-cols-4"><input required value={createForm.code} onChange={(event) => setCreateForm((old) => ({ ...old, code: event.target.value }))} placeholder="Kode outlet (OTL-001)" className="hd-input" /><input required value={createForm.name} onChange={(event) => setCreateForm((old) => ({ ...old, name: event.target.value }))} placeholder="Nama outlet" className="hd-input" /><input value={createForm.address} onChange={(event) => setCreateForm((old) => ({ ...old, address: event.target.value }))} placeholder="Alamat" className="hd-input" /><button disabled={savingNew} className="hd-button hd-button--primary">{savingNew ? 'Menyimpan…' : 'Simpan Outlet'}</button></form>}
@@ -314,10 +334,47 @@ function OutletManagementPanel({ outlets, headers, onRefresh }: { outlets: Manag
         <td className="px-3"><input aria-label={`Alamat ${outlet.name}`} value={draft.address} onChange={(event) => setDrafts((old) => ({ ...old, [outlet.id]: { ...draft, address: event.target.value } }))} className="hd-input min-w-[190px]" placeholder="Belum diisi" /></td>
         <td className="px-3"><select aria-label={`Status ${outlet.name}`} value={draft.isActive ? 'active' : 'inactive'} onChange={(event) => setDrafts((old) => ({ ...old, [outlet.id]: { ...draft, isActive: event.target.value === 'active' } }))} className="hd-input min-w-[110px]"><option value="active">Aktif</option><option value="inactive">Nonaktif</option></select></td>
         <td className="px-3"><button type="button" onClick={() => setExpandedId(expandedId === outlet.id ? null : outlet.id)} className="text-left text-xs font-semibold text-[#475569] hover:text-[#F0002B]">{outlet.assignedUsers} pengguna · {outlet.requestCount} request</button></td>
-        <td className="px-3"><button type="button" disabled={!changed || savingId === outlet.id} onClick={() => void saveOutlet(outlet)} className="hd-button hd-button--secondary">{savingId === outlet.id ? 'Menyimpan…' : 'Simpan'}</button></td>
+        <td className="px-3"><div className="flex gap-1">
+          <button type="button" disabled={!changed || savingId === outlet.id} onClick={() => void saveOutlet(outlet)} className="hd-button hd-button--secondary">{savingId === outlet.id ? 'Menyimpan…' : 'Simpan'}</button>
+          {outlet.requestCount > 0 && !outlet.isActive
+            ? <button type="button" disabled className="hd-button hd-button--secondary" title="Outlet nonaktif yang punya riwayat transaksi tidak bisa dihapus permanen" aria-label={`Hapus ${outlet.name} tidak tersedia`}><Trash2 size={14} />Hapus</button>
+            : <button type="button" onClick={() => { setDeleteError(''); setDeleting(outlet); }} className="hd-button hd-button--secondary text-rose-700" aria-label={`Hapus ${outlet.name}`}><Trash2 size={14} />Hapus</button>}
+        </div></td>
       </tr>{expandedId === outlet.id && <tr><td colSpan={6} className="bg-[#F8FAFC] px-4 py-2.5"><p className="mb-1 text-[11px] font-semibold text-[#64748B]">Pengguna yang ditempatkan</p>{outlet.users.length ? <div className="flex flex-wrap gap-2">{outlet.users.map((user) => <span key={user.id} className="hd-badge">{user.name} · {user.email}{user.isActive ? '' : ' · Nonaktif'}</span>)}</div> : <span className="text-xs text-[#64748B]">Belum ada pengguna yang ditempatkan.</span>}</td></tr>}</React.Fragment>;
     })}</tbody></table></div> : <StateMessage>Tidak ada outlet yang cocok dengan filter.</StateMessage>}
+    {deleting && <DeleteOutletDialog outlet={deleting} busy={deleteBusy} error={deleteError} onCancel={() => setDeleting(null)} onConfirm={() => void deleteOutlet(deleting)} />}
   </section>;
+}
+
+// What will happen is decided by the server; the dialog says it up front from
+// the same facts, so the button never promises one thing and does another.
+export function deleteOutletPlan(outlet: Pick<ManagedOutlet, 'name' | 'requestCount' | 'assignedUsers' | 'isActive'>) {
+  if (outlet.requestCount > 0) return {
+    kind: 'deactivate' as const, confirm: 'Nonaktifkan outlet',
+    text: `Outlet ${outlet.name} punya ${outlet.requestCount} request, jadi tidak dihapus permanen. Outlet akan dinonaktifkan supaya riwayat request dan laporan keuangan per outlet tetap utuh.`,
+  };
+  if (outlet.assignedUsers > 0) return {
+    kind: 'blocked' as const, confirm: 'Hapus outlet',
+    text: `Masih ada ${outlet.assignedUsers} akun yang ditempatkan di outlet ${outlet.name}. Pindahkan penempatannya dulu di User Management, lalu hapus outlet ini.`,
+  };
+  return { kind: 'delete' as const, confirm: 'Hapus outlet', text: `Outlet ${outlet.name} belum pernah dipakai dan akan dihapus permanen.` };
+}
+
+function DeleteOutletDialog({ outlet, busy, error, onCancel, onConfirm }: { outlet: ManagedOutlet; busy: boolean; error: string; onCancel: () => void; onConfirm: () => void }) {
+  const plan = deleteOutletPlan(outlet);
+  return <div className="fixed inset-0 z-[110] grid place-items-center bg-slate-950/45 p-3" onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onCancel(); }}>
+    <section role="alertdialog" aria-modal="true" aria-labelledby="delete-outlet-title" aria-describedby="delete-outlet-description" className="hd-surface w-full max-w-md p-4 shadow-xl">
+      <header className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-rose-50 text-rose-700"><Trash2 size={17} /></span><div>
+        <h2 id="delete-outlet-title">{plan.kind === 'deactivate' ? 'Nonaktifkan outlet?' : 'Hapus outlet?'}</h2>
+        <p id="delete-outlet-description" className="mt-1 text-xs leading-5 text-[#64748B]">{plan.text}</p>
+      </div></header>
+      {error && <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">{error}</p>}
+      <footer className="mt-4 flex justify-end gap-2">
+        <button type="button" disabled={busy} onClick={onCancel} className="hd-button hd-button--secondary">{plan.kind === 'blocked' ? 'Tutup' : 'Batal'}</button>
+        {plan.kind !== 'blocked' && <button type="button" disabled={busy} onClick={onConfirm} className="hd-button hd-button--primary"><Trash2 size={14} />{busy ? 'Memproses…' : plan.confirm}</button>}
+      </footer>
+    </section>
+  </div>;
 }
 
 function DataTable({ title, description, columns, rows }: { title: string; description: string; columns: string[]; rows: React.ReactNode[][] }) {

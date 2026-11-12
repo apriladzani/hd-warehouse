@@ -22,6 +22,8 @@ import {
   getOutletMaster,
   createManagedOutlet,
   updateManagedOutlet,
+  deleteManagedOutlet,
+  OutletDeleteError,
   getOutletRequestProfile,
   createManagedUser,
   updateManagedUser,
@@ -1204,6 +1206,20 @@ app.patch('/api/admin/outlets/:id', async (req: Request, res: Response) => {
     res.json({ outlet });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Gagal menyimpan outlet' });
+  }
+});
+
+app.delete('/api/admin/outlets/:id', async (req: Request, res: Response) => {
+  const actor = await getAdminUser(req, res);
+  if (!actor) return;
+  try {
+    const result = await deleteManagedOutlet(Number(req.params.id));
+    await logAdminActivity({ actorId: actor.id, actorName: actor.name, action: result.mode === 'deactivated' ? 'OUTLET_DEACTIVATED' : 'OUTLET_DELETED', targetType: 'outlet', targetId: result.id, details: { name: result.name, mode: result.mode } });
+    res.json(result);
+  } catch (err: any) {
+    if (err instanceof OutletDeleteError) return res.status(err.status).json({ error: err.message });
+    console.error('[delete-outlet] gagal:', err?.message);
+    res.status(500).json({ error: 'Outlet gagal dihapus. Tidak ada data yang berubah.' });
   }
 });
 

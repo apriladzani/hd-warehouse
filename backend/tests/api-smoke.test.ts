@@ -575,3 +575,75 @@ test('Total Nilai Stok: the date range never changes stock values, only the purc
     assert.ok(all.purchases.length > 0);
   });
 });
+
+// ---- Deleting an outlet (Outlet Management) ------------------------------
+async function adminClient(connection: any, base: string) {
+  await connection.query("INSERT INTO users (id, name, username, email, password, role, outlet_id, is_active) VALUES (9, 'Admin Smoke', 'smoke-admin', 'admin@smoke.test', 'admin-pass', 'ADMIN', NULL, 1)");
+  const admin = client(base);
+  assert.equal((await admin.call('POST', '/api/auth/login', { email: 'admin@smoke.test', password: 'admin-pass' })).status, 200);
+  return admin;
+}
+const outletRow = async (connection: any, id: number) => (await connection.query('SELECT id, is_active FROM outlets WHERE id = ?', [id]))[0][0];
+
+test('Hapus outlet: an unused outlet is deleted for good, and the deletion is logged', async () => {
+  await withApi(async ({ connection, base }) => {
+    const admin = await adminClient(connection, base);
+    const created = await admin.call('POST', '/api/admin/outlets', { code: 'otl-kosong', name: 'Outlet Kosong' });
+    assert.equal(created.status, 201);
+    const id = created.body.outlet.id;
+
+    const removed = await admin.call('DELETE', `/api/admin/outlets/${id}`);
+    assert.equal(removed.status, 200);
+    assert.equal(removed.body.mode, 'deleted');
+    assert.equal(await outletRow(connection, id), undefined);
+    const [log]: any = await connection.query("SELECT action FROM activity_logs WHERE target_type = 'outlet' AND target_id = ?", [String(id)]);
+    assert.equal(log[0]?.action, 'OUTLET_DELETED');
+    assert.equal((await admin.call('DELETE', `/api/admin/outlets/${id}`)).status, 404);
+  });
+});
+
+test('Hapus outlet: an outlet with requests is deactivated, never deleted, and its history keeps its name', async () => {
+  await withApi(async ({ outlet, connection, base }) => {
+    const admin = await adminClient(connection, base);
+    const request = (await twoLineRequest(outlet)).body.request;
+    assert.equal(request.outletId, 1);
+
+    const result = await admin.call('DELETE', '/api/admin/outlets/1');
+    assert.equal(result.status, 200);
+    assert.equal(result.body.mode, 'deactivated');
+    assert.equal(Number((await outletRow(connection, 1)).is_active), 0, 'the row stays, switched off');
+    const [kept]: any = await connection.query('SELECT outlet_id FROM requests WHERE id = ?', [request.id]);
+    assert.equal(kept[0].outlet_id, 1, 'the request still points at its outlet');
+    assert.equal((await admin.call('GET', `/api/requests/${request.id}`)).body.request.outletName, 'Smoke Outlet');
+
+    // Asking again: already off, and it can never be deleted outright.
+    const again = await admin.call('DELETE', '/api/admin/outlets/1');
+    assert.equal(again.status, 409);
+    assert.match(again.body.error, /sudah nonaktif/);
+    // An inactive outlet cannot take new requests (existing rule).
+    assert.equal((await twoLineRequest(outlet)).status, 409);
+  });
+});
+
+test('Hapus outlet: an unused outlet with accounts placed in it is refused, nothing changes', async () => {
+  await withApi(async ({ connection, base }) => {
+    const admin = await adminClient(connection, base);
+    const id = (await admin.call('POST', '/api/admin/outlets', { code: 'otl-baru', name: 'Outlet Baru' })).body.outlet.id;
+    await connection.query("INSERT INTO users (id, name, username, email, password, role, outlet_id, is_active) VALUES (10, 'Kasir Baru', 'kasir-baru', 'kasir@smoke.test', 'x', 'OUTLET', ?, 1)", [id]);
+
+    const refused = await admin.call('DELETE', `/api/admin/outlets/${id}`);
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.error, /Masih ada 1 akun/);
+    assert.equal(Number((await outletRow(connection, id)).is_active), 1);
+    const [user]: any = await connection.query('SELECT outlet_id FROM users WHERE id = 10');
+    assert.equal(user[0].outlet_id, id, 'the account keeps its placement');
+  });
+});
+
+test('Hapus outlet: only an admin may delete', async () => {
+  await withApi(async ({ warehouse, outlet, anonymous, connection }) => {
+    for (const who of [warehouse, outlet]) assert.equal((await who.call('DELETE', '/api/admin/outlets/1')).status, 403);
+    assert.equal((await anonymous.call('DELETE', '/api/admin/outlets/1')).status, 401);
+    assert.equal(Number((await outletRow(connection, 1)).is_active), 1);
+  });
+});
