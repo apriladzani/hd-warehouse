@@ -7,18 +7,10 @@ USE `hd_warehouse`;
 
 SET FOREIGN_KEY_CHECKS = 0;
 
-DROP TABLE IF EXISTS `stock_movements`;
-DROP TABLE IF EXISTS `request_items`;
-DROP TABLE IF EXISTS `requests`;
-DROP TABLE IF EXISTS `purchase_items`;
-DROP TABLE IF EXISTS `purchase_transactions`;
-DROP TABLE IF EXISTS `items`;
-DROP TABLE IF EXISTS `vendors`;
-DROP TABLE IF EXISTS `users`;
 
 SET FOREIGN_KEY_CHECKS = 1;
 
-CREATE TABLE `users` (
+CREATE TABLE IF NOT EXISTS `users` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `uid` VARCHAR(255) NULL UNIQUE,
   `name` VARCHAR(255) NOT NULL,
@@ -29,7 +21,7 @@ CREATE TABLE `users` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
-CREATE TABLE `vendors` (
+CREATE TABLE IF NOT EXISTS `vendors` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `vendor_code` VARCHAR(100) NOT NULL UNIQUE,
   `vendor_name` VARCHAR(255) NOT NULL,
@@ -37,7 +29,7 @@ CREATE TABLE `vendors` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
-CREATE TABLE `items` (
+CREATE TABLE IF NOT EXISTS `items` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `item_name` VARCHAR(255) NOT NULL,
   `price` INT NOT NULL,
@@ -50,7 +42,7 @@ CREATE TABLE `items` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
-CREATE TABLE `purchase_transactions` (
+CREATE TABLE IF NOT EXISTS `purchase_transactions` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `transaction_code` VARCHAR(100) NOT NULL UNIQUE,
   `vendor_id` INT NOT NULL,
@@ -64,7 +56,7 @@ CREATE TABLE `purchase_transactions` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
-CREATE TABLE `purchase_items` (
+CREATE TABLE IF NOT EXISTS `purchase_items` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `purchase_id` INT NOT NULL,
   `item_id` INT NOT NULL,
@@ -78,7 +70,7 @@ CREATE TABLE `purchase_items` (
     REFERENCES `items` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE `item_vendors` (
+CREATE TABLE IF NOT EXISTS `item_vendors` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `item_id` INT NOT NULL,
   `vendor_id` INT NOT NULL,
@@ -88,7 +80,7 @@ CREATE TABLE `item_vendors` (
   CONSTRAINT `fk_iv_vendor` FOREIGN KEY (`vendor_id`) REFERENCES `vendors` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE `requests` (
+CREATE TABLE IF NOT EXISTS `requests` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `request_code` VARCHAR(100) NOT NULL UNIQUE,
   `user_id` INT NULL,
@@ -102,7 +94,7 @@ CREATE TABLE `requests` (
     REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE `request_items` (
+CREATE TABLE IF NOT EXISTS `request_items` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `request_id` INT NOT NULL,
   `item_id` INT NOT NULL,
@@ -118,7 +110,7 @@ CREATE TABLE `request_items` (
     REFERENCES `items` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE `stock_movements` (
+CREATE TABLE IF NOT EXISTS `stock_movements` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `item_id` INT NOT NULL,
   `movement_type` VARCHAR(20) NOT NULL, -- 'IN' | 'OUT'
@@ -130,20 +122,18 @@ CREATE TABLE `stock_movements` (
     REFERENCES `items` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO `users` (`id`, `name`, `email`, `password`, `role`) VALUES
+INSERT IGNORE INTO `users` (`id`, `name`, `email`, `password`, `role`) VALUES
 (1, 'Staff Gudang HD', 'warehouse@hd.com', 'warehouse123', 'WAREHOUSE'),
 (2, 'April Adzania (User Outlet)', 'user@hd.com', 'user123', 'USER'),
-(3, 'April Adzania', 'april.adzania@gmail.com', 'password123', 'USER')
-ON DUPLICATE KEY UPDATE `name`=VALUES(`name`), `password`=VALUES(`password`), `role`=VALUES(`role`);
+(3, 'April Adzania', 'april.adzania@gmail.com', 'password123', 'USER');
 
-INSERT INTO `vendors` (`id`, `vendor_code`, `vendor_name`) VALUES
+INSERT IGNORE INTO `vendors` (`id`, `vendor_code`, `vendor_name`) VALUES
 (1, 'VND-01', 'Supplier Unggas & Daging'),
 (2, 'VND-02', 'Distributor Bahan Baku Sembako'),
 (3, 'VND-03', 'Supplier Saus & Bumbu HD'),
-(4, 'VND-04', 'Supplier Packaging & Plastik')
-ON DUPLICATE KEY UPDATE `vendor_name`=VALUES(`vendor_name`);
+(4, 'VND-04', 'Supplier Packaging & Plastik');
 
-INSERT INTO `items` (`id`, `item_name`, `price`, `current_stock`, `vendor_id`) VALUES
+INSERT IGNORE INTO `items` (`id`, `item_name`, `price`, `current_stock`, `vendor_id`) VALUES
 (1, 'Ayam Mentah (kg)', 38000, 150, 1),
 (2, 'Kulit mentah (kg)', 28000, 80, 1),
 (3, 'Kulit matang (pcs)', 15000, 120, 1),
@@ -162,5 +152,4 @@ INSERT INTO `items` (`id`, `item_name`, `price`, `current_stock`, `vendor_id`) V
 (16, 'Plastic 15 (pack/100)', 18000, 140, 4),
 (17, 'Plastic 24 (pack/100)', 25000, 130, 4),
 (18, 'H.glove (pack/100)', 35000, 100, 4),
-(19, 'Cup mika (pack/25)', 16000, 120, 4)
-ON DUPLICATE KEY UPDATE `price`=VALUES(`price`), `current_stock`=VALUES(`current_stock`), `vendor_id`=VALUES(`vendor_id`);
+(19, 'Cup mika (pack/25)', 16000, 120, 4);
