@@ -1,57 +1,80 @@
-import React from 'react';
-import { Printer, X, FileText, CheckCircle2, ArrowDownLeft, ArrowUpRight } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { createPortal } from 'react-dom';
+import { Printer, X, FileText } from 'lucide-react';
 import { formatRupiah, formatDateIndo, terbilangRupiah } from '../../lib/format.ts';
+import { DEFAULT_DELIVERY_ORDER_TEMPLATE, contactLine, signatureName, useDeliveryOrderTemplate, type DeliveryOrderTemplate } from '../../lib/printTemplate.ts';
 
 interface PrintableTransactionA4Props {
   isOpen: boolean;
   onClose: () => void;
   type: 'incoming' | 'outgoing';
   data: any;
+  // Prints with this template instead of the saved one (admin "Coba cetak").
+  template?: DeliveryOrderTemplate;
 }
 
-export const PrintableTransactionA4: React.FC<PrintableTransactionA4Props> = ({
-  isOpen,
-  onClose,
-  type,
-  data,
-}) => {
-  if (!isOpen || !data) return null;
+// Print rules. The dialog is rendered straight into <body> (a portal), so for
+// printing everything else in <body> is removed from the layout, not merely made
+// invisible: invisible content still takes up room and produced a second page.
+// The wrappers lose their fixed position, scrolling and height limits for the
+// same reason; Chrome repeats a position:fixed element on every printed page.
+//
+// @page has no margin so the browser has no room for its own header and footer
+// (date, page title, URL); the sheet itself carries the 12 mm margin instead.
+const PRINT_CSS = `
+  @media print {
+    @page { size: A4; margin: 0; }
+    html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; height: auto !important; overflow: visible !important; }
+    body > *:not(.hd-print-root) { display: none !important; }
+    .hd-print-root .no-print { display: none !important; }
+    .hd-print-root, .hd-print-root .hd-print-backdrop, .hd-print-root .hd-print-dialog, .hd-print-root .hd-print-scroll {
+      position: static !important; inset: auto !important; display: block !important;
+      width: auto !important; max-width: none !important; height: auto !important; max-height: none !important;
+      margin: 0 !important; padding: 0 !important; overflow: visible !important;
+      background: none !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; backdrop-filter: none !important;
+    }
+    #printable-a4-sheet {
+      width: 210mm !important; max-width: none !important; min-height: 0 !important; height: auto !important;
+      margin: 0 !important; padding: 12mm !important; box-sizing: border-box !important;
+      border: 0 !important; box-shadow: none !important; background: #fff !important; color: #000 !important;
+      display: block !important; position: relative !important; font-size: 10pt !important;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+    #printable-a4-sheet table { width: 100% !important; table-layout: fixed !important; font-size: 9pt !important; }
+    #printable-a4-sheet thead { display: table-header-group !important; }
+    #printable-a4-sheet tr { break-inside: avoid !important; }
+    #printable-a4-sheet th, #printable-a4-sheet td { padding: 1.6mm 1.5mm !important; overflow-wrap: anywhere !important; }
+    #printable-a4-sheet .doc-signature { break-inside: avoid !important; margin-top: 8mm !important; padding-top: 5mm !important; }
+  }
+`;
 
+const prepareItems = (data: any, isIncoming: boolean) => {
+  const rawItems: any[] = data.items || data.approvedItems || [];
+  return rawItems.map((it: any, idx: number) => {
+    const quantity = isIncoming ? it.quantity : it.status === 'Approved' ? it.approvedQuantity : it.requestedQuantity || it.quantity || 0;
+    const price = it.price || 0;
+    return { no: idx + 1, itemName: it.itemName || `Barang #${it.itemId}`, quantity, price, subtotal: it.subtotal || quantity * price };
+  });
+};
+
+const InfoRow: React.FC<{ label: string; children: React.ReactNode; strong?: boolean; className?: string }> = ({ label, children, strong, className }) => (
+  <div className="flex">
+    <span className="w-32 shrink-0 text-[#64748B] font-medium">{label}</span>
+    <span className={`${strong ? 'font-bold' : 'font-semibold'} ${className || 'text-[#0F172A]'}`}>: {children}</span>
+  </div>
+);
+
+// The A4 sheet itself, without any dialog around it. Outgoing documents (Surat
+// Jalan / Delivery Order) take their wording from `template`; the incoming
+// Goods Receipt Note keeps its fixed wording.
+// `preview` drops the print id, so an on-screen preview is never what gets printed.
+export const TransactionDocument: React.FC<{ type: 'incoming' | 'outgoing'; data: any; template: DeliveryOrderTemplate; printTimestamp?: string; preview?: boolean }> = ({ type, data, template, printTimestamp, preview }) => {
   const isIncoming = type === 'incoming';
-  const isOutgoing = type === 'outgoing';
+  const t = template;
   const docCode = isIncoming ? data.transactionCode : data.requestCode;
   const docDate = isIncoming ? data.transactionDate : data.requestDate;
-  const printTimestamp = new Date().toLocaleString('id-ID', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-
-  // Items processing
-  const rawItems: any[] = data.items || data.approvedItems || [];
-  const items = rawItems.map((it: any, idx: number) => {
-    const isApproved = it.status === 'Approved';
-    const quantity = isIncoming
-      ? it.quantity
-      : isApproved
-        ? it.approvedQuantity
-        : it.requestedQuantity || it.quantity || 0;
-    const price = it.price || 0;
-    const subtotal = it.subtotal || quantity * price;
-
-    return {
-      no: idx + 1,
-      itemId: it.itemId,
-      itemName: it.itemName || `Barang #${it.itemId}`,
-      quantity,
-      price,
-      subtotal,
-      status: it.status || 'Verified',
-    };
-  });
-
+  const timestamp = printTimestamp || new Date().toLocaleString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const items = prepareItems(data, isIncoming);
   const totalQty = items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
   const totalAmount = isIncoming
     ? data.totalAmount || items.reduce((sum, i) => sum + i.subtotal, 0)
@@ -59,404 +82,254 @@ export const PrintableTransactionA4: React.FC<PrintableTransactionA4Props> = ({
       ? Number(data.totalApprovedAmount ?? 0)
       : data.totalApprovedAmount || data.totalAmount || items.reduce((sum, i) => sum + i.subtotal, 0);
 
-  const handlePrint = () => {
-    window.print();
-  };
+  const showPrices = isIncoming || t.table.showPrices;
+  const showTerbilang = isIncoming || (t.table.showPrices && t.table.showTerbilang);
+  const showPayment = isIncoming || t.info.showPaymentMethod;
+  const columnCount = showPrices ? 5 : 3;
+  const notes = isIncoming ? DEFAULT_DELIVERY_ORDER_TEMPLATE.notes : t.notes;
+  const header = isIncoming ? DEFAULT_DELIVERY_ORDER_TEMPLATE.header : t.header;
+  const signatures = isIncoming
+    ? [
+      { label: 'Diserahkan Oleh (Pemasok / Driver)', name: data.vendorName || 'Pihak Vendor' },
+      { label: 'Diterima & Diperiksa (Staff Gudang)', name: data.createdBy || 'Staff Gudang HD' },
+      { label: 'Mengetahui & Verifikasi (SPV / Manager)', name: 'Kepala Logistik & Gudang' },
+    ]
+    : t.signatures.map((column) => ({ label: column.label, name: signatureName(column, data.requesterName) }));
+  // A cancelled purchase can still be printed, for the archive, but never passes
+  // for a valid receipt: watermark plus who cancelled it and why.
+  const cancelled = isIncoming && data.status === 'cancelled';
 
   return (
-    <div className="hd-modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto">
-      {/* Print CSS Specific Injection */}
-      <style>{`
-        @media print {
-          @page {
-            size: A4 portrait;
-            margin: 10mm 12mm 12mm 12mm;
-          }
-          body {
-            background: #fff !important;
-            color: #000 !important;
-          }
-          body * {
-            visibility: hidden !important;
-          }
-          #printable-a4-sheet, #printable-a4-sheet * {
-            visibility: visible !important;
-          }
-          #printable-a4-sheet {
-            position: absolute !important;
-            left: 0 !important;
-            top: 0 !important;
-            width: 100% !important;
-            max-width: 100% !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            background: #ffffff !important;
-            box-shadow: none !important;
-            border: none !important;
-          }
-          #printable-a4-sheet.incoming-receipt {
-            position: fixed !important;
-            left: 0 !important;
-            top: 0 !important;
-            width: 100% !important;
-            max-width: none !important;
-            min-height: 0 !important;
-            height: auto !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            display: block !important;
-            overflow: visible !important;
-            font-size: 10pt !important;
-          }
-          #printable-a4-sheet.incoming-receipt table {
-            width: 100% !important;
-            table-layout: fixed !important;
-            font-size: 9pt !important;
-          }
-          #printable-a4-sheet.incoming-receipt thead { display: table-header-group !important; }
-          #printable-a4-sheet.incoming-receipt tr { break-inside: avoid !important; page-break-inside: avoid !important; }
-          #printable-a4-sheet.incoming-receipt th,
-          #printable-a4-sheet.incoming-receipt td {
-            padding: 2mm 1.5mm !important;
-            overflow-wrap: anywhere !important;
-          }
-          #printable-a4-sheet.incoming-receipt .receipt-signature {
-            break-inside: avoid !important;
-            page-break-inside: avoid !important;
-            margin-top: 10mm !important;
-            padding-top: 6mm !important;
-          }
-          #printable-a4-sheet.incoming-receipt .receipt-signature .signature-cell { height: 25mm !important; }
-          #printable-a4-sheet.incoming-receipt .receipt-header { margin-bottom: 3mm !important; padding-bottom: 3mm !important; }
-          #printable-a4-sheet.incoming-receipt .receipt-section { margin-top: 3mm !important; margin-bottom: 3mm !important; }
-          #printable-a4-sheet.outgoing-request {
-            position: fixed !important;
-            left: 0 !important;
-            top: 0 !important;
-            width: 100% !important;
-            max-width: none !important;
-            min-height: 0 !important;
-            height: auto !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            display: block !important;
-            overflow: visible !important;
-            font-size: 10pt !important;
-          }
-          #printable-a4-sheet.outgoing-request table { width: 100% !important; table-layout: fixed !important; font-size: 9pt !important; }
-          #printable-a4-sheet.outgoing-request thead { display: table-header-group !important; }
-          #printable-a4-sheet.outgoing-request tr { break-inside: avoid !important; page-break-inside: avoid !important; }
-          #printable-a4-sheet.outgoing-request th,
-          #printable-a4-sheet.outgoing-request td { padding: 2mm 1.5mm !important; overflow-wrap: anywhere !important; }
-          .no-print {
-            display: none !important;
-          }
-        }
-      `}</style>
+    <div
+      id={preview ? undefined : 'printable-a4-sheet'}
+      className="relative w-full max-w-[210mm] min-h-[297mm] bg-white p-8 sm:p-12 shadow-md border border-[#CBD5E1] text-[#0F172A] font-sans flex flex-col justify-between"
+      style={{ boxSizing: 'border-box' }}
+    >
+      {cancelled && (
+        <div aria-hidden="true" className="doc-watermark pointer-events-none absolute inset-0 flex items-center justify-center overflow-hidden">
+          <span className="-rotate-[30deg] select-none whitespace-nowrap rounded-xl border-[6px] border-[#DC2626]/40 px-8 py-2 text-[96px] font-black tracking-[0.15em] text-[#DC2626]/25">DIBATALKAN</span>
+        </div>
+      )}
+      <div>
+        {/* Kop Surat / Header */}
+        <div className="border-b-2 border-[#0F172A] pb-3 mb-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 space-y-0.5">
+              <div className="flex items-center gap-2">
+                {header.logoUrl
+                  ? <img src={header.logoUrl} alt={header.brandName} className="h-10 max-w-[180px] object-contain" />
+                  : <span className="text-xl sm:text-2xl font-black text-[#ED002B] tracking-tight">{header.brandName}</span>}
+                {header.subLabel && (
+                  <span className="text-xs font-bold uppercase tracking-widest px-1.5 py-0.5 bg-[#17233D] text-white rounded-[4px]">{header.subLabel}</span>
+                )}
+              </div>
+              {header.divisionName && <h2 className="text-xs sm:text-sm font-bold text-[#17233D] uppercase tracking-wider">{header.divisionName}</h2>}
+              {contactLine(header) && <p className="text-[11px] text-[#475569]">{contactLine(header)}</p>}
+            </div>
 
-      {/* Modal Container */}
-      <div
-        className="hd-print-dialog bg-white w-full max-w-4xl rounded-xl overflow-hidden flex flex-col max-h-[96vh]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Top Control Bar (Hidden in Print) */}
-        <div className="no-print hd-print-toolbar flex items-center justify-between px-4 py-3 bg-white text-[#1E293B] border-b border-[#E2E8F0]">
-          <div className="flex items-center space-x-2">
-            <FileText className="w-4 h-4 text-[#FFB800]" />
-            <span className="text-xs sm:text-sm font-bold tracking-wide">
-              Preview Cetak Standar Kertas A4 • {docCode}
-            </span>
-          </div>
-
-          <div className="flex items-center space-x-2">
-            <button
-              id="btn-trigger-print"
-              onClick={handlePrint}
-              className="hd-button hd-button--primary"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Cetak Kertas A4 Sekarang</span>
-            </button>
-
-            <button
-              onClick={onClose}
-              className="hd-button hd-button--ghost hd-icon-button"
-              title="Tutup"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <div className="shrink-0 text-right">
+              <span className="text-[10px] text-[#64748B] block font-mono">FORM: {isIncoming ? 'WMS-A4-IN' : t.header.formCode}</span>
+              <span className="text-xs font-bold text-[#17233D] block mt-0.5 font-mono">{docCode}</span>
+              <span className="text-[10px] text-[#64748B] block">Waktu Cetak: {timestamp}</span>
+            </div>
           </div>
         </div>
 
-        {/* Scrollable Document Preview Area */}
-        <div className="overflow-y-auto p-4 sm:p-8 bg-[#E2E8F0]/50 flex justify-center">
-          {/* Authentic A4 Document Layout */}
-          <div
-            id="printable-a4-sheet"
-            className={`w-full max-w-[210mm] min-h-[297mm] bg-white p-8 sm:p-12 shadow-md border border-[#CBD5E1] text-[#0F172A] font-sans flex flex-col justify-between ${isIncoming ? 'incoming-receipt' : data.printableRequest ? 'outgoing-request' : ''}`}
-            style={{ boxSizing: 'border-box' }}
-          >
-            <div>
-              {/* Kop Surat / Header */}
-              <div className={`border-b-2 border-[#0F172A] pb-3 mb-4 ${isIncoming ? 'receipt-header' : ''}`}>
-                <div className="flex items-start justify-between">
-                  <div className="space-y-0.5">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xl sm:text-2xl font-black text-[#ED002B] tracking-tight">
-                        HD FriedChicken
-                      </span>
-                      <span className="text-xs font-bold uppercase tracking-widest px-1.5 py-0.5 bg-[#17233D] text-white rounded-[4px]">
-                        Supply Chain
-                      </span>
-                    </div>
-                    <h2 className="text-xs sm:text-sm font-bold text-[#17233D] uppercase tracking-wider">
-                      Divisi Logistik &amp; Pergudangan Pusat (Central Warehouse)
-                    </h2>
-                    <p className="text-[11px] text-[#475569]">
-                      Kawasan Pergudangan Logistik Mandiri Blok C-12 • Hotline: (021) 555-0192 • Email: warehouse@hdresto.co.id
-                    </p>
-                  </div>
+        {/* Title Dokumen */}
+        <div className="text-center my-4">
+          <h1 className="text-base sm:text-lg font-black uppercase tracking-wider underline decoration-1 underline-offset-4 text-[#0F172A]">
+            {isIncoming ? 'SURAT BUKTI PENERIMAAN BARANG (GOODS RECEIPT NOTE)' : t.title.title}
+          </h1>
+          {(isIncoming || t.title.subtitle) && (
+            <p className="text-[11px] text-[#64748B] mt-0.5">
+              {isIncoming ? 'Bukti serah terima fisik barang masuk dari vendor/pemasok ke gudang resmi' : t.title.subtitle}
+            </p>
+          )}
+        </div>
 
-                  <div className="text-right">
-                    <span className="text-[10px] text-[#64748B] block font-mono">FORM: WMS-A4-{isIncoming ? 'IN' : 'OUT'}</span>
-                    <span className="text-xs font-bold text-[#17233D] block mt-0.5 font-mono">
-                      {docCode}
-                    </span>
-                    <span className="text-[10px] text-[#64748B] block">
-                      Waktu Cetak: {printTimestamp}
-                    </span>
-                  </div>
-                </div>
-              </div>
+        {cancelled && (
+          <div role="note" className="my-3 rounded-[6px] border-2 border-[#DC2626] bg-[#FEF2F2] px-3 py-2 text-xs text-[#991B1B]">
+            <strong className="block uppercase tracking-wider">Transaksi ini DIBATALKAN — tidak berlaku sebagai bukti penerimaan</strong>
+            <span className="block">Alasan: {data.cancelReason || '-'}</span>
+            {(data.cancelledByName || data.cancelledAt) && (
+              <span className="block text-[11px]">
+                Dibatalkan{data.cancelledByName ? ` oleh ${data.cancelledByName}` : ''}{data.cancelledAt ? ` pada ${new Date(data.cancelledAt).toLocaleString('id-ID', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Jakarta' })}` : ''}
+              </span>
+            )}
+          </div>
+        )}
 
-              {/* Title Dokumen */}
-              <div className="text-center my-4">
-                <h1 className="text-base sm:text-lg font-black uppercase tracking-wider underline decoration-1 underline-offset-4 text-[#0F172A]">
-                  {isIncoming
-                    ? 'SURAT BUKTI PENERIMAAN BARANG (GOODS RECEIPT NOTE)'
-                    : 'SURAT JALAN & PENGELUARAN BARANG (DELIVERY ORDER)'}
-                </h1>
-                <p className="text-[11px] text-[#64748B] mt-0.5">
-                  {isIncoming
-                    ? 'Bukti serah terima fisik barang masuk dari vendor/pemasok ke gudang resmi'
-                    : 'Bukti serah terima dan mutasi barang keluar dari gudang ke pemohon / outlet'}
-                </p>
-              </div>
+        {/* Metadata Info Grid */}
+        <div className="grid grid-cols-2 gap-4 p-3.5 bg-[#F8FAFC] border border-[#CBD5E1] rounded-[8px] my-4 text-xs">
+          <div className="space-y-1.5">
+            <InfoRow label={isIncoming ? 'Nomor Penerimaan' : 'No. Transaksi'} strong>{docCode}</InfoRow>
+            <InfoRow label={isIncoming ? 'Tanggal Penerimaan' : data.printableRequest ? 'Tanggal Request' : 'Tanggal Transaksi'}>{formatDateIndo(docDate)}</InfoRow>
+            {showPayment && <InfoRow label="Metode Pembayaran">{data.paymentMethod || 'Transfer'}</InfoRow>}
+          </div>
 
-              {/* Metadata Info Grid */}
-              <div className={`grid grid-cols-2 gap-4 p-3.5 bg-[#F8FAFC] border border-[#CBD5E1] rounded-[8px] my-4 text-xs ${isIncoming ? 'receipt-section' : ''}`}>
-                {/* Kolom Kiri */}
-                <div className="space-y-1.5">
-                  <div className="flex">
-                    <span className="w-32 text-[#64748B] font-medium">{isIncoming ? 'Nomor Penerimaan' : 'No. Transaksi'}</span>
-                    <span className="font-bold text-[#0F172A]">: {docCode}</span>
-                  </div>
-                  <div className="flex">
-                    <span className="w-32 text-[#64748B] font-medium">{isIncoming ? 'Tanggal Penerimaan' : data.printableRequest ? 'Tanggal Request' : 'Tanggal Transaksi'}</span>
-                    <span className="font-semibold text-[#0F172A]">: {formatDateIndo(docDate)}</span>
-                  </div>
-                  <div className="flex">
-                    <span className="w-32 text-[#64748B] font-medium">Metode Pembayaran</span>
-                    <span className="font-semibold text-[#0F172A]">: {data.paymentMethod || 'Transfer'}</span>
-                  </div>
-                </div>
+          <div className="space-y-1.5">
+            {isIncoming ? (
+              <>
+                <InfoRow label="Pemasok / Vendor" strong>{data.vendorName || '-'}</InfoRow>
+                <InfoRow label="Kode Vendor" className="text-[#0F172A] font-mono">{data.vendorCode || '-'}</InfoRow>
+                <InfoRow label="Petugas Penerima">{data.createdBy || 'Staff Gudang'}</InfoRow>
+              </>
+            ) : (
+              <>
+                <InfoRow label="Pemohon / Outlet" strong>{data.requesterName || '-'}</InfoRow>
+                <InfoRow label="Status Persetujuan" strong className="text-[#1B9357]">{data.status || 'Approved'}</InfoRow>
+                <InfoRow label="Pengeluaran Dari">{t.info.issuedFrom}</InfoRow>
+                {data.printableRequest && t.info.showApprovedBy && <InfoRow label="Disetujui Oleh">{data.approvalInfo || 'Staff Gudang'}</InfoRow>}
+                {data.printableRequest && t.info.showApprovalDate && data.approvalDate && <InfoRow label="Tanggal Approval">{data.approvalDate}</InfoRow>}
+              </>
+            )}
+          </div>
+        </div>
 
-                {/* Kolom Kanan */}
-                <div className="space-y-1.5">
-                  {isIncoming ? (
+        {/* Items Table */}
+        <div className="my-4">
+          <table className="w-full border-collapse border border-[#0F172A] text-xs">
+            <thead>
+              <tr className="bg-[#0F172A] text-white">
+                <th className="border border-[#0F172A] py-2 px-2 text-center w-10 font-bold">No</th>
+                <th className="border border-[#0F172A] py-2 px-3 text-left font-bold">Deskripsi Barang</th>
+                <th className="border border-[#0F172A] py-2 px-3 text-center w-24 font-bold">Kuantitas</th>
+                {showPrices && (
+                  <>
+                    <th className="border border-[#0F172A] py-2 px-3 text-right w-28 font-bold">
+                      {isIncoming ? 'Harga Beli per Unit' : data.printableRequest ? 'Harga Katalog per Unit' : 'Harga Satuan'}
+                    </th>
+                    <th className="border border-[#0F172A] py-2 px-3 text-right w-28 font-bold">Subtotal</th>
+                  </>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {items.length > 0 ? items.map((item) => (
+                <tr key={item.no} className="border-b border-[#CBD5E1]">
+                  <td className="border border-[#CBD5E1] py-2 px-2 text-center font-mono">{item.no}</td>
+                  <td className="border border-[#CBD5E1] py-2 px-3 font-semibold text-[#0F172A]">{item.itemName}</td>
+                  <td className="border border-[#CBD5E1] py-2 px-3 text-center font-bold">{item.quantity} pcs</td>
+                  {showPrices && (
                     <>
-                      <div className="flex">
-                        <span className="w-32 text-[#64748B] font-medium">Pemasok / Vendor</span>
-                        <span className="font-bold text-[#0F172A]">: {data.vendorName || '-'}</span>
-                      </div>
-                      <div className="flex">
-                        <span className="w-32 text-[#64748B] font-medium">Kode Vendor</span>
-                        <span className="font-semibold text-[#0F172A] font-mono">: {data.vendorCode || '-'}</span>
-                      </div>
-                      <div className="flex">
-                        <span className="w-32 text-[#64748B] font-medium">Petugas Penerima</span>
-                        <span className="font-semibold text-[#0F172A]">: {data.createdBy || 'Staff Gudang'}</span>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="flex">
-                        <span className="w-32 text-[#64748B] font-medium">Pemohon / Outlet</span>
-                        <span className="font-bold text-[#0F172A]">: {data.requesterName || '-'}</span>
-                      </div>
-                      <div className="flex">
-                        <span className="w-32 text-[#64748B] font-medium">Status Persetujuan</span>
-                        <span className="font-bold text-[#1B9357]">: {data.status || 'Approved'}</span>
-                      </div>
-                      <div className="flex">
-                        <span className="w-32 text-[#64748B] font-medium">Pengeluaran Dari</span>
-                        <span className="font-semibold text-[#0F172A]">: Gudang Utama HD</span>
-                      </div>
-                      {data.printableRequest && (
-                        <>
-                          <div className="flex">
-                            <span className="w-32 text-[#64748B] font-medium">Disetujui Oleh</span>
-                            <span className="font-semibold text-[#0F172A]">: {data.approvalInfo || 'Staff Gudang'}</span>
-                          </div>
-                          {data.approvalDate && (
-                            <div className="flex">
-                              <span className="w-32 text-[#64748B] font-medium">Tanggal Approval</span>
-                              <span className="font-semibold text-[#0F172A]">: {data.approvalDate}</span>
-                            </div>
-                          )}
-                        </>
-                      )}
+                      <td className="border border-[#CBD5E1] py-2 px-3 text-right text-[#475569] font-mono">{formatRupiah(item.price)}</td>
+                      <td className="border border-[#CBD5E1] py-2 px-3 text-right font-bold text-[#0F172A] font-mono">{formatRupiah(item.subtotal)}</td>
                     </>
                   )}
-                </div>
-              </div>
+                </tr>
+              )) : (
+                <tr><td colSpan={columnCount} className="py-6 text-center text-[#64748B] italic">Tidak ada rincian barang.</td></tr>
+              )}
 
-              {/* Items Table */}
-              <div className={`my-4 ${isIncoming ? 'receipt-section' : ''}`}>
-                <table className="w-full border-collapse border border-[#0F172A] text-xs">
-                  <thead>
-                    <tr className="bg-[#0F172A] text-white">
-                      <th className="border border-[#0F172A] py-2 px-2 text-center w-10 font-bold">No</th>
-                      <th className="border border-[#0F172A] py-2 px-3 text-left font-bold">Deskripsi Barang</th>
-                      <th className="border border-[#0F172A] py-2 px-3 text-center w-24 font-bold">Kuantitas</th>
-                      <th className="border border-[#0F172A] py-2 px-3 text-right w-28 font-bold">
-                        {isIncoming ? 'Harga Beli per Unit' : data.printableRequest ? 'Harga Katalog per Unit' : 'Harga Satuan'}
-                      </th>
-                      <th className="border border-[#0F172A] py-2 px-3 text-right w-28 font-bold">Subtotal</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.length > 0 ? (
-                      items.map((item) => (
-                        <tr key={item.no} className="border-b border-[#CBD5E1]">
-                          <td className="border border-[#CBD5E1] py-2 px-2 text-center font-mono">
-                            {item.no}
-                          </td>
-                          <td className="border border-[#CBD5E1] py-2 px-3 font-semibold text-[#0F172A]">
-                            {item.itemName}
-                          </td>
-                          <td className="border border-[#CBD5E1] py-2 px-3 text-center font-bold">
-                            {item.quantity} pcs
-                          </td>
-                          <td className="border border-[#CBD5E1] py-2 px-3 text-right text-[#475569] font-mono">
-                            {formatRupiah(item.price)}
-                          </td>
-                          <td className="border border-[#CBD5E1] py-2 px-3 text-right font-bold text-[#0F172A] font-mono">
-                            {formatRupiah(item.subtotal)}
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={5} className="py-6 text-center text-[#64748B] italic">
-                          Tidak ada rincian barang.
-                        </td>
-                      </tr>
-                    )}
-
-                    {/* Total Summary Row */}
-                    <tr className="bg-[#F1F5F9] font-bold border-t-2 border-[#0F172A]">
-                      <td colSpan={2} className="border border-[#CBD5E1] py-2.5 px-3 text-right uppercase tracking-wider">
-                        Total Rangkuman:
-                      </td>
-                      <td className="border border-[#CBD5E1] py-2.5 px-3 text-center font-black text-[#0F172A]">
-                        {totalQty} pcs
-                      </td>
-                      <td className="border border-[#CBD5E1] py-2.5 px-3 text-right">
-                        Grand Total:
-                      </td>
-                      <td className="border border-[#CBD5E1] py-2.5 px-3 text-right font-black text-sm text-[#0F172A] font-mono">
-                        {formatRupiah(totalAmount)}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Terbilang Box */}
-              <div className={`p-3 bg-[#F8FAFC] border border-[#CBD5E1] rounded-[6px] my-3 text-xs ${isIncoming ? 'receipt-section' : ''}`}>
-                <span className="font-semibold text-[#475569]">Terbilang: </span>
-                <span className="font-bold italic text-[#0F172A]">
-                  "{terbilangRupiah(totalAmount)}"
-                </span>
-              </div>
-
-              {/* Catatan Standar */}
-              <div className="text-[11px] text-[#64748B] space-y-0.5 mt-2">
-                <p>• Catatan: Barang telah diverifikasi fisik dan kuantitasnya sesuai prosedur standar operasional gudang.</p>
-                <p>• Segala bentuk retur atau klaim selisih wajib menyertakan lembar asli dokumen transaksi ini.</p>
-              </div>
-            </div>
-
-            {/* Signature Block (Tanda Tangan 3 Kolom Standar Indonesia) */}
-            <div className={`pt-8 border-t border-[#CBD5E1] mt-8 ${isIncoming ? 'receipt-signature' : ''}`}>
-              <div className="grid grid-cols-3 gap-6 text-center text-xs">
-                {/* Kolom 1 */}
-                <div className={`flex flex-col justify-between h-28 ${isIncoming ? 'signature-cell' : ''}`}>
-                  <span className="font-medium text-[#475569]">
-                    {isIncoming ? 'Diserahkan Oleh (Pemasok / Driver)' : 'Diterima Oleh (Pemohon / Outlet)'}
-                  </span>
-                  <div className="mt-12">
-                    <div className="border-b border-[#0F172A] w-4/5 mx-auto"></div>
-                    <span className="text-[11px] text-[#475569] mt-1 block">
-                      ( {isIncoming ? (data.vendorName || 'Pihak Vendor') : (data.requesterName || 'Pemohon')} )
-                    </span>
-                  </div>
-                </div>
-
-                {/* Kolom 2 */}
-                <div className={`flex flex-col justify-between h-28 ${isIncoming ? 'signature-cell' : ''}`}>
-                  <span className="font-medium text-[#475569]">
-                    Diterima &amp; Diperiksa (Staff Gudang)
-                  </span>
-                  <div className="mt-12">
-                    <div className="border-b border-[#0F172A] w-4/5 mx-auto"></div>
-                    <span className="text-[11px] text-[#475569] mt-1 block">
-                      ( {data.createdBy || 'Staff Gudang HD'} )
-                    </span>
-                  </div>
-                </div>
-
-                {/* Kolom 3 */}
-                <div className={`flex flex-col justify-between h-28 ${isIncoming ? 'signature-cell' : ''}`}>
-                  <span className="font-medium text-[#475569]">
-                    Mengetahui &amp; Verifikasi (SPV / Manager)
-                  </span>
-                  <div className="mt-12">
-                    <div className="border-b border-[#0F172A] w-4/5 mx-auto"></div>
-                    <span className="text-[11px] text-[#475569] mt-1 block">
-                      ( Kepala Logistik &amp; Gudang )
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+              <tr className="bg-[#F1F5F9] font-bold border-t-2 border-[#0F172A]">
+                <td colSpan={2} className="border border-[#CBD5E1] py-2.5 px-3 text-right uppercase tracking-wider">Total Rangkuman:</td>
+                <td className="border border-[#CBD5E1] py-2.5 px-3 text-center font-black text-[#0F172A]">{totalQty} pcs</td>
+                {showPrices && (
+                  <>
+                    <td className="border border-[#CBD5E1] py-2.5 px-3 text-right">Grand Total:</td>
+                    <td className="border border-[#CBD5E1] py-2.5 px-3 text-right font-black text-sm text-[#0F172A] font-mono">{formatRupiah(totalAmount)}</td>
+                  </>
+                )}
+              </tr>
+            </tbody>
+          </table>
         </div>
 
-        {/* Bottom Actions Footer (Hidden in print) */}
-        <div className="no-print p-4 bg-[#F8FAFC] border-t border-[#DDE5F0] flex items-center justify-between">
-          <div className="text-xs text-[#60708C]">
-            *Format dokumen telah dioptimalkan secara otomatis untuk kertas ukuran <strong>A4 Portrait</strong>.
+        {showTerbilang && (
+          <div className="p-3 bg-[#F8FAFC] border border-[#CBD5E1] rounded-[6px] my-3 text-xs">
+            <span className="font-semibold text-[#475569]">Terbilang: </span>
+            <span className="font-bold italic text-[#0F172A]">"{terbilangRupiah(totalAmount)}"</span>
           </div>
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={onClose}
-              className="hd-button hd-button--secondary"
-            >
-              Tutup
-            </button>
-            <button
-              id="btn-bottom-print"
-              onClick={handlePrint}
-              className="hd-button hd-button--primary"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Cetak Kertas A4</span>
-            </button>
+        )}
+
+        {notes.length > 0 && (
+          <div className="text-[11px] text-[#64748B] space-y-0.5 mt-2">
+            {notes.map((note, index) => <p key={index}>• {note}</p>)}
           </div>
+        )}
+      </div>
+
+      {/* Tanda tangan */}
+      <div className="doc-signature pt-8 border-t border-[#CBD5E1] mt-8">
+        <div className="grid gap-6 text-center text-xs" style={{ gridTemplateColumns: `repeat(${signatures.length}, minmax(0, 1fr))` }}>
+          {signatures.map((column, index) => (
+            <div key={index} className="signature-cell">
+              {/* Room for two lines of label, so every signature line sits at the same height. */}
+              <span className="block min-h-[2.6em] font-medium text-[#475569]">{column.label}</span>
+              <div className="mt-12">
+                <div className="border-b border-[#0F172A] w-4/5 mx-auto"></div>
+                <span className="text-[11px] text-[#475569] mt-1 block">( {column.name} )</span>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
+  );
+};
+
+export const PrintableTransactionA4: React.FC<PrintableTransactionA4Props> = ({ isOpen, onClose, type, data, template }) => {
+  const isOutgoing = type === 'outgoing';
+  // Outgoing documents wait for the saved template so the wording that is
+  // printed is the one the admin configured, not the built-in default.
+  const savedTemplate = useDeliveryOrderTemplate(isOpen && isOutgoing && !template);
+  const activeTemplate = template || savedTemplate;
+  const ready = !isOutgoing || Boolean(activeTemplate);
+  const docCode = data ? (type === 'incoming' ? data.transactionCode : data.requestCode) : '';
+
+  // The page title appears in the browser's own print header when the user has
+  // turned it on; name the document instead of the application while printing.
+  useEffect(() => {
+    if (!isOpen) return;
+    const original = document.title;
+    const before = () => { document.title = docCode || original; };
+    const after = () => { document.title = original; };
+    window.addEventListener('beforeprint', before);
+    window.addEventListener('afterprint', after);
+    return () => { window.removeEventListener('beforeprint', before); window.removeEventListener('afterprint', after); document.title = original; };
+  }, [isOpen, docCode]);
+
+  if (!isOpen || !data) return null;
+  const handlePrint = () => { if (ready) window.print(); };
+
+  return createPortal(
+    <div className="hd-print-root">
+      <style>{PRINT_CSS}</style>
+      <div className="hd-modal-backdrop hd-print-backdrop fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto">
+        <div className="hd-print-dialog bg-white w-full max-w-4xl rounded-xl overflow-hidden flex flex-col max-h-[96vh]" onClick={(e) => e.stopPropagation()}>
+          <div className="no-print hd-print-toolbar flex items-center justify-between px-4 py-3 bg-white text-[#1E293B] border-b border-[#E2E8F0]">
+            <div className="flex items-center space-x-2">
+              <FileText className="w-4 h-4 text-[#FFB800]" />
+              <span className="text-xs sm:text-sm font-bold tracking-wide">Preview Cetak Standar Kertas A4 • {docCode}</span>
+            </div>
+            <div className="flex items-center space-x-2">
+              <button id="btn-trigger-print" onClick={handlePrint} disabled={!ready} className="hd-button hd-button--primary">
+                <Printer className="w-3.5 h-3.5" />
+                <span>{ready ? 'Cetak Kertas A4 Sekarang' : 'Memuat pengaturan cetak…'}</span>
+              </button>
+              <button onClick={onClose} className="hd-button hd-button--ghost hd-icon-button" title="Tutup"><X className="w-4 h-4" /></button>
+            </div>
+          </div>
+
+          <div className="hd-print-scroll overflow-y-auto p-4 sm:p-8 bg-[#E2E8F0]/50 flex justify-center">
+            <TransactionDocument type={type} data={data} template={activeTemplate || DEFAULT_DELIVERY_ORDER_TEMPLATE} />
+          </div>
+
+          <div className="no-print p-4 bg-[#F8FAFC] border-t border-[#DDE5F0] flex items-center justify-between">
+            <div className="text-xs text-[#60708C]">
+              *Format dokumen telah dioptimalkan untuk kertas <strong>A4 Portrait</strong>, 1 halaman per transaksi.
+            </div>
+            <div className="flex items-center space-x-2">
+              <button onClick={onClose} className="hd-button hd-button--secondary">Tutup</button>
+              <button id="btn-bottom-print" onClick={handlePrint} disabled={!ready} className="hd-button hd-button--primary">
+                <Printer className="w-3.5 h-3.5" />
+                <span>Cetak Kertas A4</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 };

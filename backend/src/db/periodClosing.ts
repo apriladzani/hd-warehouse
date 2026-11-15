@@ -6,6 +6,7 @@ import {
   inventoryCostPeriods, inventoryCostSnapshots, financePeriodSnapshots, financePeriodOutletSnapshots,
 } from './schema.ts';
 import { buildLedger, combinePeriods, deriveOpening, effectiveTime, outletTotalsMismatch, replayCosts, type LedgerEvent, type LedgerPeriod, type PeriodItem } from '../finance/periodLedger.ts';
+import { activePurchase, ensurePurchaseCancellationSchema, signedMovementQuantity } from './purchaseCancellation.ts';
 
 type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 // Correction of a closed period, recorded in the open period (reference KOR-SO-<opname id>).
@@ -74,11 +75,15 @@ export type LedgerData = Awaited<ReturnType<typeof loadLedger>>;
 // are taken as stored unless ignoreSnapshots (rebuild comparison) is set.
 export async function loadLedger(executor: Executor = db, options: { ignoreSnapshots?: boolean } = {}) {
   await ensurePeriodSnapshotSchema();
+  await ensurePurchaseCancellationSchema();
   const itemRows = await executor.select({ id: items.id, stock: items.currentStock, average: items.avgPurchasePrice }).from(items).orderBy(items.id);
+  // A cancelled purchase is not a receipt: its IN and PURCHASE_CANCEL movements
+  // cancel out below, so leaving it out keeps the derived opening stock exact.
   const purchaseRows = await executor.select({
     id: purchaseItems.id, itemId: purchaseItems.itemId, quantity: purchaseItems.quantity, price: purchaseItems.price,
     averageAfter: purchaseItems.avgCostAfter, createdAt: epoch(purchaseTransactions.createdAt), date: purchaseTransactions.transactionDate,
-  }).from(purchaseItems).innerJoin(purchaseTransactions, eq(purchaseItems.purchaseId, purchaseTransactions.id)).orderBy(purchaseItems.id);
+  }).from(purchaseItems).innerJoin(purchaseTransactions, eq(purchaseItems.purchaseId, purchaseTransactions.id))
+    .where(activePurchase(purchaseTransactions.id)).orderBy(purchaseItems.id);
   const saleRows = await executor.select({
     id: requestItems.id, itemId: requestItems.itemId, quantity: requestItems.approvedQuantity, price: requestItems.price,
     unitCost: requestItems.unitCostSnapshot, costSource: inventoryCostSnapshots.source, approvedAt: requestItems.approvedAt, outletId: requests.outletId,
@@ -118,7 +123,7 @@ export async function loadLedger(executor: Executor = db, options: { ignoreSnaps
   }
   const net = new Map<number, number>();
   for (const m of movementRows) {
-    net.set(m.itemId, (net.get(m.itemId) ?? 0) + (m.kind === 'OUT' ? -m.quantity : m.quantity));
+    net.set(m.itemId, (net.get(m.itemId) ?? 0) + signedMovementQuantity(m.kind, m.quantity));
     if (m.kind === PERIOD_CORRECTION) push(m.itemId, { kind: 'correction', at: timestamp(m.createdAt), order: 2_000_000_000 + m.id, quantity: m.quantity });
   }
   for (const [itemId, list] of events) if (list.some(e => !Number.isFinite(e.at))) throw new Error(`Waktu transaksi barang ID ${itemId} tidak lengkap; periode tidak dapat dihitung.`);

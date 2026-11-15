@@ -30,6 +30,9 @@ import {
   deleteManagedUser,
   getApplicationConfig,
   saveApplicationConfig,
+  getSystemSetting,
+  saveSystemSetting,
+  deleteSystemSetting,
   getAdminActivityLogs,
   logAdminActivity,
   getFinanceSecurityStatus,
@@ -71,6 +74,8 @@ import {
   getPurchasedItemIds,
   cancelRequest,
   RequestCancelError,
+  cancelPurchase,
+  PurchaseCancelError,
   getIncomingHistory,
   getOutgoingHistory,
   getUserDashboardStats,
@@ -93,6 +98,7 @@ import { createFinanceScope, outletView } from './finance/outletScope.ts';
 import type { ItemCategory } from './db/repository.ts';
 import { canAccessDashboard, canReadFinanceDashboard } from './dashboardAccess.ts';
 import { mountFinanceReadOnly } from './finance/mount.ts';
+import { LOGO_MAX_BYTES, PRINT_TEMPLATE_KEY, PrintTemplateError, diffTemplates, resolveDeliveryOrderTemplate, validateDeliveryOrderTemplate } from './printTemplate.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -730,6 +736,23 @@ app.post('/api/requests/:requestId/cancel', async (req: Request, res: Response) 
   }
 });
 
+// Cancel a purchase (Barang Masuk) entered by mistake: Warehouse or Admin, with
+// a reason. Every rule lives in cancelPurchase, which runs as one transaction.
+app.post('/api/purchases/:purchaseId/cancel', async (req: Request, res: Response) => {
+  try {
+    const account = await operationalSessions.identity(req);
+    if (!account) return res.status(401).json({ error: 'Sesi login tidak tersedia atau berakhir. Silakan login kembali.' });
+    const purchaseId = Number(req.params.purchaseId);
+    if (!Number.isSafeInteger(purchaseId) || purchaseId <= 0) return res.status(404).json({ error: 'Transaksi pembelian tidak ditemukan.' });
+    const result = await cancelPurchase(purchaseId, { id: Number(account.id), name: account.name, role: account.role }, req.body?.reason);
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    if (err instanceof PurchaseCancelError) return res.status(err.status).json({ error: err.message });
+    console.error('[cancel-purchase] gagal:', err?.message);
+    res.status(500).json({ error: 'Pembelian gagal dibatalkan. Tidak ada stok yang berubah.' });
+  }
+});
+
 // History endpoints (Transaction-based)
 app.get('/api/history/incoming', async (req: Request, res: Response) => {
   try {
@@ -979,7 +1002,7 @@ app.get('/api/admin/overview', async (req: Request, res: Response) => {
       ...purchases.map((purchase: any) => ({
         id: `purchase-${purchase.id}`, type: 'Penerimaan Barang', reference: purchase.transactionCode,
         description: `${purchase.vendorName || 'Vendor'} · ${purchase.itemCount || 0} barang`,
-        date: purchase.transactionDate, status: 'Tercatat',
+        date: purchase.transactionDate, status: purchase.status === 'cancelled' ? 'Cancelled' : 'Tercatat',
       })),
     ].sort((left, right) => String(right.date || '').localeCompare(String(left.date || ''))).slice(0, 8);
     res.json({
@@ -1155,6 +1178,69 @@ app.get('/api/admin/settings', async (req: Request, res: Response) => {
   if (!await getAdminUser(req, res)) return;
   try { res.json(await getApplicationConfig()); }
   catch (err: any) { res.status(500).json({ error: err.message || 'Gagal memuat pengaturan' }); }
+});
+
+// Print template of the Surat Jalan / Delivery Order. Every signed-in role that
+// can print reads it; only an admin may change it.
+const loadDeliveryOrderTemplate = async () => {
+  const stored = await getSystemSetting(PRINT_TEMPLATE_KEY);
+  return { template: resolveDeliveryOrderTemplate(stored?.value ?? null), isDefault: !stored, updatedAt: stored?.updatedAt ?? null };
+};
+
+app.get('/api/print-templates/delivery-order', async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    if (!await operationalSessions.identity(req)) return res.status(401).json({ error: 'Sesi login tidak tersedia atau berakhir. Silakan login kembali.' });
+    res.json(await loadDeliveryOrderTemplate());
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Gagal memuat pengaturan cetak' }); }
+});
+
+app.get('/api/admin/print-templates/delivery-order', async (req: Request, res: Response) => {
+  if (!await getAdminUser(req, res)) return;
+  try { res.json(await loadDeliveryOrderTemplate()); }
+  catch (err: any) { res.status(500).json({ error: err.message || 'Gagal memuat pengaturan cetak' }); }
+});
+
+app.put('/api/admin/print-templates/delivery-order', async (req: Request, res: Response) => {
+  const actor = await getAdminUser(req, res); if (!actor) return;
+  let template;
+  try { template = validateDeliveryOrderTemplate(req.body); }
+  catch (err: any) { return res.status(400).json({ error: err instanceof PrintTemplateError ? err.message : 'Pengaturan cetak tidak valid' }); }
+  try {
+    const before = (await loadDeliveryOrderTemplate()).template;
+    await saveSystemSetting(PRINT_TEMPLATE_KEY, template, actor.id);
+    await logAdminActivity({ actorId: actor.id, actorName: actor.name, action: 'PRINT_TEMPLATE_CHANGED', targetType: 'system_settings', targetId: PRINT_TEMPLATE_KEY, details: { changes: diffTemplates(before, template) } });
+    res.json(await loadDeliveryOrderTemplate());
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Gagal menyimpan pengaturan cetak' }); }
+});
+
+app.delete('/api/admin/print-templates/delivery-order', async (req: Request, res: Response) => {
+  const actor = await getAdminUser(req, res); if (!actor) return;
+  try {
+    await deleteSystemSetting(PRINT_TEMPLATE_KEY);
+    await logAdminActivity({ actorId: actor.id, actorName: actor.name, action: 'PRINT_TEMPLATE_RESET', targetType: 'system_settings', targetId: PRINT_TEMPLATE_KEY });
+    res.json(await loadDeliveryOrderTemplate());
+  } catch (err: any) { res.status(500).json({ error: err.message || 'Gagal mereset pengaturan cetak' }); }
+});
+
+// Logo of the printed document: PNG or JPG only, at most 1 MB. Stored beside the
+// branding images so it is served by the same static route.
+app.post('/api/admin/print-templates/logo', imageUpload, async (req: Request, res: Response) => {
+  const actor = await getAdminUser(req, res); if (!actor) return;
+  try {
+    const mime = String(req.header('Content-Type') || '').split(';')[0].toLowerCase();
+    const buffer = req.body as Buffer;
+    if (!Buffer.isBuffer(buffer) || buffer.length === 0) return res.status(400).json({ error: 'File logo kosong. Gunakan PNG atau JPG.' });
+    if (buffer.length > LOGO_MAX_BYTES) return res.status(400).json({ error: 'Ukuran logo maksimal 1 MB' });
+    let extension: string;
+    if (mime === 'image/png' && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) extension = 'png';
+    else if (mime === 'image/jpeg' && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) extension = 'jpg';
+    else return res.status(400).json({ error: 'Format logo tidak valid. Gunakan PNG atau JPG.' });
+    fs.mkdirSync(brandingStorage, { recursive: true });
+    const filename = `print-logo-${randomUUID()}.${extension}`;
+    fs.writeFileSync(path.join(brandingStorage, filename), buffer, { flag: 'wx' });
+    res.status(201).json({ url: `/uploads/branding/${filename}` });
+  } catch (err: any) { res.status(400).json({ error: err.message || 'Gagal menyimpan logo' }); }
 });
 
 app.get('/api/admin/finance-security', async (req: Request, res: Response) => {

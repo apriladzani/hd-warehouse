@@ -6,7 +6,10 @@ import { formatDateIndo, formatRupiah } from '../../lib/format.ts';
 import { PurchaseTransaction, OutgoingHistoryTransaction } from '../../types.ts';
 import { TransactionDetailModal } from '../modals/TransactionDetailModal.tsx';
 import { PrintableTransactionA4 } from '../modals/PrintableTransactionA4.tsx';
+import { CancelPurchaseDialog } from '../modals/CancelPurchaseDialog.tsx';
+import { filterPurchasesByStatus, incomingTotals, isPurchaseCancelled, purchaseCancellationSummary, type PurchaseStatusFilter } from '../../lib/purchaseCancel.ts';
 import {
+  Ban,
   ArrowDownLeft,
   ArrowUpRight,
   Printer,
@@ -46,6 +49,9 @@ export const WarehouseHistory: React.FC = () => {
     type: 'incoming' | 'outgoing';
     data: any;
   } | null>(null);
+  const [purchaseStatus, setPurchaseStatus] = useState<PurchaseStatusFilter>('all');
+  const [cancellingPurchase, setCancellingPurchase] = useState<PurchaseTransaction | null>(null);
+  const [cancelNotice, setCancelNotice] = useState('');
 
   // Helper to format Date to local YYYY-MM-DD
   const getLocalDateString = (d: Date): string => {
@@ -147,7 +153,8 @@ export const WarehouseHistory: React.FC = () => {
     const itemMatches = !selectedItemIds.length || (tx.items || []).some((item) => selectedItemIds.includes(item.itemId));
     return itemMatches && text.includes(historySearch.trim().toLocaleLowerCase('id-ID'));
   };
-  const filteredIncomingList = useMemo(() => incomingList.filter(matchesHistoryFilters), [incomingList, selectedItemIds, historySearch]);
+  const filteredIncomingList = useMemo(() => filterPurchasesByStatus(incomingList.filter(matchesHistoryFilters), purchaseStatus), [incomingList, selectedItemIds, historySearch, purchaseStatus]);
+  const cancelledIncomingCount = useMemo(() => incomingList.filter(isPurchaseCancelled).length, [incomingList]);
   const filteredOutgoingList = useMemo(() => {
     if (!selectedOutlets.length) return outgoingList;
     return outgoingList.filter((tx) => tx.outletId != null && selectedOutlets.includes(Number(tx.outletId)));
@@ -155,17 +162,10 @@ export const WarehouseHistory: React.FC = () => {
   const displayedOutgoingList = useMemo(() => filteredOutgoingList.filter(matchesHistoryFilters), [filteredOutgoingList, selectedItemIds, historySearch]);
 
   // Aggregate stats based on current period filter
-  const totalIncomingAmount = useMemo(() => {
-    return incomingList.reduce((sum, tx) => sum + (tx.items || []).reduce((lineSum, line) =>
-      Number(line.quantity) > 0 && Number(line.price) >= 0 && (!selectedItemIds.length || selectedItemIds.includes(line.itemId))
-        ? lineSum + Number(line.quantity) * Number(line.price) : lineSum, 0), 0);
-  }, [incomingList, selectedItemIds]);
-
-  const totalIncomingQty = useMemo(() => {
-    return incomingList.reduce((sum, tx) => sum + (tx.items || []).reduce((lineSum, line) =>
-      Number(line.quantity) > 0 && Number(line.price) >= 0 && (!selectedItemIds.length || selectedItemIds.includes(line.itemId))
-        ? lineSum + Number(line.quantity) : lineSum, 0), 0);
-  }, [incomingList, selectedItemIds]);
+  // Cancelled purchases stay listed but count in no card, total or Selisih.
+  const incomingStats = useMemo(() => incomingTotals(incomingList, selectedItemIds), [incomingList, selectedItemIds]);
+  const totalIncomingAmount = incomingStats.amount;
+  const totalIncomingQty = incomingStats.quantity;
 
   const totalOutgoingAmount = useMemo(() => {
     return filteredOutgoingList.reduce((sum, tx) => sum + (tx.items || []).reduce((lineSum, line) =>
@@ -329,7 +329,7 @@ export const WarehouseHistory: React.FC = () => {
               {formatRupiah(totalIncomingAmount)}
             </div>
             <div className="flex flex-wrap items-center gap-x-1 sm:gap-x-2 text-[10px] sm:text-xs text-[#64748B]">
-              <span className="font-bold text-[#1E293B]">{incomingList.length} Trx</span>
+              <span className="font-bold text-[#1E293B]">{incomingStats.count} Trx</span>
               <span>•</span>
               <span className="font-semibold text-[#1B9357]">
                 {totalIncomingQty.toLocaleString('id-ID')} unit
@@ -454,7 +454,7 @@ export const WarehouseHistory: React.FC = () => {
             }`}
           >
             <ArrowDownLeft className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-            <span>Masuk ({incomingList.length})</span>
+            <span>Masuk ({incomingStats.count})</span>
           </button>
 
           <button
@@ -517,32 +517,48 @@ export const WarehouseHistory: React.FC = () => {
           <div className="p-3 sm:p-4 border-b border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 bg-[#F8FAFC]/60">
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               <span className="text-[11px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider">
-                Pembelian Masuk ({incomingList.length})
+                Pembelian Masuk ({filteredIncomingList.length})
               </span>
               <span className="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-[#EAF8F1] text-[#1B9357] font-bold border border-[#A7E4C4]">
                 {periodLabel}
               </span>
+              <div role="group" aria-label="Filter status pembelian" className="inline-flex rounded-lg border border-[#E2E8F0] bg-white p-0.5">
+                {([['all', 'Semua'], ['active', 'Aktif'], ['cancelled', `Dibatalkan${cancelledIncomingCount ? ` (${cancelledIncomingCount})` : ''}`]] as const).map(([value, label]) => (
+                  <button key={value} type="button" aria-pressed={purchaseStatus === value} onClick={() => setPurchaseStatus(value)}
+                    className={`rounded-md px-2 py-0.5 text-[10px] sm:text-[11px] font-semibold ${purchaseStatus === value ? 'bg-[#1E293B] text-white' : 'text-[#64748B] hover:text-[#1E293B]'}`}>{label}</button>
+                ))}
+              </div>
             </div>
             <div className="text-[11px] sm:text-xs text-[#1E293B] font-bold">
               Subtotal: <span className="text-[#1B9357]">{formatRupiah(totalIncomingAmount)}</span> ({totalIncomingQty} unit)
+              {cancelledIncomingCount > 0 && <span className="block text-[10px] font-medium text-[#64748B] sm:text-right">Tanpa {cancelledIncomingCount} transaksi dibatalkan</span>}
             </div>
           </div>
 
+          {cancelNotice && <p role="status" className="border-b border-[#E2E8F0] bg-[#F0FDF4] px-3 py-2 text-[11px] text-[#166534] sm:px-4">{cancelNotice}</p>}
+
           {loading ? <StateMessage kind="loading">Memuat data barang masuk...</StateMessage> : filteredIncomingList.length ? (
-            <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs">
+            <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-left text-xs">
               <thead><tr><th>Nomor Transaksi</th><th>Tanggal</th><th>Vendor</th><th>Barang</th><th>Metode</th><th className="text-right">Total Nominal</th><th className="text-right">Aksi</th></tr></thead>
-              <tbody>{filteredIncomingList.map((tx) => <tr key={tx.id}>
-                <th scope="row" className="whitespace-nowrap font-semibold text-[#1E293B]">{tx.transactionCode}</th>
-                <td className="whitespace-nowrap text-[#64748B]">{formatDateIndo(tx.transactionDate)}</td>
-                <td className="max-w-[180px] truncate">{tx.vendorName || tx.vendorCode}</td>
-                <td className="max-w-[220px] truncate">{tx.itemSummary || `${tx.itemCount || 1} Barang`}</td>
-                <td><span className="hd-badge">{tx.paymentMethod || 'Transfer'}</span></td>
-                <td className="whitespace-nowrap text-right font-semibold tabular-nums">{formatRupiah(tx.totalAmount)}</td>
-                <td className="whitespace-nowrap text-right"><div className="inline-flex gap-1">
-                  <button onClick={() => setPrintA4Data({ type: 'incoming', data: tx })} className="hd-button hd-button--secondary !min-h-[30px] !px-2"><Printer className="h-3.5 w-3.5" /><span>Cetak A4</span></button>
-                  <button onClick={() => setSelectedTx({ type: 'incoming', data: tx })} className="hd-button hd-button--secondary !min-h-[30px] !px-2">Detail</button>
-                </div></td>
-              </tr>)}</tbody>
+              <tbody>{filteredIncomingList.map((tx) => {
+                const cancelled = isPurchaseCancelled(tx);
+                return <tr key={tx.id} className={cancelled ? 'bg-[#F8FAFC] text-[#94A3B8]' : undefined}>
+                  <th scope="row" className={`whitespace-nowrap font-semibold ${cancelled ? 'text-[#64748B]' : 'text-[#1E293B]'}`}>
+                    {tx.transactionCode}
+                    {cancelled && <span className="ml-1.5 inline-flex rounded-full border border-[#FECDD3] bg-[#FFF1F2] px-1.5 py-px text-[10px] font-bold text-[#BE123C]" title={purchaseCancellationSummary(tx)}>Dibatalkan</span>}
+                  </th>
+                  <td className="whitespace-nowrap text-[#64748B]">{formatDateIndo(tx.transactionDate)}</td>
+                  <td className="max-w-[180px] truncate">{tx.vendorName || tx.vendorCode}</td>
+                  <td className="max-w-[220px] truncate" title={cancelled ? purchaseCancellationSummary(tx) : undefined}>{cancelled ? `Alasan: ${tx.cancelReason || '-'}` : tx.itemSummary || `${tx.itemCount || 1} Barang`}</td>
+                  <td><span className="hd-badge">{tx.paymentMethod || 'Transfer'}</span></td>
+                  <td className={`whitespace-nowrap text-right font-semibold tabular-nums ${cancelled ? 'line-through decoration-[#BE123C]' : ''}`}>{formatRupiah(tx.totalAmount)}</td>
+                  <td className="whitespace-nowrap text-right"><div className="inline-flex gap-1">
+                    <button onClick={() => setPrintA4Data({ type: 'incoming', data: tx })} className="hd-button hd-button--secondary !min-h-[30px] !px-2"><Printer className="h-3.5 w-3.5" /><span>Cetak A4</span></button>
+                    {!cancelled && <button onClick={() => { setCancelNotice(''); setCancellingPurchase(tx); }} className="hd-button hd-button--secondary !min-h-[30px] !px-2 !text-[#BE123C]"><Ban className="h-3.5 w-3.5" /><span>Batalkan</span></button>}
+                    <button onClick={() => setSelectedTx({ type: 'incoming', data: tx })} className="hd-button hd-button--secondary !min-h-[30px] !px-2">Detail</button>
+                  </div></td>
+                </tr>;
+              })}</tbody>
             </table></div>
           ) : <StateMessage>Tidak ada transaksi barang masuk pada filter {periodLabel}.</StateMessage>}
         </div>
@@ -607,6 +623,18 @@ export const WarehouseHistory: React.FC = () => {
           onClose={() => setPrintA4Data(null)}
           type={printA4Data.type}
           data={printA4Data.data}
+        />
+      )}
+
+      {cancellingPurchase && (
+        <CancelPurchaseDialog
+          purchase={cancellingPurchase}
+          onClose={() => setCancellingPurchase(null)}
+          onCancelled={() => {
+            setCancelNotice(`${cancellingPurchase.transactionCode} dibatalkan. Stok dikurangi dan transaksi tidak lagi dihitung di total.`);
+            setCancellingPurchase(null);
+            void fetchAllHistory(startDate, endDate);
+          }}
         />
       )}
     </div>

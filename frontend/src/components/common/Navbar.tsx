@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Activity, Boxes, ChevronRight, Clock3, FileText, LayoutDashboard, LockKeyhole, LogOut, Menu, PackageCheck, PanelLeftClose, Palette, Settings, Store, Users, X, CircleDollarSign } from 'lucide-react';
+import { Activity, Boxes, ChevronRight, Clock3, FileText, LayoutDashboard, LockKeyhole, LogOut, Menu, PackageCheck, PanelLeftClose, Palette, Printer, Settings, Store, Users, X, CircleDollarSign } from 'lucide-react';
 import type { User } from '../../types.ts';
 import { Button, IconButton } from './UI.tsx';
 import { useBranding } from './BrandingContext.tsx';
@@ -26,7 +26,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, activeNav, onNaviga
   const history = { id: 'history', label: 'Riwayat', icon: Clock3 };
   const financeItems = PAGES.map(([id, label]) => ({ id: `finance-${id}`, label, icon: id === 'dashboard' ? LayoutDashboard : id === 'settings' ? Settings : id === 'commercial-income' ? CircleDollarSign : FileText }));
   const navItems = currentUser.role === 'ADMIN'
-    ? [dashboard, { id: 'users', label: 'User Management', icon: Users }, { id: 'outlets', label: 'Outlet Management', icon: Store }, { id: 'branding', label: 'Branding Settings', icon: Palette }, { id: 'settings', label: 'System Settings', icon: Settings }, { id: 'financeSecurity', label: 'Finance Security', icon: LockKeyhole }, { id: 'activity', label: 'Activity Logs', icon: Activity }]
+    ? [dashboard, { id: 'users', label: 'User Management', icon: Users }, { id: 'outlets', label: 'Outlet Management', icon: Store }, { id: 'branding', label: 'Branding Settings', icon: Palette }, { id: 'settings', label: 'System Settings', icon: Settings }, { id: 'printSettings', label: 'Pengaturan Cetak', icon: Printer }, { id: 'financeSecurity', label: 'Finance Security', icon: LockKeyhole }, { id: 'activity', label: 'Activity Logs', icon: Activity }]
     : currentUser.role === 'WAREHOUSE'
     ? [dashboard, { id: 'inventory', label: 'Inventory', icon: Boxes }, { id: 'requests', label: 'Request Outlet', icon: PackageCheck }, history, { id: 'finance', label: 'Finance', icon: CircleDollarSign }]
     : currentUser.role === 'FINANCE'

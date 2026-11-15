@@ -1,0 +1,9 @@
+{
+  // Editor type checking for the tests, which run under Node (node:test,
+  // node:assert, node:fs). The app config (../tsconfig.json) covers src/ only.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["./**/*", "../src/**/*"]
+}

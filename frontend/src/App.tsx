@@ -35,7 +35,7 @@ const normalizeRole = (role: string) => role.toUpperCase() === 'USER' ? 'OUTLET'
 const pagePath = (role: string, page: string) => {
   const base = roleBase(role);
   if (role === 'ADMIN') {
-    const paths: Record<string, string> = { dashboard: 'dashboard', users: 'users', outlets: 'outlets', branding: 'branding-settings', settings: 'system-settings', financeSecurity: 'finance-security', activity: 'activity-logs' };
+    const paths: Record<string, string> = { dashboard: 'dashboard', users: 'users', outlets: 'outlets', branding: 'branding-settings', settings: 'system-settings', printSettings: 'print-settings', financeSecurity: 'finance-security', activity: 'activity-logs' };
     return `${base}/${paths[page] || 'dashboard'}`;
   }
   if (role === 'FINANCE') return `${base}/finance`;
@@ -73,6 +73,7 @@ const tabForPath = (pathname: string, role: string) => {
     if (pathname === '/admin/outlets') return 'outlets';
     if (pathname === '/admin/branding-settings') return 'branding';
     if (pathname === '/admin/system-settings') return 'settings';
+    if (pathname === '/admin/print-settings') return 'printSettings';
     if (pathname === '/admin/finance-security') return 'financeSecurity';
     if (pathname === '/admin/activity-logs') return 'activity';
     return 'dashboard';
@@ -131,7 +132,7 @@ export default function App() {
   const routeRole = currentUser?.role || 'OUTLET';
   const canonicalPath = legacyPath(pathname, routeRole);
   const routeAllowed = routeRole === 'ADMIN'
-    ? /^\/admin\/(?:dashboard|users|outlets|branding-settings|system-settings|finance-security|activity-logs|monitoring\/(?:warehouse|outlet|finance))$/.test(canonicalPath)
+    ? /^\/admin\/(?:dashboard|users|outlets|branding-settings|system-settings|print-settings|finance-security|activity-logs|monitoring\/(?:warehouse|outlet|finance))$/.test(canonicalPath)
     : routeRole === 'WAREHOUSE'
     ? isFinancePath(canonicalPath) || /^\/warehouse\/(?:dashboard|inventory(?:\/(?:stock-opname|vendors|katalog))?|request(?:\/\d+)?|riwayat)$/.test(canonicalPath)
     : routeRole === 'FINANCE'

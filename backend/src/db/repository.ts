@@ -5,7 +5,9 @@ import { eq, desc, and, gt, inArray, sql } from 'drizzle-orm';
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { db, pool } from './index.ts';
 import { ensurePeriodSnapshotSchema, ledgerRows, loadLedger, PERIOD_CORRECTION, repriceOpenPeriod, saveSnapshot, type LedgerData } from './periodClosing.ts';
-import { effectiveTime, forOutlets } from '../finance/periodLedger.ts';
+import { effectiveTime, forOutlets, lowestRunningStock } from '../finance/periodLedger.ts';
+import { activePurchase, ensurePurchaseCancellationSchema, PURCHASE_CANCEL, PurchaseCancelError } from './purchaseCancellation.ts';
+export { PURCHASE_CANCEL, PURCHASE_CANCELLATION_COLUMNS, PurchaseCancelError } from './purchaseCancellation.ts';
 import {
   users,
   outlets,
@@ -281,6 +283,26 @@ export async function getApplicationConfig() {
 export async function saveApplicationConfig(key: 'branding' | 'system', value: Record<string, unknown>, actorId: number) {
   await ensureAdminSettingsSchema();
   await pool.query('INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)', [key, JSON.stringify(value), actorId]);
+}
+
+// One JSON setting by key; null when it has never been saved.
+export async function getSystemSetting(key: string): Promise<{ value: unknown; updatedAt: Date | null } | null> {
+  await ensureAdminSettingsSchema();
+  const [rows] = await pool.query('SELECT setting_value, updated_at FROM system_settings WHERE setting_key = ?', [key]);
+  const row = (rows as any[])[0];
+  if (!row) return null;
+  try { return { value: JSON.parse(row.setting_value), updatedAt: row.updated_at ?? null }; }
+  catch { return { value: null, updatedAt: row.updated_at ?? null }; }
+}
+
+export async function saveSystemSetting(key: string, value: unknown, actorId: number) {
+  await ensureAdminSettingsSchema();
+  await pool.query('INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)', [key, JSON.stringify(value), actorId]);
+}
+
+export async function deleteSystemSetting(key: string) {
+  await ensureAdminSettingsSchema();
+  await pool.query('DELETE FROM system_settings WHERE setting_key = ?', [key]);
 }
 
 export async function logAdminActivity(input: { actorId: number; actorName: string; action: string; targetType: string; targetId?: string | number | null; details?: unknown }) {
@@ -1638,7 +1660,8 @@ async function reconstructHistoricalUnitCost(executor: InventoryExecutor, itemId
   // Replay dated cost events instead of selecting the latest non-null snapshot.
   // Older receipt rows may not have avg_cost_after; their actual receipt price
   // is still a valid cost source and can rebuild weighted average since the
-  // last recorded Stock Opname cut-off.
+  // last recorded Stock Opname cut-off. A cancelled purchase is no cost source.
+  await ensurePurchaseCancellationSchema();
   const purchases = await executor.select({
     transactionDate: purchaseTransactions.transactionDate,
     createdAt: purchaseTransactions.createdAt,
@@ -1648,7 +1671,7 @@ async function reconstructHistoricalUnitCost(executor: InventoryExecutor, itemId
     avgCostAfter: purchaseItems.avgCostAfter,
   }).from(purchaseItems)
     .innerJoin(purchaseTransactions, eq(purchaseItems.purchaseId, purchaseTransactions.id))
-    .where(and(eq(purchaseItems.itemId, itemId), sql`${purchaseItems.quantity} > 0`, ...(asOfTimestamp ? [] : [sql`LEFT(${purchaseTransactions.transactionDate}, 10) <= ${saleDate}`])));
+    .where(and(eq(purchaseItems.itemId, itemId), sql`${purchaseItems.quantity} > 0`, activePurchase(purchaseTransactions.id), ...(asOfTimestamp ? [] : [sql`LEFT(${purchaseTransactions.transactionDate}, 10) <= ${saleDate}`])));
   const cutoffs = await executor.select({
     cutoffAt: inventoryCostPeriods.cutoffAt,
     physicalStock: inventoryCostPeriods.physicalStock,
@@ -2584,7 +2607,9 @@ export async function createRequest(data: {
 // Items that have ever been bought. Only these have an average cost; an item
 // with none is shown without a price rather than valued at zero.
 export async function getPurchasedItemIds() {
-  const [rows] = await pool.query('SELECT DISTINCT item_id AS itemId FROM purchase_items WHERE quantity > 0');
+  await ensurePurchaseCancellationSchema();
+  const [rows] = await pool.query(`SELECT DISTINCT pi.item_id AS itemId FROM purchase_items pi
+    WHERE pi.quantity > 0 AND NOT EXISTS (SELECT 1 FROM purchase_cancellations pc WHERE pc.purchase_id = pi.purchase_id)`);
   return new Set((rows as any[]).map((row) => Number(row.itemId)));
 }
 
@@ -2751,8 +2776,9 @@ export async function updateRequestItemStatus(
       // Capture weighted-average inventory cost at the point the outlet sale is
       // realized. A missing purchase history remains NULL and is reported as
       // missing cost data by Finance; a valid zero-cost purchase stays zero.
+      await ensurePurchaseCancellationSchema();
       const [costHistory] = await tx.select({ id: purchaseItems.id }).from(purchaseItems)
-        .where(and(eq(purchaseItems.itemId, rItem.itemId), sql`${purchaseItems.quantity} > 0`, sql`${purchaseItems.price} > 0`))
+        .where(and(eq(purchaseItems.itemId, rItem.itemId), sql`${purchaseItems.quantity} > 0`, sql`${purchaseItems.price} > 0`, activePurchase(purchaseItems.purchaseId)))
         .limit(1);
       const unitCostSnapshot = costHistory && Number(rItem.avgPurchasePrice ?? 0) > 0 ? Number(rItem.avgPurchasePrice) : null;
 
@@ -2941,8 +2967,9 @@ export async function approveAllRequestItems(
         .where(eq(items.id, it.itemId));
 
       // HPP is fixed at the weighted average of the moment of sale.
+      await ensurePurchaseCancellationSchema();
       const [costHistory] = await tx.select({ id: purchaseItems.id }).from(purchaseItems)
-        .where(and(eq(purchaseItems.itemId, it.itemId), sql`${purchaseItems.quantity} > 0`, sql`${purchaseItems.price} > 0`))
+        .where(and(eq(purchaseItems.itemId, it.itemId), sql`${purchaseItems.quantity} > 0`, sql`${purchaseItems.price} > 0`, activePurchase(purchaseItems.purchaseId)))
         .limit(1);
       const unitCostSnapshot = costHistory && Number(it.avgPurchasePrice ?? 0) > 0 ? Number(it.avgPurchasePrice) : null;
 
@@ -3135,6 +3162,143 @@ export async function getRequestCancellation(requestId: number) {
   return { ...rest, returnedQuantity: Number(row.returnedQuantity), cancelledAt: new Date(Number(cancelledAtMs)).toISOString() };
 }
 
+// Cancelling a purchase (Barang Masuk entered by mistake) is the mirror of
+// receiving it, in one database transaction:
+//   - the purchase rows stay; purchase_cancellations marks it cancelled, so the
+//     ledger, finance, HPP and history totals no longer count it;
+//   - every line takes its quantity back out of stock through a PURCHASE_CANCEL
+//     movement (stock before/after, the line's unit cost, the reason);
+//   - the open period is replayed without the purchase (repriceOpenPeriod), which
+//     rewrites the moving average, the avg_cost_after of later receipts and the
+//     HPP of later sales. For a purchase that was the last receipt this gives
+//     exactly ((stock × avg) − (qty × price)) ÷ (stock − qty).
+// It is refused when the purchase is already cancelled, when its goods have
+// (partly) been issued already, or when it lies in a closed period: closed
+// periods keep their snapshot unchanged, as with every other transaction.
+export async function cancelPurchase(
+  purchaseId: number,
+  actor: { id: number; name: string; role: string },
+  reason: unknown,
+) {
+  if (!['WAREHOUSE', 'ADMIN'].includes(actor.role)) throw new PurchaseCancelError('Hanya Warehouse atau Admin yang dapat membatalkan pembelian.', 403);
+  const note = typeof reason === 'string' ? reason.replace(/\s+/g, ' ').trim() : '';
+  if (!note) throw new PurchaseCancelError('Alasan pembatalan wajib diisi.', 400);
+  if (note.length > 500) throw new PurchaseCancelError('Alasan pembatalan maksimal 500 karakter.', 400);
+  await ensureInventoryPrecisionSchema();
+  await ensurePeriodSnapshotSchema();
+  await ensurePurchaseCancellationSchema();
+  await ensureAdminSettingsSchema();
+
+  return db.transaction(async (tx) => {
+    // The purchase row lock makes a second cancellation wait and then find the
+    // first one: stock can never be taken out twice.
+    const [purchase] = await tx.select({ id: purchaseTransactions.id, code: purchaseTransactions.transactionCode, totalAmount: purchaseTransactions.totalAmount })
+      .from(purchaseTransactions).where(eq(purchaseTransactions.id, purchaseId)).for('update');
+    if (!purchase) throw new PurchaseCancelError('Transaksi pembelian tidak ditemukan.', 404);
+    const [done] = await tx.execute(sql`SELECT 1 AS found FROM purchase_cancellations WHERE purchase_id = ${purchaseId}`) as any;
+    if ((done as any[]).length) throw new PurchaseCancelError(`Transaksi ${purchase.code} sudah dibatalkan sebelumnya.`, 409);
+
+    const lines = await tx.select({ id: purchaseItems.id, itemId: purchaseItems.itemId, quantity: purchaseItems.quantity, price: purchaseItems.price })
+      .from(purchaseItems).where(eq(purchaseItems.purchaseId, purchaseId)).orderBy(purchaseItems.id);
+    const taking = lines.filter((line) => Number(line.quantity) > 0);
+    const itemIds = [...new Set(taking.map((line) => line.itemId))].sort((a, b) => a - b);
+
+    // Lock the items in a fixed order, then check stock with the locked values.
+    const stock = new Map<number, { name: string; stock: number; average: number }>();
+    for (const itemId of itemIds) {
+      const [item] = await tx.select({ name: items.itemName, stock: items.currentStock, average: items.avgPurchasePrice }).from(items).where(eq(items.id, itemId)).for('update');
+      stock.set(itemId, { name: item?.name ?? `Barang #${itemId}`, stock: Number(item?.stock ?? 0), average: Number(item?.average ?? 0) });
+    }
+    const quantityOf = (itemId: number) => taking.filter((line) => line.itemId === itemId).reduce((sum, line) => sum + Number(line.quantity), 0);
+    for (const itemId of itemIds) {
+      const item = stock.get(itemId)!;
+      const quantity = quantityOf(itemId);
+      if (item.stock < quantity) {
+        throw new PurchaseCancelError(`Tidak bisa dibatalkan: stok ${item.name} tinggal ${item.stock}, sedangkan pembelian ini ${quantity}. Sebagian barang sudah dikeluarkan.`, 409);
+      }
+    }
+
+    // Closed period: refused. In the open period, the goods must never have been
+    // needed: without this purchase the running stock may not dip below zero.
+    const ledger = await loadLedger(tx);
+    const lastEnd = ledger.periods.length ? ledger.periods[ledger.periods.length - 1].end : -Infinity;
+    const refs = new Set(taking.map((line) => line.id));
+    for (const itemId of itemIds) {
+      const events = ledger.events.get(itemId) ?? [];
+      const own = events.find((event) => event.kind === 'purchase' && event.ref != null && refs.has(event.ref) && event.at < lastEnd);
+      if (own) {
+        const closed = (await getFinancePeriods(ledger)).find((period) => period.status === 'Closed' && period.endAt && own.at < Date.parse(period.endAt));
+        throw new PurchaseCancelError(`Periode sudah ditutup: ${purchase.code} termasuk ${closed?.label ?? 'periode yang sudah ditutup'}, jadi tidak bisa dibatalkan. Gunakan form koreksi periode.`, 409);
+      }
+      const open = ledger.open.get(itemId);
+      if (!open) continue;
+      const openEvents = events.filter((event) => event.at >= lastEnd);
+      const before = lowestRunningStock(open.openingStock, openEvents);
+      const after = lowestRunningStock(open.openingStock, openEvents, refs);
+      if (after < 0 && after < before) {
+        const item = stock.get(itemId)!;
+        throw new PurchaseCancelError(`Tidak bisa dibatalkan: ${item.name} dari pembelian ini sudah sempat dikeluarkan sebelum ada pembelian berikutnya, jadi stok akan minus ${Math.abs(after)}. Sebagian barang sudah dikeluarkan.`, 409);
+      }
+    }
+
+    // Take the goods back out, one movement per purchase line.
+    const removed: { itemId: number; itemName: string; quantity: number; unitCost: number; stockBefore: number; stockAfter: number }[] = [];
+    for (const line of taking) {
+      const item = stock.get(line.itemId)!;
+      const quantity = Number(line.quantity);
+      const stockBefore = item.stock;
+      const stockAfter = stockBefore - quantity;
+      await tx.update(items).set({ currentStock: stockAfter }).where(eq(items.id, line.itemId));
+      await tx.insert(stockMovements).values({
+        itemId: line.itemId,
+        movementType: PURCHASE_CANCEL,
+        quantity,
+        stockBefore,
+        stockAfter,
+        unitCost: Number(line.price),
+        referenceId: purchase.code,
+        notes: `Batal pembelian: ${note}`,
+        createdBy: actor.name.slice(0, 100),
+        createdByUserId: actor.id,
+      });
+      item.stock = stockAfter;
+      removed.push({ itemId: line.itemId, itemName: item.name, quantity, unitCost: Number(line.price), stockBefore, stockAfter });
+    }
+
+    const removedQuantity = removed.reduce((sum, line) => sum + line.quantity, 0);
+    await tx.execute(sql`INSERT INTO purchase_cancellations (purchase_id, transaction_code, cancelled_by_user_id, cancelled_by_name, cancelled_by_role, reason, removed_quantity, cancelled_amount)
+      VALUES (${purchaseId}, ${purchase.code}, ${actor.id}, ${actor.name.slice(0, 255)}, ${actor.role}, ${note}, ${removedQuantity}, ${Number(purchase.totalAmount)})`);
+
+    // Replay the open period without this purchase. An item left with no stock
+    // keeps its last average (nothing to divide by; the next receipt sets it).
+    if (itemIds.length) await repriceOpenPeriod(tx, itemIds);
+    const averages: { itemId: number; before: number; after: number }[] = [];
+    for (const itemId of itemIds) {
+      const item = stock.get(itemId)!;
+      if (item.stock === 0) await tx.update(items).set({ avgPurchasePrice: item.average }).where(eq(items.id, itemId));
+      const [now] = await tx.select({ average: items.avgPurchasePrice }).from(items).where(eq(items.id, itemId));
+      averages.push({ itemId, before: item.average, after: Number(now?.average ?? 0) });
+    }
+
+    await tx.execute(sql`INSERT INTO activity_logs (actor_id, actor_name, action, target_type, target_id, details)
+      VALUES (${actor.id}, ${actor.name.slice(0, 255)}, 'PURCHASE_CANCELLED', 'purchase', ${purchase.code},
+        ${JSON.stringify({ purchaseId, transactionCode: purchase.code, reason: note, totalAmount: Number(purchase.totalAmount), lines: removed, averages })})`);
+
+    return { purchaseId, transactionCode: purchase.code, status: 'cancelled' as const, reason: note, removed, averages };
+  });
+}
+
+// Cancellation details by purchase id, for the history list and the print.
+async function getPurchaseCancellations() {
+  await ensurePurchaseCancellationSchema();
+  const [rows] = await pool.query(`SELECT purchase_id AS purchaseId, cancelled_by_name AS cancelledByName, cancelled_by_role AS cancelledByRole,
+      reason, UNIX_TIMESTAMP(cancelled_at) * 1000 AS cancelledAtMs FROM purchase_cancellations`);
+  return new Map((rows as any[]).map((row) => [Number(row.purchaseId), {
+    cancelledByName: String(row.cancelledByName), cancelledByRole: String(row.cancelledByRole),
+    cancelReason: String(row.reason), cancelledAt: new Date(Number(row.cancelledAtMs)).toISOString(),
+  }]));
+}
+
 // History Queries
 export async function getIncomingHistory(startDate?: string, endDate?: string) {
   try {
@@ -3171,7 +3335,10 @@ export async function getIncomingHistory(startDate?: string, endDate?: string) {
       })
       .from(purchaseItems)
       .leftJoin(items, eq(purchaseItems.itemId, items.id));
+    const cancellations = await getPurchaseCancellations();
 
+    // A cancelled purchase stays in the list, marked, so the history is complete;
+    // every total must skip it (status === 'cancelled').
     return txs.map((t) => {
       const itemsForTx = pItems
         .filter((pi) => pi.purchaseId === t.id)
@@ -3181,7 +3348,12 @@ export async function getIncomingHistory(startDate?: string, endDate?: string) {
           vendorCode: t.vendorCode,
           avgCostAfter: pi.avgCostAfter,
         }));
+      const cancellation = cancellations.get(t.id);
       return {
+        status: cancellation ? 'cancelled' as const : 'active' as const,
+        cancelledAt: cancellation?.cancelledAt ?? null,
+        cancelledByName: cancellation?.cancelledByName ?? null,
+        cancelReason: cancellation?.cancelReason ?? null,
         ...t,
         itemCount: itemsForTx.length,
         itemSummary: itemsForTx.map((i) => `${i.itemName} (+${i.quantity} pcs)`).join(', '),
@@ -3305,8 +3477,9 @@ export async function getWarehouseDashboardStats(options: { itemIds?: number[]; 
       id: m.id,
       itemName: m.itemName || 'Barang',
       quantity: m.quantity,
-      movementType: m.movementType as 'IN' | 'OUT' | 'STOCK_OPNAME_ADJUSTMENT' | 'PERIOD_CORRECTION',
-      typeLabel: m.movementType === 'IN' ? 'Barang Masuk' : m.movementType === 'OUT' ? 'Barang Keluar' : m.movementType === PERIOD_CORRECTION ? 'Koreksi Periode' : 'Penyesuaian Stock Opname',
+      movementType: m.movementType as 'IN' | 'OUT' | 'STOCK_OPNAME_ADJUSTMENT' | 'PERIOD_CORRECTION' | typeof PURCHASE_CANCEL | typeof REQUEST_CANCEL_RETURN,
+      typeLabel: m.movementType === 'IN' ? 'Barang Masuk' : m.movementType === 'OUT' ? 'Barang Keluar' : m.movementType === PERIOD_CORRECTION ? 'Koreksi Periode'
+        : m.movementType === PURCHASE_CANCEL ? 'Batal Pembelian' : m.movementType === REQUEST_CANCEL_RETURN ? 'Batal Request' : 'Penyesuaian Stock Opname',
       date: m.createdAt ? new Date(m.createdAt).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '16 Sep 2026',
       referenceId: m.referenceId,
     }));

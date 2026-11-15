@@ -195,3 +195,17 @@ export function replayCosts(opening: Balance, events: LedgerEvent[]) {
   }
   return { purchases, sales, average };
 }
+
+// Lowest stock reached while the events play out from `openingStock`, leaving
+// out the purchases whose ref is in `without`. Cancelling a purchase is only
+// sound if this stays at or above zero: below zero means goods from that
+// purchase were already issued, even when later receipts refilled the stock.
+export function lowestRunningStock(openingStock: number, events: LedgerEvent[], without: Set<number> = new Set()) {
+  let stock = openingStock, lowest = openingStock;
+  for (const e of [...events].sort(byTime)) {
+    if (e.kind === 'purchase' && e.ref != null && without.has(e.ref)) continue;
+    stock += e.kind === 'sale' ? -e.quantity : e.quantity;
+    lowest = Math.min(lowest, stock);
+  }
+  return lowest;
+}

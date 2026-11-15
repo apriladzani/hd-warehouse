@@ -104,6 +104,11 @@ export interface PurchaseTransaction {
   itemCount?: number;
   itemSummary?: string;
   items?: PurchaseItem[];
+  // A cancelled purchase stays listed but counts in no total.
+  status?: 'active' | 'cancelled';
+  cancelledAt?: string | null;
+  cancelledByName?: string | null;
+  cancelReason?: string | null;
 }
 
 export interface OutgoingHistoryTransaction extends RequestTransaction {

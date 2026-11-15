@@ -647,3 +647,347 @@ test('Hapus outlet: only an admin may delete', async () => {
     assert.equal(Number((await outletRow(connection, 1)).is_active), 1);
   });
 });
+
+// --- Pengaturan Cetak: Surat Jalan / Delivery Order -------------------------
+const PRINT = '/api/admin/print-templates/delivery-order';
+const printLogs = async (connection: any) => (await connection.query("SELECT action, details FROM activity_logs WHERE target_id = 'print_template_delivery_order' ORDER BY id"))[0] as any[];
+
+test('Pengaturan cetak: never saved, everyone who prints gets the default wording', async () => {
+  await withApi(async ({ warehouse, outlet, connection, base }) => {
+    const admin = await adminClient(connection, base);
+    const { DEFAULT_DELIVERY_ORDER_TEMPLATE } = await import('../src/printTemplate.ts');
+    for (const who of [warehouse, outlet]) {
+      const read = await who.call('GET', '/api/print-templates/delivery-order');
+      assert.equal(read.status, 200);
+      assert.equal(read.body.isDefault, true);
+      assert.deepEqual(read.body.template, DEFAULT_DELIVERY_ORDER_TEMPLATE);
+    }
+    assert.deepEqual((await admin.call('GET', PRINT)).body.template, DEFAULT_DELIVERY_ORDER_TEMPLATE);
+  });
+});
+
+test('Pengaturan cetak: an admin change is stored as JSON, read by the warehouse and logged field by field', async () => {
+  await withApi(async ({ warehouse, connection, base }) => {
+    const admin = await adminClient(connection, base);
+    const template = (await admin.call('GET', PRINT)).body.template;
+    template.header.address = 'Jl. Raya Bogor KM 21, Jakarta Timur';
+    template.table.showPrices = false;
+    template.notes.push('Barang beku wajib langsung masuk chiller.');
+    template.signatures[2] = { label: 'Disetujui Oleh (Area Manager)', name: 'Budi Santoso', useOutletName: false };
+
+    const saved = await admin.call('PUT', PRINT, template);
+    assert.equal(saved.status, 200);
+    assert.equal(saved.body.isDefault, false);
+    assert.equal(saved.body.template.table.showTerbilang, false, 'Terbilang goes with the prices');
+
+    const [rows]: any = await connection.query("SELECT setting_value FROM system_settings WHERE setting_key = 'print_template_delivery_order'");
+    assert.equal(JSON.parse(rows[0].setting_value).header.address, 'Jl. Raya Bogor KM 21, Jakarta Timur');
+
+    const printed = (await warehouse.call('GET', '/api/print-templates/delivery-order')).body.template;
+    assert.equal(printed.header.address, 'Jl. Raya Bogor KM 21, Jakarta Timur');
+    assert.equal(printed.table.showPrices, false);
+    assert.equal(printed.notes.length, 3);
+    assert.equal(printed.signatures[2].label, 'Disetujui Oleh (Area Manager)');
+
+    const [log] = await printLogs(connection);
+    assert.equal(log.action, 'PRINT_TEMPLATE_CHANGED');
+    const fields = JSON.parse(log.details).changes.map((change: any) => change.field);
+    for (const field of ['header.address', 'table.showPrices', 'table.showTerbilang', 'notes', 'signatures']) assert.ok(fields.includes(field), field);
+    assert.ok(!fields.includes('header.brandName'), 'unchanged fields are not logged');
+  });
+});
+
+test('Pengaturan cetak: reset removes the saved row, restores the defaults and is logged', async () => {
+  await withApi(async ({ connection, base }) => {
+    const admin = await adminClient(connection, base);
+    const { DEFAULT_DELIVERY_ORDER_TEMPLATE } = await import('../src/printTemplate.ts');
+    const template = (await admin.call('GET', PRINT)).body.template;
+    template.title.title = 'SURAT JALAN';
+    assert.equal((await admin.call('PUT', PRINT, template)).status, 200);
+
+    const reset = await admin.call('DELETE', PRINT);
+    assert.equal(reset.status, 200);
+    assert.equal(reset.body.isDefault, true);
+    assert.deepEqual(reset.body.template, DEFAULT_DELIVERY_ORDER_TEMPLATE);
+    const [rows]: any = await connection.query("SELECT 1 FROM system_settings WHERE setting_key = 'print_template_delivery_order'");
+    assert.equal(rows.length, 0);
+    assert.deepEqual((await printLogs(connection)).map((log) => log.action), ['PRINT_TEMPLATE_CHANGED', 'PRINT_TEMPLATE_RESET']);
+  });
+});
+
+test('Pengaturan cetak: only an admin may open, save, reset or upload a logo', async () => {
+  await withApi(async ({ warehouse, outlet, anonymous, connection }) => {
+    const { DEFAULT_DELIVERY_ORDER_TEMPLATE } = await import('../src/printTemplate.ts');
+    for (const who of [warehouse, outlet]) {
+      assert.equal((await who.call('GET', PRINT)).status, 403);
+      assert.equal((await who.call('PUT', PRINT, DEFAULT_DELIVERY_ORDER_TEMPLATE)).status, 403);
+      assert.equal((await who.call('DELETE', PRINT)).status, 403);
+    }
+    for (const method of ['GET', 'PUT', 'DELETE']) assert.equal((await anonymous.call(method, PRINT, method === 'PUT' ? DEFAULT_DELIVERY_ORDER_TEMPLATE : undefined)).status, 401);
+    assert.equal((await anonymous.call('GET', '/api/print-templates/delivery-order')).status, 401);
+    const [rows]: any = await connection.query("SELECT 1 FROM system_settings WHERE setting_key = 'print_template_delivery_order'");
+    assert.equal(rows.length, 0, 'nothing was saved');
+    assert.equal((await printLogs(connection)).length, 0, 'nothing was logged');
+  });
+});
+
+test('Pengaturan cetak: invalid input is refused with a reason and nothing is saved', async () => {
+  await withApi(async ({ connection, base }) => {
+    const admin = await adminClient(connection, base);
+    const valid = (await admin.call('GET', PRINT)).body.template;
+    const broken = (change: (t: any) => void) => { const t = structuredClone(valid); change(t); return t; };
+    const cases: Array<[string, any, RegExp]> = [
+      ['empty brand', broken((t) => { t.header.brandName = '  '; }), /Nama brand wajib diisi/],
+      ['five signatures', broken((t) => { t.signatures = Array(5).fill({ label: 'A', name: 'B', useOutletName: false }); }), /1 sampai 4/],
+      ['no signatures', broken((t) => { t.signatures = []; }), /1 sampai 4/],
+      ['foreign logo', broken((t) => { t.header.logoUrl = 'https://example.com/logo.png'; }), /logo tidak valid/],
+      ['too long address', broken((t) => { t.header.address = 'x'.repeat(201); }), /Alamat maksimal 200/],
+      ['flag as text', broken((t) => { t.table.showPrices = 'yes'; }), /harga/],
+    ];
+    for (const [name, body, message] of cases) {
+      const result = await admin.call('PUT', PRINT, body);
+      assert.equal(result.status, 400, name);
+      assert.match(result.body.error, message, name);
+    }
+    const [rows]: any = await connection.query("SELECT 1 FROM system_settings WHERE setting_key = 'print_template_delivery_order'");
+    assert.equal(rows.length, 0);
+  });
+});
+
+test('Pengaturan cetak: the logo accepts PNG and JPG up to 1 MB only', async () => {
+  await withApi(async ({ warehouse, connection, base }) => {
+    const admin = await adminClient(connection, base);
+    const cookie = (who: ReturnType<typeof client>) => [...who.cookies].map(([k, v]) => `${k}=${v}`).join('; ');
+    const send = (who: ReturnType<typeof client>, type: string, body: Buffer) => fetch(`${base}/api/admin/print-templates/logo`, { method: 'POST', headers: { 'content-type': type, cookie: cookie(who) }, body });
+    const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(64)]);
+
+    assert.equal((await send(warehouse, 'image/png', png)).status, 403);
+    assert.equal((await send(admin, 'image/png', Buffer.concat([png, Buffer.alloc(1024 * 1024)]))).status, 400, 'over 1 MB');
+    assert.equal((await send(admin, 'image/png', Buffer.from('not a png'))).status, 400, 'wrong content');
+
+    const uploaded = await send(admin, 'image/png', png);
+    assert.equal(uploaded.status, 201);
+    const { url } = await uploaded.json();
+    assert.match(url, /^\/uploads\/branding\/print-logo-[\w-]+\.png$/);
+    const template = (await admin.call('GET', PRINT)).body.template;
+    template.header.logoUrl = url;
+    assert.equal((await admin.call('PUT', PRINT, template)).status, 200);
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    fs.rmSync(path.resolve(import.meta.dirname, '../uploads/branding', path.basename(url)), { force: true });
+  });
+});
+
+// --- Batalkan pembelian (Barang Masuk) ---------------------------------------
+// Item 1 is seeded with 100 pcs bought at Rp20.000 (IN-SEED). The seed has no IN
+// movement, which every real receipt writes; add it so the ledger sees the same
+// history a real database has.
+const withSeedMovement = (connection: any) =>
+  connection.query("INSERT INTO stock_movements (item_id, movement_type, quantity, reference_id, created_by) VALUES (1, 'IN', 100, 'IN-SEED', 'seed')");
+const buy = async (warehouse: ReturnType<typeof client>, quantity: number, price: number, itemId = 1) => {
+  const result = await warehouse.call('POST', '/api/inventory/incoming', {
+    vendorCode: 'VND-SMOKE', vendorName: 'Vendor Smoke', paymentMethod: 'Transfer', transactionDate: todayJakarta(),
+    items: [{ itemId, itemName: itemId === 1 ? 'Ayam Mentah (kg)' : 'Box Nasi (pack/10)', quantity, price }],
+  });
+  assert.equal(result.status, 200);
+  return result.body.purchase as { id: number; transactionCode: string };
+};
+const cancelPurchase = (who: ReturnType<typeof client>, purchaseId: number, reason: unknown = 'Salah input qty') =>
+  who.call('POST', `/api/purchases/${purchaseId}/cancel`, { reason });
+const itemRow = async (connection: any, id = 1) => {
+  const [rows]: any = await connection.query('SELECT current_stock AS stock, avg_purchase_price AS average FROM items WHERE id = ?', [id]);
+  return { stock: Number(rows[0].stock), average: Number(rows[0].average) };
+};
+const cancellationCount = async (connection: any) => Number((await connection.query('SELECT COUNT(*) AS n FROM purchase_cancellations'))[0][0].n);
+const activeIncoming = (history: any[]) => history.filter((tx) => tx.status !== 'cancelled');
+const incomingTotals = (history: any[]) => ({
+  count: activeIncoming(history).length,
+  amount: activeIncoming(history).reduce((sum, tx) => sum + Number(tx.totalAmount), 0),
+});
+
+test('Batal beli 1: cancelling the last purchase takes its stock out, restores the average and leaves it out of every total', async () => {
+  await withApi(async ({ warehouse, connection }) => {
+    await withSeedMovement(connection);
+    const purchase = await buy(warehouse, 50, 25000); // like IN-009: Ayam Mentah +50, Rp1.250.000
+    const before = await itemRow(connection);
+    assert.deepEqual([before.stock, before.average], [150, 21666.666667]);
+    const historyBefore = (await warehouse.call('GET', '/api/history/incoming')).body.history;
+
+    const result = await cancelPurchase(warehouse, purchase.id, 'Salah input, barang tidak pernah datang');
+    assert.equal(result.status, 200);
+    assert.equal(result.body.status, 'cancelled');
+
+    // Stock −50; the average is the reverse moving average of the user's formula.
+    const after = await itemRow(connection);
+    assert.equal(after.stock, 100);
+    const formula = (150 * before.average - 50 * 25000) / (150 - 50);
+    assert.ok(Math.abs(after.average - formula) < 0.00001, `${after.average} ≈ ${formula}`);
+    assert.equal(after.average, 20000);
+
+    // The purchase stays, marked cancelled; totals drop by exactly its amount and one transaction.
+    const historyAfter = (await warehouse.call('GET', '/api/history/incoming')).body.history;
+    assert.equal(historyAfter.length, historyBefore.length, 'the cancelled purchase is still listed');
+    const listed = historyAfter.find((tx: any) => tx.id === purchase.id);
+    assert.deepEqual([listed.status, listed.cancelReason, listed.cancelledByName], ['cancelled', 'Salah input, barang tidak pernah datang', 'Gudang Smoke']);
+    assert.deepEqual(incomingTotals(historyAfter), { count: incomingTotals(historyBefore).count - 1, amount: incomingTotals(historyBefore).amount - 1250000 });
+
+    // One PURCHASE_CANCEL movement with the full trail.
+    const [moves]: any = await connection.query("SELECT quantity, stock_before, stock_after, unit_cost, reference_id, notes, created_by, created_by_user_id FROM stock_movements WHERE movement_type = 'PURCHASE_CANCEL'");
+    assert.equal(moves.length, 1);
+    assert.deepEqual([moves[0].quantity, moves[0].stock_before, moves[0].stock_after, Number(moves[0].unit_cost), moves[0].reference_id, moves[0].created_by, moves[0].created_by_user_id],
+      [50, 150, 100, 25000, purchase.transactionCode, 'Gudang Smoke', 2]);
+    assert.equal(moves[0].notes, 'Batal pembelian: Salah input, barang tidak pernah datang');
+
+    // Logged: who, which transaction, why.
+    const [logs]: any = await connection.query("SELECT actor_name, target_id, details FROM activity_logs WHERE action = 'PURCHASE_CANCELLED'");
+    assert.equal(logs.length, 1);
+    assert.deepEqual([logs[0].actor_name, logs[0].target_id, JSON.parse(logs[0].details).reason], ['Gudang Smoke', purchase.transactionCode, 'Salah input, barang tidak pernah datang']);
+
+    // Finance: the open period no longer has the 50 pcs coming in.
+    const { loadLedger } = await import('../src/db/periodClosing.ts');
+    const open = (await loadLedger()).open.get(1)!;
+    assert.deepEqual([open.inQuantity, open.closingStock], [100, 100]);
+  });
+});
+
+test('Batal beli 2: cancelling a purchase that is not the last replays the period: later receipt, later sale HPP and average', async () => {
+  await withApi(async ({ outlet, warehouse, connection }) => {
+    await withSeedMovement(connection);
+    const first = await buy(warehouse, 50, 30000);  // 100@20.000 + 50@30.000 → 23.333,33
+    const r = await requestAB(outlet, connection);    // sells 3 at that average
+    assert.equal((await warehouse.call('POST', `/api/requests/${r.id}/approve-all`, {})).status, 200);
+    const second = await buy(warehouse, 40, 40000); // 147 @ 23.333,33 + 40@40.000
+    assert.equal((await itemRow(connection)).stock, 187);
+
+    assert.equal((await cancelPurchase(warehouse, first.id)).status, 200);
+
+    // Without the first purchase: 100@20.000, −3 → 97@20.000, +40@40.000 → 137 pcs.
+    const expected = (97 * 20000 + 40 * 40000) / 137;
+    const after = await itemRow(connection);
+    assert.equal(after.stock, 137);
+    assert.ok(Math.abs(after.average - expected) < 0.00001, `${after.average} ≈ ${expected}`);
+    const [[later]]: any = await connection.query('SELECT avg_cost_after FROM purchase_items WHERE purchase_id = ?', [second.id]);
+    assert.ok(Math.abs(Number(later.avg_cost_after) - expected) < 0.00001, 'the later receipt keeps the corrected average after it');
+    const [[sale]]: any = await connection.query('SELECT unit_cost_snapshot FROM request_items WHERE id = ?', [r.a]);
+    assert.equal(Number(sale.unit_cost_snapshot), 20000, 'the sale in between now costs the average without the cancelled purchase');
+  });
+});
+
+test('Batal beli 3: Total Nilai Stok on the dashboard equals stock × the new average after a cancellation', async () => {
+  await withApi(async ({ warehouse, connection }) => {
+    await withSeedMovement(connection);
+    const purchase = await buy(warehouse, 50, 25000);
+    assert.equal((await cancelPurchase(warehouse, purchase.id)).status, 200);
+    const items = (await warehouse.call('GET', '/api/dashboard/warehouse-ops-stats')).body.items;
+    const ayam = items.find((item: any) => item.id === 1);
+    assert.deepEqual([ayam.currentStock, ayam.avgCost, ayam.stockValue], [100, 20000, 2000000]);
+    const [rows]: any = await connection.query('SELECT current_stock, avg_purchase_price FROM items WHERE id IN (1, 2)');
+    const tableTotal = rows.reduce((sum: number, row: any) => sum + Number(row.current_stock) * Number(row.avg_purchase_price), 0);
+    const dashboardTotal = items.filter((item: any) => item.stockValue != null).reduce((sum: number, item: any) => sum + item.stockValue, 0);
+    assert.equal(dashboardTotal, tableTotal);
+  });
+});
+
+test('Batal beli: a purchase cannot be cancelled twice, so stock never goes out twice', async () => {
+  await withApi(async ({ warehouse, connection }) => {
+    await withSeedMovement(connection);
+    const purchase = await buy(warehouse, 50, 25000);
+    assert.equal((await cancelPurchase(warehouse, purchase.id)).status, 200);
+    const again = await cancelPurchase(warehouse, purchase.id);
+    assert.equal(again.status, 409);
+    assert.match(again.body.error, /sudah dibatalkan/);
+    assert.equal((await itemRow(connection)).stock, 100);
+    assert.equal(await cancellationCount(connection), 1);
+  });
+});
+
+test('Batal beli: refused when the goods have already been issued and stock is short; stock never goes negative', async () => {
+  await withApi(async ({ outlet, warehouse, connection }) => {
+    await withSeedMovement(connection);
+    const purchase = await buy(warehouse, 50, 25000); // 150 pcs
+    const request = (await outlet.call('POST', '/api/requests', { paymentMethod: 'Transfer', requestDate: todayJakarta(), items: [{ itemId: 1, quantity: 120, price: 45000 }] })).body.request;
+    assert.equal((await warehouse.call('POST', `/api/requests/${request.id}/approve-all`, {})).status, 200); // 30 left
+    const refused = await cancelPurchase(warehouse, purchase.id);
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.error, 'Tidak bisa dibatalkan: stok Ayam Mentah (kg) tinggal 30, sedangkan pembelian ini 50. Sebagian barang sudah dikeluarkan.');
+    assert.equal((await itemRow(connection)).stock, 30);
+    assert.equal(await cancellationCount(connection), 0);
+  });
+});
+
+test('Batal beli: refused when its goods were issued before a later purchase refilled the stock', async () => {
+  await withApi(async ({ outlet, warehouse, connection }) => {
+    await withSeedMovement(connection);
+    const first = await buy(warehouse, 50, 25000); // 150
+    const request = (await outlet.call('POST', '/api/requests', { paymentMethod: 'Transfer', requestDate: todayJakarta(), items: [{ itemId: 1, quantity: 120, price: 45000 }] })).body.request;
+    await warehouse.call('POST', `/api/requests/${request.id}/approve-all`, {}); // 30
+    await buy(warehouse, 60, 25000); // 90: enough on paper, but the 120 issued needed the first purchase
+    const refused = await cancelPurchase(warehouse, first.id);
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.error, /sudah sempat dikeluarkan.*stok akan minus 20/);
+    assert.equal((await itemRow(connection)).stock, 90);
+  });
+});
+
+test('Batal beli: a reason is required', async () => {
+  await withApi(async ({ warehouse, connection }) => {
+    await withSeedMovement(connection);
+    const purchase = await buy(warehouse, 50, 25000);
+    for (const body of [{}, { reason: '' }, { reason: '   ' }, { reason: 42 }]) {
+      const refused = await warehouse.call('POST', `/api/purchases/${purchase.id}/cancel`, body);
+      assert.equal(refused.status, 400, JSON.stringify(body));
+      assert.equal(refused.body.error, 'Alasan pembatalan wajib diisi.');
+    }
+    assert.equal((await itemRow(connection)).stock, 150);
+    assert.equal(await cancellationCount(connection), 0);
+  });
+});
+
+test('Batal beli: only Warehouse and Admin may cancel; an outlet is refused', async () => {
+  await withApi(async ({ outlet, anonymous, warehouse, connection, base }) => {
+    await withSeedMovement(connection);
+    const purchase = await buy(warehouse, 50, 25000);
+    assert.equal((await cancelPurchase(outlet, purchase.id)).status, 403);
+    assert.equal((await cancelPurchase(anonymous, purchase.id)).status, 401);
+    assert.equal((await itemRow(connection)).stock, 150);
+    assert.equal(await cancellationCount(connection), 0);
+    const admin = await adminClient(connection, base);
+    assert.equal((await cancelPurchase(admin, purchase.id)).status, 200);
+    assert.equal((await cancelPurchase(warehouse, 999999)).status, 404);
+  });
+});
+
+test('Batal beli: a purchase inside a closed period is refused and the closed period stays as it was', async () => {
+  await withApi(async ({ warehouse, connection }) => {
+    await withSeedMovement(connection);
+    const purchase = await buy(warehouse, 50, 25000);
+    const closed = await warehouse.call('POST', '/api/inventory/stock-opname', {
+      examinationDate: todayJakarta(), createdBy: 'Gudang', createdByUserId: 2, submissionKey: 'purchase-cancel-closing',
+      physicalStocks: [{ itemId: 1, physicalStock: 150 }, { itemId: 2, physicalStock: 100 }],
+    });
+    assert.equal(closed.status, 201);
+    const refused = await cancelPurchase(warehouse, purchase.id);
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.error, /^Periode sudah ditutup: /);
+    assert.deepEqual(await itemRow(connection), { stock: 150, average: 21666.666667 });
+    assert.equal(await cancellationCount(connection), 0);
+  });
+});
+
+test('Batal beli: an error halfway rolls everything back', async () => {
+  await withApi(async ({ warehouse, connection }) => {
+    await withSeedMovement(connection);
+    const purchase = await buy(warehouse, 50, 25000);
+    // The stock update runs before the movement insert; make that insert fail.
+    await connection.query("ALTER TABLE stock_movements ADD CONSTRAINT no_cancel_movement CHECK (movement_type <> 'PURCHASE_CANCEL')");
+    const failed = await cancelPurchase(warehouse, purchase.id);
+    assert.equal(failed.status, 500);
+    assert.equal(failed.body.error, 'Pembelian gagal dibatalkan. Tidak ada stok yang berubah.');
+    assert.deepEqual(await itemRow(connection), { stock: 150, average: 21666.666667 });
+    assert.equal(await cancellationCount(connection), 0);
+    const [logs]: any = await connection.query("SELECT 1 FROM activity_logs WHERE action = 'PURCHASE_CANCELLED'");
+    assert.equal(logs.length, 0);
+    const history = (await warehouse.call('GET', '/api/history/incoming')).body.history;
+    assert.equal(history.find((tx: any) => tx.id === purchase.id).status, 'active');
+  });
+});

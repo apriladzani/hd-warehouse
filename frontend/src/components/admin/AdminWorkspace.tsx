@@ -5,6 +5,7 @@ import { KpiCard, StateMessage } from '../common/UI.tsx';
 import { formatDateIndo, formatRupiah } from '../../lib/format.ts';
 import { StatusBadge } from '../common/StatusBadge.tsx';
 import { useBranding, type BrandingConfig, type SystemConfig } from '../common/BrandingContext.tsx';
+import { PrintTemplateSettings } from './PrintTemplateSettings.tsx';
 
 type AdminWorkspaceProps = {
   currentUser: User;
@@ -105,7 +106,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ currentUser, act
   const title = monitorType === 'warehouse' ? 'Monitoring Warehouse'
     : monitorType === 'outlet' ? 'Monitoring Transaksi Outlet'
       : monitorType === 'finance' ? 'Laporan Finance'
-        : ({ dashboard: 'Admin Overview', users: 'User Management', outlets: 'Outlet Management', branding: 'Branding Settings', settings: 'System Settings', financeSecurity: 'Finance Security', activity: 'Activity Logs' } as Record<string, string>)[activeTab] || 'Admin Overview';
+        : ({ dashboard: 'Admin Overview', users: 'User Management', outlets: 'Outlet Management', branding: 'Branding Settings', settings: 'System Settings', printSettings: 'Pengaturan Cetak', financeSecurity: 'Finance Security', activity: 'Activity Logs' } as Record<string, string>)[activeTab] || 'Admin Overview';
 
   const goMonitor = (type: 'warehouse' | 'outlet' | 'finance') => onNavigatePath(`/admin/monitoring/${type}`);
 
@@ -164,6 +165,8 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ currentUser, act
       {!loading && !error && activeTab === 'branding' && appConfig && <BrandingSettingsEditor branding={appConfig.branding} headers={headers} onSaved={(next) => { setAppConfig((old) => old ? { ...old, branding: next } : old); brandingContext.setConfig({ branding: next }); window.dispatchEvent(new Event('hd-config-updated')); }} />}
 
       {!loading && !error && activeTab === 'settings' && appConfig && <SystemSettingsEditor system={appConfig.system} headers={headers} onSaved={(next) => { setAppConfig((old) => old ? { ...old, system: next } : old); brandingContext.setConfig({ branding: appConfig.branding, system: next }); window.dispatchEvent(new Event('hd-config-updated')); }} />}
+
+      {!loading && !error && activeTab === 'printSettings' && <PrintTemplateSettings />}
 
       {!loading && !error && activeTab === 'financeSecurity' && <FinanceSecurityPanel status={financeSecurity} headers={headers} onSaved={setFinanceSecurity} />}
 
