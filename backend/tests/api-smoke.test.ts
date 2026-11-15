@@ -991,3 +991,191 @@ test('Batal beli: an error halfway rolls everything back', async () => {
     assert.equal(history.find((tx: any) => tx.id === purchase.id).status, 'active');
   });
 });
+
+// --- Multi-outlet: one account, several outlets (user_outlets) ---------------
+// Seed: outlet 1 "Smoke Outlet"; account 1 (Outlet Smoke) placed there through
+// the old users.outlet_id column. These add two more active outlets and one inactive.
+const withMoreOutlets = (connection: any) => connection.query(`INSERT INTO outlets (id, outlet_code, outlet_name, is_active) VALUES
+  (2, 'cibubur', 'Cibubur', 1), (3, 'bantar-malam', 'Bantar Malam', 1), (4, 'tutup', 'Outlet Tutup', 0)`);
+const OUTLET_USER = '/api/admin/users/1';
+const setOutlets = (admin: ReturnType<typeof client>, outletIds: number[], defaultOutletId?: number) =>
+  admin.call('PATCH', OUTLET_USER, { name: 'Outlet Smoke', username: 'smoke-outlet-user', email: 'outlet@smoke.test', role: 'OUTLET', isActive: true, outletIds, defaultOutletId });
+const placeRequest = (outlet: ReturnType<typeof client>, outletId?: number) => outlet.call('POST', '/api/requests', {
+  paymentMethod: 'Transfer', requestDate: todayJakarta(), ...(outletId === undefined ? {} : { outletId }),
+  items: [{ itemId: 1, quantity: 2, price: 45000 }],
+});
+const requestOutlet = async (connection: any, id: number) => (await connection.query('SELECT outlet_id, requester_name FROM requests WHERE id = ?', [id]))[0][0];
+const heldRows = async (connection: any) => (await connection.query('SELECT outlet_id AS outletId, is_default AS isDefault FROM user_outlets WHERE user_id = 1 ORDER BY outlet_id'))[0]
+  .map((row: any) => [Number(row.outletId), Number(row.isDefault)]);
+
+test('Multi-outlet: the old single placement is moved to user_outlets as the default, and the old column is kept', async () => {
+  await withApi(async ({ outlet, connection }) => {
+    const profile = (await outlet.call('GET', '/api/outlet/profile')).body;
+    assert.deepEqual(await heldRows(connection), [[1, 1]]);
+    const [[user]]: any = await connection.query('SELECT outlet_id FROM users WHERE id = 1');
+    assert.equal(user.outlet_id, 1, 'users.outlet_id is not removed');
+    assert.equal(profile.status, 'ok');
+    assert.deepEqual(profile.outlets, [{ id: 1, name: 'Smoke Outlet', isDefault: true }]);
+  });
+});
+
+test('Multi-outlet 1: one outlet shows as text and the request is saved for it, with or without an outlet id sent', async () => {
+  await withApi(async ({ outlet, connection }) => {
+    assert.equal((await outlet.call('GET', '/api/outlet/profile')).body.outlets.length, 1);
+    const plain = await placeRequest(outlet);
+    assert.equal(plain.status, 200);
+    assert.equal((await requestOutlet(connection, plain.body.request.id)).outlet_id, 1);
+    const explicit = await placeRequest(outlet, 1);
+    assert.equal((await requestOutlet(connection, explicit.body.request.id)).outlet_id, 1);
+  });
+});
+
+test('Multi-outlet 2: three outlets give a choice with the default first; the request is saved for the chosen one', async () => {
+  await withApi(async ({ outlet, connection, base }) => {
+    await withMoreOutlets(connection);
+    const admin = await adminClient(connection, base);
+    assert.equal((await setOutlets(admin, [1, 2, 3], 3)).status, 200);
+    const profile = (await outlet.call('GET', '/api/outlet/profile')).body;
+    assert.deepEqual(profile.outlets.map((o: any) => [o.id, o.isDefault]), [[3, true], [2, false], [1, false]]);
+    assert.equal(profile.defaultOutletId, 3);
+
+    const chosen = await placeRequest(outlet, 2);
+    assert.equal(chosen.status, 200);
+    const stored = await requestOutlet(connection, chosen.body.request.id);
+    assert.equal(stored.outlet_id, 2);
+    assert.equal(stored.requester_name, 'Cibubur (Outlet Smoke)');
+    const listed = (await outlet.call('GET', '/api/requests?userId=1')).body.requests.find((r: any) => r.id === chosen.body.request.id);
+    assert.equal(listed.outletName, 'Cibubur', 'the history shows the outlet of the request');
+
+    const unchosen = await placeRequest(outlet);
+    assert.equal(unchosen.status, 400, 'with a choice to make, no outlet id is no request');
+    assert.match(unchosen.body.error, /Pilih outlet/);
+  });
+});
+
+test('Multi-outlet 3: an outlet the admin adds is offered at the next load, and the change is logged', async () => {
+  await withApi(async ({ outlet, connection, base }) => {
+    await withMoreOutlets(connection);
+    const admin = await adminClient(connection, base);
+    assert.equal((await outlet.call('GET', '/api/outlet/profile')).body.outlets.length, 1);
+    assert.equal((await setOutlets(admin, [1, 2])).status, 200);
+    assert.deepEqual((await outlet.call('GET', '/api/outlet/profile')).body.outlets.map((o: any) => o.id), [1, 2]);
+    assert.deepEqual(await heldRows(connection), [[1, 1], [2, 0]], 'the default stays where it was');
+
+    assert.equal((await setOutlets(admin, [2, 3], 3)).status, 200);
+    const [logs]: any = await connection.query("SELECT details FROM activity_logs WHERE action = 'OUTLET_ASSIGNMENT_CHANGED' AND target_id = '1' ORDER BY id");
+    assert.equal(logs.length, 2);
+    assert.deepEqual(JSON.parse(logs[0].details).added, ['Cibubur']);
+    const second = JSON.parse(logs[1].details);
+    assert.deepEqual([second.added, second.removed, second.defaultFrom, second.defaultTo], [['Bantar Malam'], ['Smoke Outlet'], 'Smoke Outlet', 'Bantar Malam']);
+    const [[user]]: any = await connection.query('SELECT outlet_id FROM users WHERE id = 1');
+    assert.equal(user.outlet_id, 3, 'the old column follows the default');
+
+    const users = (await admin.call('GET', '/api/admin/users')).body.users;
+    assert.deepEqual(users.find((u: any) => u.id === 1).outlets.map((o: any) => o.name), ['Bantar Malam', 'Cibubur']);
+  });
+});
+
+test('Multi-outlet: an account without outlets cannot order', async () => {
+  await withApi(async ({ outlet, connection, base }) => {
+    const admin = await adminClient(connection, base);
+    assert.equal((await setOutlets(admin, [])).status, 200);
+    const profile = (await outlet.call('GET', '/api/outlet/profile')).body;
+    assert.deepEqual([profile.status, profile.message, profile.outlets.length], ['none', 'Akun belum ditempatkan di outlet. Hubungi Admin.', 0]);
+    const refused = await placeRequest(outlet, 1);
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.error, 'Akun belum ditempatkan di outlet. Hubungi Admin.');
+    const [[user]]: any = await connection.query('SELECT outlet_id FROM users WHERE id = 1');
+    assert.equal(user.outlet_id, null, 'the old column is cleared too, so the old placement never comes back');
+    assert.equal((await outlet.call('GET', '/api/outlet/profile')).body.status, 'none');
+  });
+});
+
+test('Multi-outlet: an outlet id of another outlet sent through the API is refused with 403', async () => {
+  await withApi(async ({ outlet, connection }) => {
+    await withMoreOutlets(connection);
+    for (const outletId of [2, 999, 'abc']) {
+      const refused = await placeRequest(outlet, outletId as any);
+      assert.equal(refused.status, 403, String(outletId));
+    }
+    const [rows]: any = await connection.query('SELECT COUNT(*) AS n FROM requests');
+    assert.equal(Number(rows[0].n), 0);
+  });
+});
+
+test('Multi-outlet: a deactivated outlet is not offered and cannot be used; all inactive says so', async () => {
+  await withApi(async ({ outlet, connection, base }) => {
+    await withMoreOutlets(connection);
+    const admin = await adminClient(connection, base);
+    assert.equal((await setOutlets(admin, [1, 2], 2)).status, 200);
+    assert.equal((await admin.call('PATCH', '/api/admin/outlets/2', { code: 'CIBUBUR', name: 'Cibubur', isActive: false })).status, 200);
+    const profile = (await outlet.call('GET', '/api/outlet/profile')).body;
+    assert.deepEqual(profile.outlets.map((o: any) => [o.id, o.isDefault]), [[1, true]], 'the inactive default gives way to the active outlet');
+    assert.equal((await placeRequest(outlet, 2)).status, 403);
+    assert.equal((await placeRequest(outlet)).status, 200, 'one active outlet left: used without asking');
+
+    assert.equal((await admin.call('PATCH', '/api/admin/outlets/1', { code: 'SMOKE-OUTLET', name: 'Smoke Outlet', isActive: false })).status, 200);
+    const none = (await outlet.call('GET', '/api/outlet/profile')).body;
+    assert.deepEqual([none.status, none.message], ['inactive', 'Outlet penempatan sedang nonaktif. Hubungi Admin.']);
+    assert.equal((await placeRequest(outlet, 1)).status, 409);
+    assert.equal((await setOutlets(admin, [1, 4])).status, 400, 'an inactive outlet cannot be added');
+  });
+});
+
+test('Multi-outlet: only an admin may change the outlets of an account', async () => {
+  await withApi(async ({ outlet, warehouse, anonymous, connection }) => {
+    await withMoreOutlets(connection);
+    for (const who of [outlet, warehouse]) assert.equal((await setOutlets(who, [1, 2, 3])).status, 403);
+    assert.equal((await setOutlets(anonymous, [1, 2, 3])).status, 401);
+    await outlet.call('GET', '/api/outlet/profile');
+    assert.deepEqual(await heldRows(connection), [[1, 1]]);
+  });
+});
+
+test('Multi-outlet: only role Outlet holds outlets; a status-only edit leaves them alone', async () => {
+  await withApi(async ({ connection, base }) => {
+    await withMoreOutlets(connection);
+    const admin = await adminClient(connection, base);
+    const warehouseWithOutlet = await admin.call('PATCH', '/api/admin/users/2', { role: 'WAREHOUSE', isActive: true, outletIds: [1] });
+    assert.equal(warehouseWithOutlet.status, 400);
+    assert.equal((await setOutlets(admin, [1, 2])).status, 200);
+    assert.equal((await admin.call('PATCH', OUTLET_USER, { role: 'OUTLET', isActive: true })).status, 200);
+    assert.deepEqual(await heldRows(connection), [[1, 1], [2, 0]], 'no outlet fields sent: outlets unchanged');
+  });
+});
+
+test('Multi-outlet: a revoked outlet keeps its old requests; the outlet account can no longer cancel them', async () => {
+  await withApi(async ({ outlet, warehouse, connection, base }) => {
+    await withMoreOutlets(connection);
+    const admin = await adminClient(connection, base);
+    assert.equal((await setOutlets(admin, [1, 2], 1)).status, 200);
+    const old = (await placeRequest(outlet, 2)).body.request;
+    assert.equal((await warehouse.call('POST', `/api/requests/${old.id}/approve-all`, {})).status, 200);
+    assert.equal((await setOutlets(admin, [1])).status, 200);
+
+    const kept = await requestOutlet(connection, old.id);
+    assert.deepEqual([kept.outlet_id, kept.requester_name], [2, 'Cibubur (Outlet Smoke)']);
+    const listed = (await outlet.call('GET', '/api/requests?userId=1')).body.requests.find((r: any) => r.id === old.id);
+    assert.equal(listed.outletName, 'Cibubur');
+    const detail = (await warehouse.call('GET', `/api/requests/${old.id}`)).body.request;
+    assert.equal(detail.outletName, 'Cibubur', 'the Surat Jalan reads the outlet of the request');
+
+    const refused = await outlet.call('POST', `/api/requests/${old.id}/cancel`, {});
+    assert.equal(refused.status, 403);
+    assert.match(refused.body.error, /tidak lagi terdaftar/);
+    assert.equal((await warehouse.call('POST', `/api/requests/${old.id}/cancel`, {})).status, 200, 'the warehouse still can');
+  });
+});
+
+test('Multi-outlet: the outlet report covers every outlet the account holds, still without cost data', async () => {
+  await withApi(async ({ outlet, connection, base }) => {
+    await withMoreOutlets(connection);
+    const admin = await adminClient(connection, base);
+    assert.equal((await setOutlets(admin, [1, 2])).status, 200);
+    const report = await outlet.call('GET', '/api/dashboard/finance-stats');
+    assert.equal(report.status, 200);
+    assert.deepEqual([report.body.viewer.outletOnly, report.body.viewer.lockedOutletId, report.body.viewer.allowedOutletIds], [true, null, [1, 2]]);
+    for (const hidden of ['totalCogsAmount', 'totalProfit', 'categoryPurchaseTotals', 'manualEntries']) assert.ok(!(hidden in report.body), hidden);
+    assert.equal((await outlet.call('GET', '/api/dashboard/finance-stats?outletIds=3')).status, 403);
+  });
+});

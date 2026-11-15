@@ -24,7 +24,7 @@ import {
   updateManagedOutlet,
   deleteManagedOutlet,
   OutletDeleteError,
-  getOutletRequestProfile,
+  getAccountOutlets,
   createManagedUser,
   updateManagedUser,
   deleteManagedUser,
@@ -98,6 +98,7 @@ import { createFinanceScope, outletView } from './finance/outletScope.ts';
 import type { ItemCategory } from './db/repository.ts';
 import { canAccessDashboard, canReadFinanceDashboard } from './dashboardAccess.ts';
 import { mountFinanceReadOnly } from './finance/mount.ts';
+import { chooseRequestOutlet, requestOutletOptions } from './finance/requestOutlet.ts';
 import { LOGO_MAX_BYTES, PRINT_TEMPLATE_KEY, PrintTemplateError, diffTemplates, resolveDeliveryOrderTemplate, validateDeliveryOrderTemplate } from './printTemplate.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -342,10 +343,14 @@ app.get('/api/outlet/profile', async (req: Request, res: Response) => {
     if (account.role !== 'OUTLET') {
       return res.status(403).json({ error: 'Akses hanya untuk akun Outlet aktif' });
     }
-    const profile = await getOutletRequestProfile(Number(account.id));
-    if (!profile?.outletId || !profile?.outletName) return res.status(409).json({ error: 'Akun Outlet belum memiliki penempatan. Hubungi Admin.' });
-    if (Number(profile.outletIsActive) === 0) return res.status(409).json({ error: 'Outlet penempatan sedang nonaktif. Hubungi Admin.' });
-    return res.json({ outletId: profile.outletId, outletName: profile.outletName });
+    // Active outlets only, default first; status/message explain an empty list.
+    // heldOutletIds: every outlet the account holds, active or not (who may
+    // cancel what). outletId/outletName (the default) stay for older clients.
+    const held = await getAccountOutlets(Number(account.id));
+    const options = requestOutletOptions(held);
+    const preferred = options.outlets.find((outlet) => outlet.isDefault) ?? null;
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ ...options, heldOutletIds: held.map((outlet) => outlet.id), outletId: preferred?.id ?? null, outletName: preferred?.name ?? null });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Gagal memuat penempatan outlet' });
   }
@@ -651,15 +656,15 @@ app.post('/api/requests', async (req: Request, res: Response) => {
     if (account.role !== 'OUTLET') {
       return res.status(403).json({ error: 'Hanya akun Outlet aktif yang dapat membuat request' });
     }
-    const assignment = await getOutletRequestProfile(Number(account.id));
-    if (!assignment?.outletId || !assignment?.outletName) return res.status(409).json({ error: 'Akun Outlet belum memiliki penempatan. Hubungi Admin.' });
-    if (Number(assignment.outletIsActive) === 0) return res.status(409).json({ error: 'Outlet penempatan sedang nonaktif dan tidak dapat membuat request.' });
+    // The outlet sent by the client must be an active outlet this account holds.
+    const choice = chooseRequestOutlet(await getAccountOutlets(Number(account.id)), req.body?.outletId);
+    if ('error' in choice) return res.status(choice.status).json({ error: choice.error });
     const { paymentMethod, requestDate, items } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Daftar barang harus diisi' });
     const newReq = await createRequest({
       userId: account.id,
-      outletId: assignment.outletId,
-      requesterName: `${assignment.outletName} (${account.name})`,
+      outletId: choice.outlet.id,
+      requesterName: `${choice.outlet.name} (${account.name})`,
       paymentMethod: paymentMethod || 'Transfer',
       requestDate: requestDate || todayJakarta(),
       items,
@@ -876,7 +881,7 @@ app.post('/api/finance/access/logout', async (req: Request, res: Response) => {
 const financeScope = createFinanceScope({
   identity: operationalSessions.identity,
   authenticate: operationalSessions.authenticate,
-  outletOf: async (userId) => { const profile = await getOutletRequestProfile(userId); return profile?.outletId ? Number(profile.outletId) : null; },
+  outletsOf: async (userId) => (await getAccountOutlets(userId)).map((outlet) => outlet.id),
   outletCanViewCost: async () => Boolean((await getApplicationConfig()).system.outletCanViewCost),
 });
 
@@ -894,8 +899,9 @@ const financeDashboardStatsHandler = async (req: Request, res: Response) => {
       ? String(req.query.categories).split(',').map((category) => category.trim()).filter((category): category is ItemCategory => ITEM_CATEGORIES.includes(category as ItemCategory))
       : undefined;
     const stats = await getWarehouseDashboardStats({ itemIds, outletIds, categories, financePeriod: selectedPeriod, ledger });
-    const viewer = { lockedOutletId: scope.lockedOutletId, showCost: scope.showCost, outletIds: outletIds ?? [] };
-    res.json(scope.lockedOutletId ? { ...outletView({ ...stats, financePeriods: periods, financePeriod: selectedPeriod }, scope), viewer } : { ...stats, financePeriods: periods, financePeriod: selectedPeriod, viewer });
+    const viewer = { lockedOutletId: scope.lockedOutletId, showCost: scope.showCost, outletIds: outletIds ?? [], outletOnly: scope.outletOnly, allowedOutletIds: scope.allowedOutletIds };
+    // An Outlet account always gets the trimmed view, however many outlets it holds.
+    res.json(scope.outletOnly ? { ...outletView({ ...stats, financePeriods: periods, financePeriod: selectedPeriod }, scope), viewer } : { ...stats, financePeriods: periods, financePeriod: selectedPeriod, viewer });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1029,11 +1035,20 @@ app.get('/api/admin/users', async (req: Request, res: Response) => {
   }
 });
 
+// Logs what an admin changed in an account's outlets, by outlet name.
+const logOutletChange = async (actor: { id: number; name: string }, user: { id: number; email: string }, change: { changed: boolean; added: (string | null)[]; removed: (string | null)[]; defaultFrom: string | null; defaultTo: string | null } | null) => {
+  if (!change?.changed) return;
+  await logAdminActivity({ actorId: actor.id, actorName: actor.name, action: 'OUTLET_ASSIGNMENT_CHANGED', targetType: 'user', targetId: user.id,
+    details: { email: user.email, added: change.added, removed: change.removed, defaultFrom: change.defaultFrom, defaultTo: change.defaultTo } });
+};
+
 app.post('/api/admin/users', async (req: Request, res: Response) => {
-  if (!await getAdminUser(req, res)) return;
+  const actor = await getAdminUser(req, res);
+  if (!actor) return;
   try {
-    const { name, username, email, password, role, outletId } = req.body || {};
-    const user = await createManagedUser({ name, username, email, password, role, outletId });
+    const { name, username, email, password, role, outletId, outletIds, defaultOutletId } = req.body || {};
+    const { outletChange, ...user } = await createManagedUser({ name, username, email, password, role, outletId, outletIds, defaultOutletId }, actor.id);
+    await logOutletChange(actor, user, outletChange);
     res.status(201).json({ user });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Gagal menambahkan akun' });
@@ -1044,15 +1059,15 @@ app.patch('/api/admin/users/:id', async (req: Request, res: Response) => {
   const actor = await getAdminUser(req, res);
   if (!actor) return;
   try {
-    const { role, isActive, outletId } = req.body || {};
+    const { role, isActive, outletId, outletIds, defaultOutletId } = req.body || {};
     if (typeof role !== 'string' || typeof isActive !== 'boolean') {
       return res.status(400).json({ error: 'Role dan status akun wajib dikirim secara eksplisit' });
     }
     const before = (await getAdminUsers()).find((entry) => entry.id === Number(req.params.id));
-    const user = await updateManagedUser(Number(req.params.id), { name: req.body.name, username: req.body.username, email: req.body.email, password: req.body.password, role, isActive, outletId });
+    const { outletChange, ...user } = await updateManagedUser(Number(req.params.id), { name: req.body.name, username: req.body.username, email: req.body.email, password: req.body.password, role, isActive, outletId, outletIds, defaultOutletId }, actor.id);
+    await logOutletChange(actor, user, outletChange);
     if (before) {
       if (String(before.role).toUpperCase() !== String(user.role).toUpperCase()) await logAdminActivity({ actorId: actor.id, actorName: actor.name, action: 'ROLE_CHANGED', targetType: 'user', targetId: user.id, details: { from: before.role, to: user.role, email: user.email } });
-      if ((before.outletId || null) !== (user.outletId || null)) await logAdminActivity({ actorId: actor.id, actorName: actor.name, action: 'OUTLET_ASSIGNMENT_CHANGED', targetType: 'user', targetId: user.id, details: { from: before.outletName || null, to: user.outletName || null, email: user.email } });
       if (Boolean(before.isActive) !== Boolean(user.isActive)) await logAdminActivity({ actorId: actor.id, actorName: actor.name, action: user.isActive ? 'ACCOUNT_ACTIVATED' : 'ACCOUNT_DEACTIVATED', targetType: 'user', targetId: user.id, details: { email: user.email } });
     }
     res.json({ user });
@@ -1079,7 +1094,7 @@ app.get('/api/admin/outlets', async (req: Request, res: Response) => {
   try {
     const [master, outletUsers, requests] = await Promise.all([getOutletMaster(false), getAdminUsers(), getRequests()]);
     const response = master.map((outlet) => {
-      const assignedUsers = outletUsers.filter((user) => user.outletId === outlet.id && user.role.toUpperCase() === 'OUTLET');
+      const assignedUsers = outletUsers.filter((user) => user.outlets.some((held) => held.id === outlet.id) && user.role.toUpperCase() === 'OUTLET');
       const outletRequests = requests.filter((request: any) => request.outletId === outlet.id);
       return { id: outlet.id, code: outlet.outletCode, name: outlet.outletName, address: outlet.address || '', isActive: outlet.isActive, assignedUsers: assignedUsers.length, requestCount: outletRequests.length, users: assignedUsers.map((user) => ({ id: user.id, name: user.name, email: user.email, isActive: user.isActive })) };
     });

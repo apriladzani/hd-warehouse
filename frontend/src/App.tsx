@@ -47,7 +47,7 @@ const pagePath = (role: string, page: string) => {
     if (page === 'inventory-catalog') return `${base}/inventory/katalog`;
     return `${base}/${page === 'requests' ? 'request' : page === 'history' ? 'riwayat' : page}`;
   }
-  return `${base}/${page === 'request' ? 'request' : page === 'history' ? 'riwayat' : page === 'report' ? 'laporan' : page}`;
+  return `${base}/${page === 'request' ? 'request' : page === 'history' ? 'riwayat' : page}`;
 };
 
 const legacyPath = (pathname: string, role: string) => {
@@ -64,6 +64,8 @@ const legacyPath = (pathname: string, role: string) => {
   if (role === 'WAREHOUSE' && path === '/requests') return pagePath(role, 'requests');
   if (path === '/history') return pagePath(role, 'history');
   if (path === '/request' && role !== 'WAREHOUSE') return pagePath(role, 'request');
+  // The outlet sales report was removed; its purchase recap lives in Riwayat.
+  if (role === 'OUTLET' && path === '/outlet/laporan') return pagePath(role, 'history');
   return path;
 };
 
@@ -89,7 +91,6 @@ const tabForPath = (pathname: string, role: string) => {
   } else {
     if (/\/request(?:\/\d+)?$/.test(pathname)) return 'request';
     if (pathname.endsWith('/riwayat')) return 'history';
-    if (pathname.endsWith('/laporan')) return 'report';
   }
   return 'dashboard';
 };
@@ -137,7 +138,7 @@ export default function App() {
     ? isFinancePath(canonicalPath) || /^\/warehouse\/(?:dashboard|inventory(?:\/(?:stock-opname|vendors|katalog))?|request(?:\/\d+)?|riwayat)$/.test(canonicalPath)
     : routeRole === 'FINANCE'
       ? isFinancePath(canonicalPath)
-      : /^\/outlet\/(?:dashboard|request|riwayat|laporan)$/.test(canonicalPath);
+      : /^\/outlet\/(?:dashboard|request|riwayat)$/.test(canonicalPath);
 
   useEffect(() => {
     if (!currentUser) {
@@ -251,7 +252,6 @@ export default function App() {
               />
             )}
             {activeTab === 'history' && <UserRiwayat currentUser={currentUser} />}
-            {activeTab === 'report' && <WarehouseDashboard currentUser={currentUser} />}
           </>
         )}
 

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { User, InventoryItem } from '../../types.ts';
 import { formatRupiah } from '../../lib/format.ts';
+import { blockedMessage, initialOutletId, outletFieldMode, type OutletProfile } from '../../lib/outletPlacement.ts';
 import { localDateInputValue } from '../../lib/format.ts';
 
 const CATEGORY_PRIORITY = ['Raw Material', 'Support Material', 'Packaging'];
@@ -42,13 +43,16 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [outletAssignmentLoading, setOutletAssignmentLoading] = useState(true);
+  // Outlets this account may order for (active only, default first).
+  const [outletProfile, setOutletProfile] = useState<OutletProfile | null>(null);
+  const [selectedOutletId, setSelectedOutletId] = useState<number | null>(null);
+  // An outlet switch waiting for "keep or reset the quantities already filled".
+  const [pendingOutletId, setPendingOutletId] = useState<number | null>(null);
 
   // Form Headers requested by user: "Tgl... Otlet...."
   const [requestDate, setRequestDate] = useState<string>(
     localDateInputValue()
   );
-  const [outletName, setOutletName] = useState<string>('');
   const [paymentMethod, setPaymentMethod] = useState<string>('Transfer');
 
   // Quantities map: { [itemId: number]: number }
@@ -87,16 +91,18 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
     fetchInventory();
 
     const fetchOutletAssignment = async () => {
-      setOutletAssignmentLoading(true);
       try {
-        const response = await fetch('/api/outlet/profile', { credentials: 'same-origin' });
+        const response = await fetch('/api/outlet/profile', { credentials: 'same-origin', cache: 'no-store' });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Penempatan outlet tidak dapat dimuat.');
-        setOutletName(result.outletName || '');
+        const profile: OutletProfile = {
+          status: result.status || 'none', message: result.message ?? null,
+          outlets: Array.isArray(result.outlets) ? result.outlets : [], defaultOutletId: result.defaultOutletId ?? null,
+        };
+        setOutletProfile(profile);
+        setSelectedOutletId(initialOutletId(profile));
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : 'Penempatan outlet tidak dapat dimuat.');
-      } finally {
-        setOutletAssignmentLoading(false);
+        setOutletProfile({ status: 'none', message: reason instanceof Error ? reason.message : 'Penempatan outlet tidak dapat dimuat.', outlets: [], defaultOutletId: null });
       }
     };
     fetchOutletAssignment();
@@ -178,14 +184,31 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
     return { totalItemsCount, totalQuantity, totalAmount };
   }, [inventory, quantities]);
 
+  const outletMode = outletFieldMode(outletProfile);
+  const canOrder = outletMode === 'single' || outletMode === 'choice';
+  const outletName = outletProfile?.outlets.find((outlet) => outlet.id === selectedOutletId)?.name ?? '';
+
+  // Switching outlet with quantities filled asks first: keep them or start over.
+  const chooseOutlet = (outletId: number) => {
+    if (outletId === selectedOutletId) return;
+    if (orderSummary.totalItemsCount > 0) setPendingOutletId(outletId);
+    else setSelectedOutletId(outletId);
+  };
+  const confirmOutletSwitch = (resetQuantities: boolean) => {
+    if (pendingOutletId === null) return;
+    if (resetQuantities) handleResetAll();
+    setSelectedOutletId(pendingOutletId);
+    setPendingOutletId(null);
+  };
+
   // Submit HD Request Order
   const handleSubmitOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccessMsg(null);
 
-    if (outletAssignmentLoading || !outletName.trim()) {
-      setError('Akun ini belum memiliki penempatan outlet. Hubungi Admin.');
+    if (!canOrder || selectedOutletId === null) {
+      setError(outletMode === 'loading' ? 'Penempatan outlet masih dimuat.' : blockedMessage(outletProfile));
       return;
     }
 
@@ -208,6 +231,7 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
       setSubmitting(true);
 
       const payload = {
+        outletId: selectedOutletId,
         paymentMethod,
         requestDate,
         items: orderedItems,
@@ -289,9 +313,23 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
               <Store className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-[#F0002B] shrink-0" />
               <span className="truncate">Outlet</span>
             </label>
-            <div id="outlet-assignment-display" aria-live="polite" className="flex h-[30px] items-center truncate rounded-[10px] border border-[#E2E8F0] bg-[#F8FAFC] px-2 text-[11px] font-bold text-[#1E293B] sm:h-[40px] sm:px-3.5 sm:text-xs">
-              {outletAssignmentLoading ? 'Memuat penempatan…' : outletName || 'Belum ditempatkan'}
-            </div>
+            {outletMode === 'choice' ? (
+              <select
+                id="outlet-assignment-select"
+                aria-label="Outlet"
+                value={selectedOutletId ?? ''}
+                onChange={(event) => chooseOutlet(Number(event.target.value))}
+                className="w-full h-[30px] sm:h-[40px] px-2 sm:px-3.5 bg-white border border-[#E2E8F0] rounded-[10px] sm:rounded-xl text-[11px] sm:text-xs font-bold text-[#1E293B] outline-none focus:border-[#F0002B]"
+              >
+                {outletProfile!.outlets.map((outlet) => (
+                  <option key={outlet.id} value={outlet.id}>{outlet.name}{outlet.isDefault ? ' (default)' : ''}</option>
+                ))}
+              </select>
+            ) : (
+              <div id="outlet-assignment-display" aria-live="polite" className={`flex h-[30px] items-center truncate rounded-[10px] border px-2 text-[11px] font-bold sm:h-[40px] sm:px-3.5 sm:text-xs ${outletMode === 'blocked' ? 'border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C]' : 'border-[#E2E8F0] bg-[#F8FAFC] text-[#1E293B]'}`}>
+                {outletMode === 'loading' ? 'Memuat penempatan…' : outletMode === 'blocked' ? 'Belum bisa order' : outletName}
+              </div>
+            )}
           </div>
 
           {/* Kolom Metode Pembayaran */}
@@ -312,7 +350,33 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
             </select>
           </div>
         </div>
+
+        {outletMode === 'blocked' && (
+          <p role="alert" className="flex items-start gap-2 rounded-lg border border-[#FECDD3] bg-[#FFF1F2] px-3 py-2 text-xs font-semibold text-[#BE123C]">
+            <AlertCircle className="mt-px h-4 w-4 shrink-0" aria-hidden="true" />
+            {blockedMessage(outletProfile)}
+          </p>
+        )}
       </div>
+
+      {pendingOutletId !== null && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" role="presentation" onClick={() => setPendingOutletId(null)}>
+          <div role="alertdialog" aria-modal="true" aria-labelledby="switch-outlet-title" aria-describedby="switch-outlet-text"
+            className="w-full max-w-sm rounded-xl border border-[#E2E8F0] bg-white p-4 shadow-xl" onClick={(event) => event.stopPropagation()}>
+            <h2 id="switch-outlet-title" className="text-sm font-bold text-[#1E293B]">
+              Ganti outlet ke {outletProfile?.outlets.find((outlet) => outlet.id === pendingOutletId)?.name}?
+            </h2>
+            <p id="switch-outlet-text" className="mt-2 text-xs leading-relaxed text-[#475569]">
+              Sudah ada {orderSummary.totalItemsCount} barang ({orderSummary.totalQuantity} pcs) yang diisi qty. Isian ini mau dipakai untuk outlet baru atau dikosongkan?
+            </p>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button type="button" autoFocus onClick={() => setPendingOutletId(null)} className="rounded-[9px] border border-[#E2E8F0] bg-white px-3 py-2 text-xs font-semibold text-[#475569] hover:bg-slate-50">Batal</button>
+              <button type="button" onClick={() => confirmOutletSwitch(true)} className="rounded-[9px] border border-[#E2E8F0] bg-white px-3 py-2 text-xs font-semibold text-[#BE123C] hover:bg-[#FFF1F2]">Kosongkan isian</button>
+              <button type="button" onClick={() => confirmOutletSwitch(false)} className="rounded-[9px] bg-[#F0002B] px-3 py-2 text-xs font-bold text-white hover:bg-[#D80027]">Pertahankan isian</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Alert Messages */}
       {error && (
@@ -670,7 +734,8 @@ export const UserRequestForm: React.FC<UserRequestFormProps> = ({
             id="btn-submit-hd-order"
             type="button"
             onClick={handleSubmitOrder}
-            disabled={orderSummary.totalItemsCount === 0 || submitting}
+            disabled={!canOrder || orderSummary.totalItemsCount === 0 || submitting}
+            title={canOrder ? undefined : blockedMessage(outletProfile)}
             className="h-9 shrink-0 px-3 sm:px-4 bg-[#F0002B] hover:bg-[#D80027] text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 transition-colors disabled:bg-[#C24155] disabled:text-white disabled:cursor-not-allowed"
           >
             <ShoppingBag className="w-3 h-3 sm:w-4 sm:h-4 shrink-0" />

@@ -67,6 +67,8 @@ export interface RequestTransaction {
   requestCode: string;
   userId?: number;
   outletId?: number | null;
+  // The outlet the request was made for (requests.outlet_id), not the account's current one.
+  outletName?: string | null;
   requesterName: string;
   paymentMethod: string;
   requestDate: string;
@@ -197,8 +199,9 @@ export interface WarehouseStats {
   financePeriods?: FinancePeriod[];
   financePeriod?: FinancePeriod | null;
   periodLock?: { closedAt: string; closedBy: string; source: string } | null;
-  // Set by the server: an Outlet account is locked to its outlet and may not see cost.
-  viewer?: { lockedOutletId: number | null; showCost: boolean; outletIds: number[] };
+  // Set by the server. outletOnly: an Outlet account (trimmed figures, cost only
+  // when allowed), limited to allowedOutletIds; locked when it holds just one.
+  viewer?: { lockedOutletId: number | null; showCost: boolean; outletIds: number[]; outletOnly?: boolean; allowedOutletIds?: number[] };
   inventoryAdjustmentAmount?: number;
   missingCostQuantity?: number;
   hasMissingCostData?: boolean;

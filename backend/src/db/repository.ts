@@ -8,6 +8,8 @@ import { ensurePeriodSnapshotSchema, ledgerRows, loadLedger, PERIOD_CORRECTION, 
 import { effectiveTime, forOutlets, lowestRunningStock } from '../finance/periodLedger.ts';
 import { activePurchase, ensurePurchaseCancellationSchema, PURCHASE_CANCEL, PurchaseCancelError } from './purchaseCancellation.ts';
 export { PURCHASE_CANCEL, PURCHASE_CANCELLATION_COLUMNS, PurchaseCancelError } from './purchaseCancellation.ts';
+import { ensureUserOutletSchema, getAllUserOutlets, getUserOutlets, readOutletSelection, replaceUserOutlets, type UserOutlet } from './userOutlets.ts';
+export { USER_OUTLET_COLUMNS, type UserOutlet } from './userOutlets.ts';
 import {
   users,
   outlets,
@@ -798,13 +800,14 @@ export async function authenticateUser(email: string, password?: string): Promis
       if (Number(u.isActive) === 0) return null;
       if (verifyPassword(password, u.password)) {
         if (!String(u.password || '').startsWith('scrypt$')) await db.update(users).set({ password: hashPassword(password) }).where(eq(users.id, u.id));
-        const profile = await getOutletRequestProfile(u.id).catch(() => null);
+        const held = await getAccountOutlets(u.id).catch(() => [] as UserOutlet[]);
+        const primary = held.find((outlet) => outlet.isDefault) ?? held[0] ?? null;
         return {
           ...u,
           password,
           role: u.role.toUpperCase() === 'USER' ? 'OUTLET' : u.role.toUpperCase(),
-          outletId: profile?.outletId ?? null,
-          outletName: profile?.outletName ?? null,
+          outletId: primary?.id ?? null,
+          outletName: primary?.name ?? null,
           isActive: true,
         };
       }
@@ -968,7 +971,8 @@ export async function deleteManagedOutlet(id: number) {
         WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_SCHEMA = DATABASE()
           AND REFERENCED_TABLE_NAME = 'outlets' AND REFERENCED_COLUMN_NAME = 'id'
           AND NOT (TABLE_NAME = 'users' AND COLUMN_NAME = 'outlet_id')
-          AND NOT (TABLE_NAME = 'requests' AND COLUMN_NAME = 'outlet_id')`);
+          AND NOT (TABLE_NAME = 'requests' AND COLUMN_NAME = 'outlet_id')
+          AND TABLE_NAME <> 'user_outlets'`);
       for (const reference of references as any[]) {
         const tableName = `\`${String(reference.tableName).replace(/`/g, '``')}\``;
         const columnName = `\`${String(reference.columnName).replace(/`/g, '``')}\``;
@@ -984,8 +988,11 @@ export async function deleteManagedOutlet(id: number) {
       return { id, mode: 'deactivated' as const, name: String(outlet.name) };
     }
 
-    const [placed] = await connection.query('SELECT COUNT(*) AS n FROM users WHERE outlet_id = ?', [id]);
-    const placedCount = Number((placed as any[])[0]?.n || 0);
+    // Placed: through user_outlets, or the old column for an account not yet moved.
+    await ensureUserOutletSchema();
+    const [placedRows] = await connection.query('SELECT user_id AS userId FROM user_outlets WHERE outlet_id = ?', [id]);
+    const [legacyRows] = await connection.query('SELECT id AS userId FROM users WHERE outlet_id = ?', [id]);
+    const placedCount = new Set([...(placedRows as any[]), ...(legacyRows as any[])].map((row) => Number(row.userId))).size;
     if (placedCount > 0) throw new OutletDeleteError(`Masih ada ${placedCount} akun yang ditempatkan di outlet ${outlet.name}. Pindahkan penempatannya dulu di User Management.`, 409);
 
     await connection.query('DELETE FROM outlets WHERE id = ?', [id]);
@@ -1021,28 +1028,33 @@ export async function updateManagedOutlet(id: number, input: { code: string; nam
   } finally { connection.release(); }
 }
 
+// Every account with its outlets (user_outlets). outletId/outletName stay for
+// readers of the old single placement: they are the default outlet.
 export async function getAdminUsers() {
   await ensureAdminUserSchema();
   await migrateLegacyUserRoles();
-  return db.select({
+  await ensureAdminOutletSchema();
+  const rows = await db.select({
     id: users.id,
     name: users.name,
     username: users.username,
     email: users.email,
     role: users.role,
-    outletId: users.outletId,
-    outletName: outlets.outletName,
     isActive: users.isActive,
     createdAt: users.createdAt,
-  }).from(users).leftJoin(outlets, eq(users.outletId, outlets.id)).orderBy(users.name);
+  }).from(users).orderBy(users.name);
+  const outletsByUser = await getAllUserOutlets();
+  return rows.map((row) => {
+    const assigned = outletsByUser.get(row.id) ?? [];
+    const primary = assigned.find((outlet) => outlet.isDefault) ?? assigned[0] ?? null;
+    return { ...row, outlets: assigned, outletId: primary?.id ?? null, outletName: primary?.name ?? null };
+  });
 }
 
-export async function getOutletRequestProfile(userId: number) {
+// The outlets an account may request for (active) and has (all), default first.
+export async function getAccountOutlets(userId: number): Promise<UserOutlet[]> {
   await ensureAdminOutletSchema();
-  const [rows] = await pool.query(`SELECT u.id, u.name, u.email, u.role, u.is_active AS isActive,
-    u.outlet_id AS outletId, o.outlet_name AS outletName, o.is_active AS outletIsActive
-    FROM users u LEFT JOIN outlets o ON o.id = u.outlet_id WHERE u.id = ? LIMIT 1`, [userId]);
-  return (rows as any[])[0] || null;
+  return getUserOutlets(userId);
 }
 
 const MANAGED_ROLES = new Set(['ADMIN', 'WAREHOUSE', 'FINANCE', 'OUTLET']);
@@ -1052,19 +1064,7 @@ function validateManagedRole(role: unknown): string {
   return normalized;
 }
 
-async function validateOutletAssignment(connection: import('mysql2/promise').PoolConnection, role: string, outletId: unknown) {
-  if (role !== 'OUTLET') {
-    if (outletId !== undefined && outletId !== null && outletId !== '') throw new Error('Penempatan outlet hanya berlaku untuk role Outlet');
-    return null;
-  }
-  const id = Number(outletId);
-  if (!Number.isInteger(id) || id <= 0) throw new Error('Pengguna dengan role Outlet wajib memiliki penempatan outlet');
-  const [rows] = await connection.query('SELECT id FROM outlets WHERE id = ? AND is_active = 1 LIMIT 1', [id]);
-  if (!(rows as any[]).length) throw new Error('Outlet tidak ditemukan atau sudah nonaktif');
-  return id;
-}
-
-export async function createManagedUser(input: { name: string; username: string; email: string; password: string; role: string; outletId?: number | null }) {
+export async function createManagedUser(input: { name: string; username: string; email: string; password: string; role: string; outletId?: unknown; outletIds?: unknown; defaultOutletId?: unknown }, actorId: number | null = null) {
   await ensureAdminUserSchema();
   const name = String(input.name || '').trim();
   const username = normalizeUsername(String(input.username || ''));
@@ -1074,18 +1074,22 @@ export async function createManagedUser(input: { name: string; username: string;
   if (!name || name.length > 255 || !/^[a-z0-9._-]{3,100}$/.test(username)) throw new Error('Nama wajib diisi (maks. 255 karakter) dan username harus 3–100 karakter berisi huruf, angka, titik, garis bawah, atau tanda hubung');
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) throw new Error('Email tidak valid');
   if (password.length < 6) throw new Error('Password minimal harus 6 karakter');
+  const selection = readOutletSelection(input);
+  await ensureAdminOutletSchema();
+  await ensureUserOutletSchema();
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-    const outletId = await validateOutletAssignment(connection, role, input.outletId);
     const [existingUsername] = await connection.query('SELECT id FROM users WHERE LOWER(username) = ? LIMIT 1 FOR UPDATE', [username]);
     if ((existingUsername as any[]).length) throw new Error('Username sudah digunakan.');
     const [existingEmail] = await connection.query('SELECT id FROM users WHERE LOWER(email) = ? LIMIT 1 FOR UPDATE', [email]);
     if ((existingEmail as any[]).length) throw new Error('Email sudah terdaftar.');
-    const [result] = await connection.query('INSERT INTO users (name, username, email, password, role, outlet_id, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)', [name, username, email, hashPassword(password), role, outletId]);
+    const [result] = await connection.query('INSERT INTO users (name, username, email, password, role, outlet_id, is_active) VALUES (?, ?, ?, ?, ?, NULL, 1)', [name, username, email, hashPassword(password), role]);
+    const userId = Number((result as any).insertId);
+    const outletChange = await replaceUserOutlets(connection, userId, role, selection, actorId);
     await connection.commit();
-    const [created] = await pool.query('SELECT id, name, username, email, role, outlet_id AS outletId, is_active AS isActive, created_at AS createdAt FROM users WHERE id = ?', [(result as any).insertId]);
-    return (created as any[])[0];
+    const [created] = await pool.query('SELECT id, name, username, email, role, outlet_id AS outletId, is_active AS isActive, created_at AS createdAt FROM users WHERE id = ?', [userId]);
+    return { ...(created as any[])[0], outlets: await getUserOutlets(userId), outletChange };
   } catch (err: any) {
     await connection.rollback();
     if (err?.code === 'ER_DUP_ENTRY') {
@@ -1100,10 +1104,17 @@ export async function createManagedUser(input: { name: string; username: string;
   }
 }
 
-export async function updateManagedUser(id: number, input: { name?: string; username?: string; email?: string; password?: string; role: string; isActive: boolean; outletId?: number | null }) {
+export async function updateManagedUser(id: number, input: { name?: string; username?: string; email?: string; password?: string; role: string; isActive: boolean; outletId?: unknown; outletIds?: unknown; defaultOutletId?: unknown }, actorId: number | null = null) {
   await ensureAdminUserSchema();
   if (!Number.isInteger(id) || id <= 0) throw new Error('ID pengguna tidak valid');
   const role = validateManagedRole(input.role);
+  // Outlets not sent means "unchanged" for an Outlet account, so a client that
+  // only flips the status never clears them; other roles hold no outlets.
+  const outletsSent = input.outletIds !== undefined || input.outletId !== undefined;
+  const selection = outletsSent ? readOutletSelection(input) : null;
+  if (role !== 'OUTLET' && selection?.outletIds.length) throw new Error('Penempatan outlet hanya berlaku untuk role Outlet');
+  await ensureAdminOutletSchema();
+  await ensureUserOutletSchema();
   const nameInput = String(input.name || '').trim();
   const usernameInput = normalizeUsername(String(input.username || ''));
   const emailInput = String(input.email || '').trim().toLowerCase();
@@ -1125,19 +1136,24 @@ export async function updateManagedUser(id: number, input: { name?: string; user
     if ((duplicateUsername as any[]).length) throw new Error('Username sudah digunakan.');
     const [duplicateEmail] = await connection.query('SELECT id FROM users WHERE LOWER(email) = ? AND id <> ? LIMIT 1 FOR UPDATE', [email, id]);
     if ((duplicateEmail as any[]).length) throw new Error('Email sudah terdaftar.');
-    const outletId = await validateOutletAssignment(connection, role, input.outletId);
     const isRemovingActiveAdmin = String(target.role).toUpperCase() === 'ADMIN' && Number(target.isActive) === 1 && (role !== 'ADMIN' || !input.isActive);
     if (isRemovingActiveAdmin) {
       const [adminRows] = await connection.query("SELECT id FROM users WHERE UPPER(role) = 'ADMIN' AND is_active = 1 FOR UPDATE");
       if ((adminRows as any[]).length <= 1) throw new Error('Admin aktif terakhir tidak dapat diubah role atau dinonaktifkan');
     }
-    if (password) await connection.query('UPDATE users SET name = ?, username = ?, email = ?, password = ?, role = ?, is_active = ?, outlet_id = ? WHERE id = ?', [name, username, email, hashPassword(password), role, input.isActive ? 1 : 0, outletId, id]);
-    else await connection.query('UPDATE users SET name = ?, username = ?, email = ?, role = ?, is_active = ?, outlet_id = ? WHERE id = ?', [name, username, email, role, input.isActive ? 1 : 0, outletId, id]);
+    if (password) await connection.query('UPDATE users SET name = ?, username = ?, email = ?, password = ?, role = ?, is_active = ? WHERE id = ?', [name, username, email, hashPassword(password), role, input.isActive ? 1 : 0, id]);
+    else await connection.query('UPDATE users SET name = ?, username = ?, email = ?, role = ?, is_active = ? WHERE id = ?', [name, username, email, role, input.isActive ? 1 : 0, id]);
+    // An account placed through the old column only gets its row now, so the
+    // change below is measured against what it really had.
+    await getUserOutlets(id, connection);
+    const outletChange = role !== 'OUTLET'
+      ? await replaceUserOutlets(connection, id, role, { outletIds: [], defaultOutletId: null }, actorId)
+      : selection ? await replaceUserOutlets(connection, id, role, selection, actorId) : null;
     await connection.commit();
     const [updated] = await pool.query(`SELECT u.id, u.name, u.username, u.email, u.role, u.outlet_id AS outletId,
       o.outlet_name AS outletName, u.is_active AS isActive, u.created_at AS createdAt
       FROM users u LEFT JOIN outlets o ON o.id = u.outlet_id WHERE u.id = ?`, [id]);
-    return (updated as any[])[0];
+    return { ...(updated as any[])[0], outlets: await getUserOutlets(id), outletChange };
   } catch (err: any) {
     await connection.rollback();
     if (err?.code === 'ER_DUP_ENTRY') {
@@ -1181,7 +1197,9 @@ export async function deleteManagedUser(id: number, actorId?: number) {
         AND REFERENCED_TABLE_NAME = 'users'
         AND REFERENCED_COLUMN_NAME = 'id'
         AND NOT (TABLE_NAME = 'requests' AND COLUMN_NAME = 'user_id')
+        AND TABLE_NAME <> 'user_outlets'
     `);
+    // An outlet placement is a setting, not history: it goes with the account.
     let hasForeignKeyHistory = false;
     for (const reference of references as any[]) {
       const tableName = `\`${String(reference.tableName).replace(/`/g, '``')}\``;
@@ -1194,6 +1212,8 @@ export async function deleteManagedUser(id: number, actorId?: number) {
       await connection.commit();
       return { id, mode: 'deactivated', name: target.name };
     }
+    await ensureUserOutletSchema();
+    await connection.query('DELETE FROM user_outlets WHERE user_id = ?', [id]);
     await connection.query('DELETE FROM users WHERE id = ?', [id]);
     await connection.commit();
     return { id, mode: 'deleted', name: target.name };
@@ -3090,15 +3110,20 @@ export async function cancelRequest(
   await ensureInventoryPrecisionSchema();
   await ensurePeriodSnapshotSchema();
   const note = String(reason ?? '').trim().slice(0, 500) || null;
+  // An Outlet account cancels only its own requests, and only for an outlet it
+  // still holds: a request of an outlet taken away from it stays as it is.
+  const heldOutlets = actor.role === 'OUTLET' ? new Set((await getAccountOutlets(actor.id)).map((outlet) => outlet.id)) : null;
 
   return db.transaction(async (tx) => {
     // The request row lock makes a second cancellation wait, then see
     // 'Cancelled' and stop: stock can never come back twice.
-    const [request] = await tx.select({ id: requests.id, status: requests.status, userId: requests.userId, requestCode: requests.requestCode })
+    const [request] = await tx.select({ id: requests.id, status: requests.status, userId: requests.userId, outletId: requests.outletId, requestCode: requests.requestCode })
       .from(requests).where(eq(requests.id, requestId)).for('update');
     if (!request) throw new RequestCancelError('Permintaan tidak ditemukan.', 404);
-    if (actor.role === 'OUTLET' ? request.userId !== actor.id : actor.role !== 'WAREHOUSE') {
-      throw new RequestCancelError('Hanya outlet pemilik request atau Warehouse yang dapat membatalkan request ini.', 403);
+    if (actor.role === 'OUTLET' ? request.userId !== actor.id || request.outletId == null || !heldOutlets!.has(request.outletId) : actor.role !== 'WAREHOUSE') {
+      throw new RequestCancelError(actor.role === 'OUTLET' && request.userId === actor.id
+        ? 'Request ini milik outlet yang tidak lagi terdaftar di akun Anda. Hubungi Admin atau Warehouse untuk membatalkannya.'
+        : 'Hanya outlet pemilik request atau Warehouse yang dapat membatalkan request ini.', 403);
     }
     if (!CANCELLABLE_STATUSES.includes(request.status)) {
       throw new RequestCancelError(`Request ${request.requestCode} ${STATUS_LABEL[request.status] ?? `berstatus ${request.status}`}, jadi tidak bisa dibatalkan.`, 409);

@@ -31,7 +31,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, activeNav, onNaviga
     ? [dashboard, { id: 'inventory', label: 'Inventory', icon: Boxes }, { id: 'requests', label: 'Request Outlet', icon: PackageCheck }, history, { id: 'finance', label: 'Finance', icon: CircleDollarSign }]
     : currentUser.role === 'FINANCE'
       ? financeItems
-      : [dashboard, { id: 'request', label: 'HD Request', icon: FileText }, history, { id: 'report', label: 'Laporan Penjualan', icon: CircleDollarSign }];
+      : [dashboard, { id: 'request', label: 'HD Request', icon: FileText }, history];
   const title = navItems.find((item) => item.id === activeNav)?.label || 'Dashboard';
   const initials = currentUser.name.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('');
 

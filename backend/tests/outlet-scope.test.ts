@@ -5,7 +5,8 @@ import { outletFromRequesterName } from '../src/finance/requestOutlet.ts';
 import { buildLedger, forOutlets, outletTotalsMismatch, rollPeriod, type LedgerEvent } from '../src/finance/periodLedger.ts';
 
 const BANTAR_MALAM = 10, CISALAK = 1, ABOH = 5;
-const viewer = (role: string, outletId: number | null = null, warehouseGateVerified = true): FinanceViewer => ({ id: 1, role, outletId, warehouseGateVerified });
+const viewer = (role: string, outlet: number | number[] | null = null, warehouseGateVerified = true): FinanceViewer =>
+  ({ id: 1, role, outletIds: outlet == null ? [] : Array.isArray(outlet) ? outlet : [outlet], warehouseGateVerified });
 const sale = (at: number, quantity: number, outletId: number, unitCost = '1000.000000'): LedgerEvent => ({ at, order: at, kind: 'sale', quantity, outletId, sellPrice: '1500', unitCost });
 
 test('outlet filter query: list, empty, invalid', () => {
@@ -34,6 +35,21 @@ test('f. Finance, Admin and verified Warehouse see every outlet; Outlet account 
   assert.equal((resolveOutletScope(viewer('FINANCE'), null, false) as any).status, 400);
   const allowed = resolveOutletScope(viewer('OUTLET', BANTAR_MALAM), undefined, true);
   assert.ok(!isDenied(allowed) && allowed.showCost);
+});
+
+test('an Outlet account with several outlets sees those outlets, never another, and always the trimmed view', () => {
+  const several = viewer('OUTLET', [BANTAR_MALAM, CISALAK]);
+  const all = resolveOutletScope(several, undefined, false);
+  assert.ok(!isDenied(all));
+  assert.deepEqual(all.outletIds, [CISALAK, BANTAR_MALAM]);
+  assert.equal(all.lockedOutletId, null, 'more than one outlet: nothing locked, the filter is a choice');
+  assert.equal(all.outletOnly, true, 'still an Outlet account: the trimmed view, never the warehouse report');
+  assert.deepEqual(all.allowedOutletIds, [CISALAK, BANTAR_MALAM]);
+  const one = resolveOutletScope(several, [CISALAK], false);
+  assert.ok(!isDenied(one)); assert.deepEqual(one.outletIds, [CISALAK]);
+  const other = resolveOutletScope(several, [CISALAK, ABOH], false);
+  assert.ok(isDenied(other)); assert.equal(other.status, 403);
+  for (const role of ['FINANCE', 'ADMIN', 'WAREHOUSE']) assert.equal((resolveOutletScope(viewer(role), undefined, false) as any).outletOnly, false);
 });
 
 test('Outlet accounts receive sales only: no HPP, profit, averages, purchases or warehouse stock', () => {
@@ -93,13 +109,13 @@ test('closing check catches an outlet breakdown that does not add up', () => {
 });
 
 test('f. API guard answers 403 when an Outlet account asks for another outlet', async () => {
-  const users: Record<string, { id: number; role: string; outletId: number | null }> = {
-    bantar: { id: 5, role: 'OUTLET', outletId: BANTAR_MALAM }, finance: { id: 7, role: 'FINANCE', outletId: null }, admin: { id: 8, role: 'ADMIN', outletId: null },
+  const users: Record<string, { id: number; role: string; outletIds: number[] }> = {
+    bantar: { id: 5, role: 'OUTLET', outletIds: [BANTAR_MALAM] }, finance: { id: 7, role: 'FINANCE', outletIds: [] }, admin: { id: 8, role: 'ADMIN', outletIds: [] },
   };
   const guard = createFinanceScope({
     identity: async (req: any) => users[req.user] ?? null,
     authenticate: async () => ({ warehouseGateVerified: false }),
-    outletOf: async (id) => Object.values(users).find(u => u.id === id)?.outletId ?? null,
+    outletsOf: async (id) => Object.values(users).find(u => u.id === id)?.outletIds ?? [],
     outletCanViewCost: async () => false,
   });
   async function call(user: string | null, query: Record<string, string> = {}) {

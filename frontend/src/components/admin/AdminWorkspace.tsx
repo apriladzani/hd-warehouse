@@ -6,6 +6,7 @@ import { formatDateIndo, formatRupiah } from '../../lib/format.ts';
 import { StatusBadge } from '../common/StatusBadge.tsx';
 import { useBranding, type BrandingConfig, type SystemConfig } from '../common/BrandingContext.tsx';
 import { PrintTemplateSettings } from './PrintTemplateSettings.tsx';
+import { outletSummary } from '../../lib/outletPlacement.ts';
 
 type AdminWorkspaceProps = {
   currentUser: User;
@@ -183,7 +184,18 @@ function MonitorLink({ icon, title, description, onClick }: { icon: React.ReactN
   return <button type="button" onClick={onClick} className="hd-surface flex min-w-0 items-center gap-3 p-3 text-left transition-colors hover:border-[#CBD5E1]"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[#F8FAFC] text-[#64748B]">{icon}</span><span className="min-w-0 flex-1"><strong className="block truncate text-xs text-[#1E293B]">{title}</strong><small className="mt-0.5 block truncate text-[11px] text-[#64748B]">{description}</small></span><ArrowRight size={15} className="shrink-0 text-[#94A3B8]" /></button>;
 }
 
-type ManagedUser = User & { username: string; createdAt?: string | Date | null; isActive: boolean; outletId: number | null; outletName?: string | null };
+type HeldOutlet = { id: number; name: string; isActive: boolean; isDefault: boolean };
+type ManagedUser = User & { username: string; createdAt?: string | Date | null; isActive: boolean; outletId: number | null; outletName?: string | null; outlets?: HeldOutlet[] };
+type UserForm = { name: string; username: string; email: string; password: string; role: string; outletIds: number[]; defaultOutletId: number | null; isActive: boolean };
+const emptyUserForm: UserForm = { name: '', username: '', email: '', password: '', role: 'OUTLET', outletIds: [], defaultOutletId: null, isActive: true };
+
+// Toggling one outlet in the user form; the default follows: the first outlet
+// ticked becomes default, and removing the default hands it to the next one.
+export function toggleFormOutlet(form: Pick<UserForm, 'outletIds' | 'defaultOutletId'>, outletId: number) {
+  const outletIds = form.outletIds.includes(outletId) ? form.outletIds.filter((id) => id !== outletId) : [...form.outletIds, outletId];
+  const defaultOutletId = form.defaultOutletId !== null && outletIds.includes(form.defaultOutletId) ? form.defaultOutletId : outletIds[0] ?? null;
+  return { outletIds, defaultOutletId };
+}
 
 function UserManagementPanel({ users, outlets, headers, currentUserId, onRefresh }: { users: ManagedUser[]; outlets: Outlet[]; headers: Record<string, string>; currentUserId: number; onRefresh: () => void }) {
   const [search, setSearch] = useState('');
@@ -196,27 +208,36 @@ function UserManagementPanel({ users, outlets, headers, currentUserId, onRefresh
   const [deleteError, setDeleteError] = useState('');
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState('');
-  const [form, setForm] = useState({ name: '', username: '', email: '', password: '', role: 'OUTLET', outletId: '', isActive: true });
+  const [form, setForm] = useState<UserForm>(emptyUserForm);
 
+  const heldOf = (user: ManagedUser) => user.outlets ?? [];
   const filtered = users.filter((user) => {
     const query = search.trim().toLowerCase();
     return (!query || `${user.name} ${user.username} ${user.email}`.toLowerCase().includes(query))
       && (roleFilter === 'all' || user.role.toUpperCase() === roleFilter)
-      && (outletFilter === 'all' || (outletFilter === 'unassigned' ? !user.outletId : String(user.outletId || '') === outletFilter))
+      && (outletFilter === 'all' || (outletFilter === 'unassigned' ? heldOf(user).length === 0 : heldOf(user).some((outlet) => String(outlet.id) === outletFilter)))
       && (statusFilter === 'all' || (statusFilter === 'active' ? user.isActive : !user.isActive));
   });
 
-  const openNew = () => { setForm({ name: '', username: '', email: '', password: '', role: 'OUTLET', outletId: '', isActive: true }); setEditing('new'); };
-  const openEdit = (user: ManagedUser) => { setForm({ name: user.name, username: user.username, email: user.email, password: '', role: user.role.toUpperCase(), outletId: user.outletId ? String(user.outletId) : '', isActive: user.isActive }); setEditing(user); };
+  // Inactive outlets the account already holds are not offered, but kept as they are.
+  const editingHeld = editing && editing !== 'new' ? heldOf(editing) : [];
+  const keptInactive = editingHeld.filter((outlet) => !outlet.isActive);
+  const openNew = () => { setForm(emptyUserForm); setEditing('new'); };
+  const openEdit = (user: ManagedUser) => {
+    const held = heldOf(user);
+    setForm({ name: user.name, username: user.username, email: user.email, password: '', role: user.role.toUpperCase(), outletIds: held.filter((outlet) => outlet.isActive).map((outlet) => outlet.id), defaultOutletId: held.find((outlet) => outlet.isDefault && outlet.isActive)?.id ?? held.find((outlet) => outlet.isActive)?.id ?? null, isActive: user.isActive });
+    setEditing(user);
+  };
   const saveUser = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (form.role === 'OUTLET' && !form.outletId) { setFeedback('Pilih outlet untuk akun dengan role Outlet.'); return; }
     setSaving(true);
     setFeedback('');
     try {
       const isNew = editing === 'new';
       const url = isNew ? '/api/admin/users' : `/api/admin/users/${(editing as ManagedUser).id}`;
-      const payload = { ...form, outletId: form.role === 'OUTLET' ? Number(form.outletId) : null, ...(form.password ? {} : { password: undefined }) };
+      const outletIds = form.role === 'OUTLET' ? [...form.outletIds, ...keptInactive.map((outlet) => outlet.id)] : [];
+      const { outletIds: _chosen, defaultOutletId, ...rest } = form;
+      const payload = { ...rest, outletIds, defaultOutletId: form.role === 'OUTLET' ? defaultOutletId : null, ...(form.password ? {} : { password: undefined }) };
       const response = await fetch(url, { method: isNew ? 'POST' : 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Gagal menyimpan akun.');
@@ -254,10 +275,10 @@ function UserManagementPanel({ users, outlets, headers, currentUserId, onRefresh
         <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="hd-input"><option value="active">Akun Aktif</option><option value="inactive">Akun Nonaktif</option><option value="all">Semua Status</option></select>
       </div>
       {feedback && <p role="status" className="border-b border-[#E2E8F0] px-3 py-2 text-xs text-[#475569] sm:px-4">{feedback}</p>}
-      {filtered.length ? <div className="overflow-x-auto"><table className="w-full min-w-[1100px] text-left"><thead><tr>{['Nama', 'Username', 'Email', 'Role', 'Outlet', 'Status', 'Aksi'].map((column) => <th key={column} className="px-3">{column}</th>)}</tr></thead><tbody>{filtered.map((user) => <tr key={user.id}><td className="px-3 font-medium">{user.name}</td><td className="px-3">{user.username}</td><td className="px-3">{user.email}</td><td className="px-3">{user.role}</td><td className="px-3">{user.outletName || '—'}</td><td className="px-3"><span className={`hd-badge ${user.isActive ? '' : 'hd-badge--danger'}`}>{user.isActive ? 'Aktif' : 'Nonaktif'}</span></td><td className="px-3"><div className="flex gap-1"><button type="button" onClick={() => openEdit(user)} className="hd-button hd-button--secondary" aria-label={`Edit ${user.name}`}><Pencil size={14} />Edit</button>{user.id !== currentUserId && <button type="button" onClick={() => { setDeleteError(''); setDeleting(user); }} className="hd-button hd-button--secondary text-rose-700" aria-label={`Hapus ${user.name}`}><Trash2 size={14} />Hapus</button>}</div></td></tr>)}</tbody></table></div> : <StateMessage>Tidak ada pengguna yang cocok dengan filter.</StateMessage>}
+      {filtered.length ? <div className="overflow-x-auto"><table className="w-full min-w-[1100px] text-left"><thead><tr>{['Nama', 'Username', 'Email', 'Role', 'Outlet', 'Status', 'Aksi'].map((column) => <th key={column} className="px-3">{column}</th>)}</tr></thead><tbody>{filtered.map((user) => <tr key={user.id}><td className="px-3 font-medium">{user.name}</td><td className="px-3">{user.username}</td><td className="px-3">{user.email}</td><td className="px-3">{user.role}</td><td className="px-3" title={heldOf(user).map((outlet) => `${outlet.name}${outlet.isDefault ? ' (default)' : ''}${outlet.isActive ? '' : ' (nonaktif)'}`).join('\n') || undefined}>{outletSummary(heldOf(user))}</td><td className="px-3"><span className={`hd-badge ${user.isActive ? '' : 'hd-badge--danger'}`}>{user.isActive ? 'Aktif' : 'Nonaktif'}</span></td><td className="px-3"><div className="flex gap-1"><button type="button" onClick={() => openEdit(user)} className="hd-button hd-button--secondary" aria-label={`Edit ${user.name}`}><Pencil size={14} />Edit</button>{user.id !== currentUserId && <button type="button" onClick={() => { setDeleteError(''); setDeleting(user); }} className="hd-button hd-button--secondary text-rose-700" aria-label={`Hapus ${user.name}`}><Trash2 size={14} />Hapus</button>}</div></td></tr>)}</tbody></table></div> : <StateMessage>Tidak ada pengguna yang cocok dengan filter.</StateMessage>}
     </section>
     {deleting && <div className="fixed inset-0 z-[110] grid place-items-center bg-slate-950/45 p-3" onMouseDown={(event) => { if (!deletingBusy && event.target === event.currentTarget) setDeleting(null); }}><section role="alertdialog" aria-modal="true" aria-labelledby="delete-user-title" aria-describedby="delete-user-description" className="hd-surface w-full max-w-md p-4 shadow-xl"><header className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-rose-50 text-rose-700"><Trash2 size={17} /></span><div><h2 id="delete-user-title">Hapus akun pengguna?</h2><p id="delete-user-description" className="mt-1 text-xs leading-5 text-[#64748B]">Akun <strong className="text-[#1E293B]">{deleting.name}</strong> akan dihapus jika tidak memiliki riwayat. Jika memiliki request, activity log, atau relasi data, akun akan dinonaktifkan agar riwayat tetap tersimpan.</p></div></header>{deleteError && <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">{deleteError}</p>}<footer className="mt-4 flex justify-end gap-2"><button type="button" disabled={deletingBusy} onClick={() => setDeleting(null)} className="hd-button hd-button--secondary">Batal</button><button type="button" disabled={deletingBusy} onClick={() => void deleteUser(deleting)} className="hd-button hd-button--primary"><Trash2 size={14} />{deletingBusy ? 'Memproses…' : 'Hapus akun'}</button></footer></section></div>}
-    {editing && <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/45 p-3" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditing(null); }}><section role="dialog" aria-modal="true" aria-labelledby="user-editor-title" className="hd-surface max-h-[92dvh] w-full max-w-xl overflow-y-auto p-4 shadow-xl"><header className="mb-3 flex items-start justify-between"><div><h2 id="user-editor-title">{editing === 'new' ? 'Tambah Akun' : 'Edit Pengguna'}</h2><p className="mt-1 text-[11px] text-[#64748B]">Data akun, akses, dan penempatan.</p></div><button type="button" className="hd-icon-button" aria-label="Tutup" onClick={() => setEditing(null)}><X size={17} /></button></header><form onSubmit={saveUser} className="grid gap-3 sm:grid-cols-2"><label className="text-xs font-medium text-[#475569]">Nama<input required value={form.name} onChange={(event) => setForm((old) => ({ ...old, name: event.target.value }))} className="hd-input mt-1" /></label><label className="text-xs font-medium text-[#475569]">Username<input required minLength={3} maxLength={100} pattern="[A-Za-z0-9._-]+" value={form.username} onChange={(event) => setForm((old) => ({ ...old, username: event.target.value }))} className="hd-input mt-1" /></label><label className="text-xs font-medium text-[#475569]">Email<input required type="email" value={form.email} onChange={(event) => setForm((old) => ({ ...old, email: event.target.value }))} className="hd-input mt-1" /></label><label className="text-xs font-medium text-[#475569]">Password {editing !== 'new' && <span className="font-normal text-[#64748B]">(kosongkan bila tidak diubah)</span>}<input type="password" required={editing === 'new'} minLength={6} autoComplete="new-password" value={form.password} onChange={(event) => setForm((old) => ({ ...old, password: event.target.value }))} className="hd-input mt-1" /></label><label className="text-xs font-medium text-[#475569]">Role<select value={form.role} onChange={(event) => setForm((old) => ({ ...old, role: event.target.value, outletId: '' }))} className="hd-input mt-1"><RoleOptions /></select></label>{form.role === 'OUTLET' && <label className="text-xs font-medium text-[#475569]">Penempatan Outlet<select required value={form.outletId} onChange={(event) => setForm((old) => ({ ...old, outletId: event.target.value }))} className="hd-input mt-1"><OutletOptions outlets={outlets} /></select></label>}<label className="flex items-center gap-2 text-xs font-medium text-[#475569]"><input type="checkbox" checked={form.isActive} onChange={(event) => setForm((old) => ({ ...old, isActive: event.target.checked }))} />Akun aktif</label>{feedback && <p role="alert" className="sm:col-span-2 text-xs text-rose-700">{feedback}</p>}<footer className="flex justify-end gap-2 border-t border-[#E2E8F0] pt-3 sm:col-span-2"><button type="button" onClick={() => setEditing(null)} className="hd-button hd-button--secondary">Batal</button><button type="submit" disabled={saving} className="hd-button hd-button--primary"><Save size={14} />{saving ? 'Menyimpan…' : 'Simpan'}</button></footer></form></section></div>}
+    {editing && <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/45 p-3" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditing(null); }}><section role="dialog" aria-modal="true" aria-labelledby="user-editor-title" className="hd-surface max-h-[92dvh] w-full max-w-xl overflow-y-auto p-4 shadow-xl"><header className="mb-3 flex items-start justify-between"><div><h2 id="user-editor-title">{editing === 'new' ? 'Tambah Akun' : 'Edit Pengguna'}</h2><p className="mt-1 text-[11px] text-[#64748B]">Data akun, akses, dan penempatan.</p></div><button type="button" className="hd-icon-button" aria-label="Tutup" onClick={() => setEditing(null)}><X size={17} /></button></header><form onSubmit={saveUser} className="grid gap-3 sm:grid-cols-2"><label className="text-xs font-medium text-[#475569]">Nama<input required value={form.name} onChange={(event) => setForm((old) => ({ ...old, name: event.target.value }))} className="hd-input mt-1" /></label><label className="text-xs font-medium text-[#475569]">Username<input required minLength={3} maxLength={100} pattern="[A-Za-z0-9._-]+" value={form.username} onChange={(event) => setForm((old) => ({ ...old, username: event.target.value }))} className="hd-input mt-1" /></label><label className="text-xs font-medium text-[#475569]">Email<input required type="email" value={form.email} onChange={(event) => setForm((old) => ({ ...old, email: event.target.value }))} className="hd-input mt-1" /></label><label className="text-xs font-medium text-[#475569]">Password {editing !== 'new' && <span className="font-normal text-[#64748B]">(kosongkan bila tidak diubah)</span>}<input type="password" required={editing === 'new'} minLength={6} autoComplete="new-password" value={form.password} onChange={(event) => setForm((old) => ({ ...old, password: event.target.value }))} className="hd-input mt-1" /></label><label className="text-xs font-medium text-[#475569]">Role<select value={form.role} onChange={(event) => setForm((old) => ({ ...old, role: event.target.value, outletIds: [], defaultOutletId: null }))} className="hd-input mt-1"><RoleOptions /></select></label>{form.role === 'OUTLET' && <UserOutletPicker outlets={outlets} form={form} keptInactive={keptInactive} onToggle={(outletId) => setForm((old) => ({ ...old, ...toggleFormOutlet(old, outletId) }))} onDefault={(outletId) => setForm((old) => ({ ...old, defaultOutletId: outletId }))} />}<label className="flex items-center gap-2 text-xs font-medium text-[#475569]"><input type="checkbox" checked={form.isActive} onChange={(event) => setForm((old) => ({ ...old, isActive: event.target.checked }))} />Akun aktif</label>{feedback && <p role="alert" className="sm:col-span-2 text-xs text-rose-700">{feedback}</p>}<footer className="flex justify-end gap-2 border-t border-[#E2E8F0] pt-3 sm:col-span-2"><button type="button" onClick={() => setEditing(null)} className="hd-button hd-button--secondary">Batal</button><button type="submit" disabled={saving} className="hd-button hd-button--primary"><Save size={14} />{saving ? 'Menyimpan…' : 'Simpan'}</button></footer></form></section></div>}
   </div>;
 }
 
@@ -267,6 +288,25 @@ function RoleOptions() {
 
 function OutletOptions({ outlets }: { outlets: Outlet[] }) {
   return <><option value="" disabled>Pilih outlet</option>{outlets.map((outlet) => <option value={String(outlet.id)} key={outlet.id}>{outlet.name}</option>)}</>;
+}
+
+// Outlets of an Outlet account: tick any number of active outlets and mark one
+// as default (picked first on HD Request). None ticked: the account cannot order.
+function UserOutletPicker({ outlets, form, keptInactive, onToggle, onDefault }: { outlets: Outlet[]; form: UserForm; keptInactive: HeldOutlet[]; onToggle: (outletId: number) => void; onDefault: (outletId: number) => void }) {
+  return <fieldset className="sm:col-span-2 rounded-lg border border-[#E2E8F0] p-2.5">
+    <legend className="px-1 text-xs font-medium text-[#475569]">Outlet <span className="font-normal text-[#64748B]">({form.outletIds.length} dipilih)</span></legend>
+    {outlets.length ? <ul className="grid max-h-56 gap-1 overflow-y-auto sm:grid-cols-2">
+      {outlets.map((outlet) => {
+        const chosen = form.outletIds.includes(outlet.id);
+        return <li key={outlet.id} className={`flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs ${chosen ? 'bg-[#F8FAFC]' : ''}`}>
+          <label className="flex min-w-0 items-center gap-2 text-[#1E293B]"><input type="checkbox" checked={chosen} onChange={() => onToggle(outlet.id)} /><span className="truncate">{outlet.name}</span></label>
+          {chosen && <label className="flex shrink-0 items-center gap-1 text-[11px] text-[#64748B]"><input type="radio" name="default-outlet" checked={form.defaultOutletId === outlet.id} onChange={() => onDefault(outlet.id)} />Default</label>}
+        </li>;
+      })}
+    </ul> : <p className="text-[11px] text-[#64748B]">Belum ada outlet aktif.</p>}
+    {keptInactive.length > 0 && <p className="mt-2 text-[11px] text-[#64748B]">Tetap tersimpan, sedang nonaktif: {keptInactive.map((outlet) => outlet.name).join(', ')}.</p>}
+    {form.outletIds.length === 0 && <p className="mt-2 text-[11px] text-amber-700">Tanpa outlet aktif, akun ini tidak bisa mengajukan order.</p>}
+  </fieldset>;
 }
 
 type OutletDraft = { code: string; name: string; address: string; isActive: boolean };

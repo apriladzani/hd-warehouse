@@ -82,6 +82,8 @@ export const WarehouseDashboard: React.FC<{ currentUser: User }> = ({ currentUse
   const currentPeriod = financePeriods.find((period) => period.id === selectedPeriodId) || financePeriods.find((period) => period.id === 'running');
   const viewer = stats.viewer;
   const lockedOutletId = viewer?.lockedOutletId ?? null;
+  // An Outlet account with several outlets chooses among its own outlets only.
+  const pickableOutlets = viewer?.outletOnly ? outlets.filter((outlet) => (viewer.allowedOutletIds ?? []).includes(outlet.id)) : outlets;
   const outletIds = effectiveOutletIds(selectedOutlets, outlets);
   const activeFilterCount = Number(selectedItemIds.length > 0) + Number(selectedCategories.length > 0) + Number(outletIds.length > 0) + Number(selectedPeriodId !== 'running');
   const canReset = Boolean(activeFilterCount);
@@ -139,7 +141,7 @@ export const WarehouseDashboard: React.FC<{ currentUser: User }> = ({ currentUse
       </div>}
       <details className="relative"><summary className="flex h-[34px] cursor-pointer list-none items-center gap-2 rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-2.5 text-xs"><Package size={14} />{selectedItemIds.length ? `${selectedItemIds.length} barang` : `Barang (${(stats.itemList || []).length})`}<ChevronDown size={14} /></summary><div className="absolute z-20 mt-1 max-h-72 w-56 max-w-[calc(100vw-24px)] overflow-auto rounded-lg border border-[#E2E8F0] bg-white p-2 shadow-lg"><div className="mb-1 flex justify-between border-b pb-2 text-[11px]"><button type="button" onClick={() => updateItemIds((stats.itemList || []).map((item) => String(item.id)))} className="text-blue-700">Pilih Semua</button><button type="button" onClick={() => updateItemIds([])}>Reset</button></div>{(stats.itemList || []).map((item) => <label key={item.id} className="flex gap-2 p-1.5 text-xs"><input type="checkbox" checked={selectedItemIds.includes(String(item.id))} onChange={() => toggle(selectedItemIds, String(item.id), updateItemIds)} />{item.itemName}</label>)}</div></details>
       <details className="relative"><summary className="flex h-[34px] cursor-pointer list-none items-center gap-2 rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-2.5 text-xs"><Layers size={14} />{selectedCategories.length ? `${selectedCategories.length} kategori` : 'Kategori'}<ChevronDown size={14} /></summary><div className="absolute z-20 mt-1 w-52 rounded-lg border border-[#E2E8F0] bg-white p-2 shadow-lg">{CATEGORIES.map((category) => <label key={category.code} className="flex gap-2 p-1.5 text-xs"><input type="checkbox" checked={selectedCategories.includes(category.name)} onChange={() => toggle(selectedCategories, category.name, updateCategories)} />{category.name} ({category.code})</label>)}<button type="button" onClick={() => updateCategories([])} className="mt-1 border-t pt-2 text-[11px]">Hapus pilihan</button></div></details>
-      <OutletFilter outlets={outlets} selected={selectedOutlets} onChange={updateOutletIds} lockedOutletId={lockedOutletId} />
+      <OutletFilter outlets={pickableOutlets} selected={selectedOutlets} onChange={updateOutletIds} lockedOutletId={lockedOutletId} />
       <button type="button" onClick={reset} disabled={!canReset} className="hd-button hd-button--secondary !h-[34px]" title="Reset filter"><RotateCcw size={14} />Reset</button>
       {!!activeFilterCount && <span className="text-[11px] text-[#64748B]">{activeFilterCount} Filter Aktif</span>}
     </div>
