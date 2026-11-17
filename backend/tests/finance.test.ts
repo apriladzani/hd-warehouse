@@ -165,7 +165,10 @@ test('Warehouse new ledger reads only posted entries and costs stay unit-owned',
     return [];
   } }).read(filter);
   assert.equal(result.facts[0].metric, 'DA01'); assert.deepEqual(result.facts[0].unit, outlet);
-  assert.equal(result.coverage.find(c => c.unit.type === 'OUTLET' && c.metric === 'DA01')?.status, 'Missing');
+  // Ledger costs are complete by definition: posted is the cost, nothing posted is Rp0.
+  assert.equal(result.coverage.find(c => c.unit.type === 'OUTLET' && c.metric === 'DA01')?.status, 'Available');
+  assert.equal(result.coverage.find(c => c.unit.type === 'OUTLET' && c.metric === 'SI')?.status, undefined, 'outlet SI belongs to HD Outlet');
+  assert.equal(result.coverage.find(c => c.unit.type === 'WAREHOUSE' && c.metric === 'SH')?.status, 'Missing', 'SH and OI have no input yet');
 });
 test('Warehouse schema/DB failure produces Error, never zero', async () => {
   const result = await new WarehouseFinanceDataSource({ select: async () => { throw new Error('DB unavailable'); } }).read(filter);
@@ -219,4 +222,40 @@ test('prepared router checks access and filters before source reads, without soc
   const report = await requestRoute('WAREHOUSE', true, '/report', { ...filter, mode: 'WAREHOUSE', outletIds: undefined });
   assert.equal(report.status, 200); assert.equal(report.reads, 1);
   const manifest = await requestRoute('FINANCE', false, '/accounts'); assert.equal(manifest.body.persistenceEnabled, false); assert.equal(manifest.reads, 0);
+});
+
+// Ledger costs (LC..TX, DA) entered by Finance, while HD Outlet is not live.
+const outletDown = (): SourceResult => ({ source: 'OUTLET', units: [], facts: [], coverage: [], distributions: [], issues: [{ status: 'Missing', reason: 'HD Outlet live integration disabled' }], fetchedAt: '' });
+function ledgerOnly(units: Unit[], facts: Fact[] = []): SourceResult {
+  const result = source('WAREHOUSE', units, facts);
+  for (const c of result.coverage) if (!['LC', 'UC', 'MC', 'TC', 'AC', 'LP', 'TX', 'DA01', 'DA02'].includes(c.metric)) { c.status = 'Missing'; c.reason = 'no source yet'; }
+  return result;
+}
+test('HD Outlet down blocks only outlet sales/COGS: a posted outlet salary still shows', () => {
+  const result = aggregator.aggregate({ ...filter, mode: 'OUTLET' }, [ledgerOnly([warehouse, outlet], [fact('LC', '3500000', outlet), fact('LP', '2000000', outlet)]), outletDown()]);
+  const unit = result.byUnit.find(u => u.unit.type === 'OUTLET')!;
+  assert.deepEqual([unit.metrics.LC.status, unit.metrics.LC.amount], ['Available', '3500000.000000']);
+  assert.equal(unit.metrics.DC.amount, '5500000.000000');
+  assert.equal(unit.metrics.SI.status, 'Missing'); assert.match(unit.metrics.SI.reasons.join(), /HD Outlet/);
+  assert.equal(unit.metrics.EBITDA.amount, null, 'EBITDA needs Commercial Income');
+  assert.equal(result.metrics.DC.amount, '5500000.000000');
+  assert.equal(result.metrics.SI.status, 'Missing');
+});
+test('nothing posted is Rp0, and the report names each unit and cost still without input', () => {
+  const second: Unit = { type: 'OUTLET', outletId: 2 };
+  const result = aggregator.aggregate({ ...filter, mode: 'OUTLET' }, [ledgerOnly([warehouse, outlet, second], [fact('LC', '100', outlet)]), outletDown()]);
+  const of = (u: Unit) => result.byUnit.find(r => r.unit.type === 'OUTLET' && u.type === 'OUTLET' && r.unit.outletId === u.outletId)!;
+  assert.deepEqual([of(second).metrics.LC.status, of(second).metrics.LC.amount], ['Available', '0.000000']);
+  assert.deepEqual(result.notices.find(n => n.unit.type === 'OUTLET' && n.unit.outletId === 2)?.metrics, ['LC', 'UC', 'MC', 'TC', 'AC', 'LP', 'TX', 'DA01', 'DA02']);
+  assert.ok(!result.notices.find(n => n.unit.type === 'OUTLET' && n.unit.outletId === 1)?.metrics.includes('LC'), 'outlet 1 entered its Labor Cost');
+});
+test('Keseluruhan: ledger cost totals add up; sales and COGS still wait for elimination', () => {
+  const result = aggregator.aggregate(filter, [ledgerOnly([warehouse, outlet], [fact('LC', '100', warehouse, 'EXTERNAL', 'lc-w'), fact('LC', '50', outlet, 'EXTERNAL', 'lc-o'), fact('DA01', '7', warehouse)]), outletDown()]);
+  assert.equal(result.metrics.LC.amount, '150.000000'); assert.equal(result.metrics.DA.amount, '7.000000');
+  assert.equal(result.metrics.SI.amount, null); assert.equal(result.metrics.CI.amount, null);
+});
+test('a fact error anywhere still blocks every number', () => {
+  const broken = ledgerOnly([warehouse, outlet], [fact('LC', '100', outlet), { ...fact('LC', '1', outlet), id: 'LC', amount: '2' }]);
+  const result = aggregator.aggregate({ ...filter, mode: 'OUTLET' }, [broken, outletDown()]);
+  assert.equal(result.metrics.LC.status, 'Error'); assert.equal(result.metrics.LC.amount, null);
 });

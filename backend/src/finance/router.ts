@@ -8,6 +8,7 @@ export type FinancePrincipal = { role: string; warehouseGateVerified: boolean };
 export type FinanceRouterDependencies = {
   warehouse: FinanceDataSource; outlet: FinanceDataSource;
   sourceContext?: 'test-fixture' | 'configured-source';
+  persistenceEnabled?: boolean;
   authenticateReadOnly: (request: Request) => Promise<FinancePrincipal | null>;
 };
 // Mounted through mountFinanceReadOnly. Authentication never uses the legacy
@@ -23,7 +24,7 @@ export function createFinanceRouter(deps: FinanceRouterDependencies) {
       next();
     } catch (error) { if (error instanceof FinanceReadUnavailable) logFinanceFailure(error); res.status(error instanceof FinanceReadUnavailable ? 503 : 403).json({ error: error instanceof FinanceReadUnavailable ? 'Finance read-only authentication unavailable' : 'Finance access denied' }); }
   });
-  router.get('/accounts', (_req, res) => res.json({ accounts: Object.entries(ACCOUNTS).map(([code, [name, group]]) => ({ code, name, group })), persistenceEnabled: false }));
+  router.get('/accounts', (_req, res) => res.json({ accounts: Object.entries(ACCOUNTS).map(([code, [name, group]]) => ({ code, name, group })), persistenceEnabled: deps.persistenceEnabled ?? false }));
   router.get('/report', async (req, res) => {
     let filter;
     try { filter = parseFilter(req.query); } catch { res.status(400).json({ error: 'Invalid Finance filters' }); return; }

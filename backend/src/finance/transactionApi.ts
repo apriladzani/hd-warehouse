@@ -10,15 +10,19 @@ export interface TransactionRepository {
   // validate outlet/account existence and commit record + append-only audit.
   change(id: string, expectedVersion: number | null, plan: (before: TransactionRecord | null) => { record: TransactionRecord; audit: AuditPlan }): Promise<TransactionRecord>;
 }
-// NOT mounted in production. No SQL writer or runtime mock fallback exists.
-export function createTransactionRouter(repository: TransactionRepository, authenticate: (req: Request) => Promise<{ id: number; role: string } | null>) {
+// Mounted at /api/finance/v2/transactions (mount.ts) with the SQL repository
+// in transactionRepository.ts. Writes need the FINANCE role and a same-origin
+// request: the request's own origin, or one listed in trustedOrigins (the app's
+// public URL, as seen by the browser behind a TLS-terminating proxy).
+export function createTransactionRouter(repository: TransactionRepository, authenticate: (req: Request) => Promise<{ id: number; role: string } | null>, trustedOrigins: string[] = []) {
   const router = Router(); router.use(async (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
       const actor = await authenticate(req);
       if (!actor) { res.status(401).json({ error: 'Login required' }); return; }
       if (!canManageFinance(actor.role)) { res.status(403).json({ error: 'Finance role required' }); return; }
-      if (req.method !== 'GET' && req.header('Origin') !== `${req.protocol}://${req.get('host')}`) { res.status(403).json({ error: 'Same-origin request required' }); return; }
+      const origin = req.header('Origin');
+      if (req.method !== 'GET' && (!origin || (origin !== `${req.protocol}://${req.get('host')}` && !trustedOrigins.includes(origin)))) { res.status(403).json({ error: 'Same-origin request required' }); return; }
       res.locals.actor = actor; next();
     } catch { res.status(503).json({ error: 'Transaction authentication unavailable' }); }
   });

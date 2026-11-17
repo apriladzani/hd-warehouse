@@ -1,5 +1,7 @@
 export const BASE_METRICS = ['SI', 'OI', 'SH', 'CRW', 'CSM', 'CPM', 'LC', 'UC', 'MC', 'TC', 'AC', 'LP', 'TX', 'DA01', 'DA02'] as const;
 export type BaseMetric = typeof BASE_METRICS[number];
+// Costs entered by Finance in the ledger (Distribution Cost and DA accounts).
+export const LEDGER_INPUT: readonly BaseMetric[] = ['LC', 'UC', 'MC', 'TC', 'AC', 'LP', 'TX', 'DA01', 'DA02'];
 export type Metric = BaseMetric | 'CM' | 'COGS' | 'CI' | 'DC' | 'DA' | 'EBITDA' | 'EBIT';
 export type DataStatus = 'Available' | 'Missing' | 'Unmapped' | 'Error';
 export type Source = 'WAREHOUSE' | 'OUTLET';

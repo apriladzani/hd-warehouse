@@ -255,3 +255,15 @@ test('missing Finance config reproduces exact 503 body and safe diagnostic witho
     assert.ok(!JSON.stringify(lines).includes(password));
   } finally { console.error = previous; await db.close(); }
 });
+
+test('no FINANCE_DB_* at all: Finance reads with the operational DB_* account; any FINANCE_DB_* keeps it dedicated', async () => {
+  const { financeConnectionConfig } = await import('../src/finance/readOnlyConnection.ts');
+  const operational = { DB_HOST: 'db.invalid', DB_PORT: '3307', DB_NAME: 'ops', DB_USER: 'ops_user', DB_PASSWORD: 'secret' };
+  const fallback = financeConnectionConfig(operational);
+  assert.equal(fallback.dedicated, false);
+  assert.deepEqual([fallback.options.host, fallback.options.port, fallback.options.database, fallback.options.user], ['db.invalid', 3307, 'ops', 'ops_user']);
+  assert.equal(fallback.options.multipleStatements, false);
+  assert.equal(financeConnectionConfig({ ...operational, FINANCE_DB_HOST: 'f', FINANCE_DB_NAME: 'f', FINANCE_DB_USER: 'f', FINANCE_DB_PASSWORD: 'f' }).dedicated, true);
+  assert.throws(() => financeConnectionConfig({ ...operational, FINANCE_DB_USER: 'half-configured' }), FinanceReadUnavailable, 'a partial set is an error, not a silent fallback');
+  assert.throws(() => financeConnectionConfig({}), FinanceReadUnavailable);
+});

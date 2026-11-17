@@ -98,6 +98,7 @@ import { createFinanceScope, outletView } from './finance/outletScope.ts';
 import type { ItemCategory } from './db/repository.ts';
 import { canAccessDashboard, canReadFinanceDashboard } from './dashboardAccess.ts';
 import { mountFinanceReadOnly } from './finance/mount.ts';
+import { createFinanceTransactionRepository } from './finance/transactionRepository.ts';
 import { chooseRequestOutlet, requestOutletOptions } from './finance/requestOutlet.ts';
 import { LOGO_MAX_BYTES, PRINT_TEMPLATE_KEY, PrintTemplateError, diffTemplates, resolveDeliveryOrderTemplate, validateDeliveryOrderTemplate } from './printTemplate.ts';
 
@@ -124,7 +125,7 @@ app.use(cors());
 app.use(express.json());
 app.set('trust proxy', 1);
 const operationalSessions = createOperationalSessions(mysqlSelectExecutor(operationalPool));
-const financeReadAuth = mountFinanceReadOnly(app, undefined, operationalSessions);
+const financeReadAuth = mountFinanceReadOnly(app, undefined, operationalSessions, createFinanceTransactionRepository());
 
 const getAdminUser = createAdminSessionAccess(operationalSessions.identity);
 

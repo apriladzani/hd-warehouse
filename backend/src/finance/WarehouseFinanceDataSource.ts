@@ -1,4 +1,4 @@
-import { BASE_METRICS, unavailable, type FinanceDataSource, type Filter, type SourceResult, type Unit, type BaseMetric } from './domain.ts';
+import { BASE_METRICS, LEDGER_INPUT, unavailable, unitKey, type FinanceDataSource, type Filter, type SourceResult, type Unit, type BaseMetric } from './domain.ts';
 import { quantityCost, decimal } from './decimal.ts';
 import { ACCOUNTS, date } from './validation.ts';
 // The caller supplies a SELECT-only connection. No pool creation or repository
@@ -62,6 +62,15 @@ export class WarehouseFinanceDataSource implements FinanceDataSource {
         result.distributions.push({ id: lineId, outletId: row.outletId == null ? null : id(row.outletId), reference: text(row, 'reference'), amount: quantityCost(text(row, 'quantity'), text(row, 'price')), cost: row.unitCost == null ? null : quantityCost(text(row, 'quantity'), text(row, 'unitCost')) });
       }
       const tables = await this.db.select('SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (?, ?)', ['finance_transactions', 'finance_accounts']);
+      // Costs Finance types in (LC..TX, DA01/DA02) are complete by definition:
+      // what is posted is the cost, nothing posted is Rp0. The report lists the
+      // units that have no input per metric (notices), so a forgotten entry
+      // shows instead of hiding as a silent zero. Before the first entry the
+      // ledger tables may not exist yet: that is also "nothing posted".
+      const ledgerReady = (unit: Unit) => {
+        for (const c of result.coverage) if (unitKey(c.unit) === unitKey(unit) && LEDGER_INPUT.includes(c.metric)) { c.status = 'Available'; c.reason = ''; }
+      };
+      for (const u of result.units) ledgerReady(u);
       if (tables.length === 2) {
         const unitClause = filter.outletIds ? ` AND (t.unit_type = 'WAREHOUSE' OR t.outlet_id IN (${filter.outletIds.map(() => '?').join(',')}))` : '';
         const transactions = await this.db.select(`SELECT CAST(t.id AS CHAR) AS id, a.code AS accountCode, t.unit_type AS unitType, t.outlet_id AS outletId,
@@ -77,6 +86,7 @@ export class WarehouseFinanceDataSource implements FinanceDataSource {
           if (!result.units.some(u => JSON.stringify(u) === JSON.stringify(entryUnit))) {
             result.units.push(entryUnit);
             result.coverage.push(...BASE_METRICS.filter(m => !['SI', 'CRW', 'CSM', 'CPM'].includes(m)).map(metric => ({ unit: entryUnit, metric, status: 'Missing' as const, reason: 'Finance ledger period completeness has not been certified' })));
+            ledgerReady(entryUnit);
           }
           result.facts.push({ source: 'WAREHOUSE', id: text(row, 'id'), metric: ACCOUNTS[code as keyof typeof ACCOUNTS][1] as BaseMetric, amount, date: date(row.date), unit: entryUnit, nature: row.nature as 'INTERNAL' | 'EXTERNAL', reference: text(row, 'reference') });
         }

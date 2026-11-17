@@ -54,7 +54,10 @@ export function assertSelectOnlyGrants(rows: unknown) {
 }
 
 type ReadConnection = Pick<PoolConnection, 'query' | 'execute' | 'release'>;
-export function guardedFinanceExecutor(acquire: () => Promise<ReadConnection>): SelectExecutor {
+// checkGrants=false only for the operational fallback below: that account has
+// write grants, so SHOW GRANTS would always refuse it. The SQL guard and a
+// READ ONLY session (set by the caller on acquire) still apply.
+export function guardedFinanceExecutor(acquire: () => Promise<ReadConnection>, checkGrants = true): SelectExecutor {
   return {
     async select(sql, parameters) {
       // Validate before even acquiring a connection or reading metadata.
@@ -63,10 +66,12 @@ export function guardedFinanceExecutor(acquire: () => Promise<ReadConnection>): 
       const executor = mysqlSelectExecutor({ execute: async (statement, values) => {
         stage = 'connection';
         connection = await acquire();
-        stage = 'grants_metadata';
-        const [grants] = await connection.query('SHOW GRANTS FOR CURRENT_USER');
-        stage = 'grants_policy';
-        assertSelectOnlyGrants(grants);
+        if (checkGrants) {
+          stage = 'grants_metadata';
+          const [grants] = await connection.query('SHOW GRANTS FOR CURRENT_USER');
+          stage = 'grants_policy';
+          assertSelectOnlyGrants(grants);
+        }
         stage = 'query';
         return connection.execute({ sql: statement, timeout: 5000 }, values);
       } });
@@ -77,17 +82,48 @@ export function guardedFinanceExecutor(acquire: () => Promise<ReadConnection>): 
   };
 }
 
+const DEDICATED_KEYS = ['FINANCE_DB_HOST', 'FINANCE_DB_NAME', 'FINANCE_DB_USER', 'FINANCE_DB_PASSWORD'] as const;
+// Which credentials Finance reads with. Dedicated FINANCE_DB_* (SELECT-only
+// grants, verified per query) when any of them is set; a partial set is a
+// configuration error, never a silent fallback. Only when NONE is set and the
+// operational DB_* are present does Finance read with the operational account,
+// in a READ ONLY session behind the same SELECT-only SQL guard.
+export function financeConnectionConfig(env: NodeJS.ProcessEnv) {
+  if (DEDICATED_KEYS.some(key => env[key]) || !env.DB_HOST || !env.DB_NAME || !env.DB_USER) return { options: financePoolOptions(env), dedicated: true };
+  return { options: financePoolOptions({ FINANCE_DB_HOST: env.DB_HOST, FINANCE_DB_PORT: env.DB_PORT, FINANCE_DB_NAME: env.DB_NAME, FINANCE_DB_USER: env.DB_USER, FINANCE_DB_PASSWORD: env.DB_PASSWORD ?? '' }), dedicated: false };
+}
+
 // Lazy pool: importing/mounting this module does not connect or execute SQL.
 export function createFinanceReadDatabase(env?: NodeJS.ProcessEnv) {
   let pool: Pool | undefined;
-  const executor = guardedFinanceExecutor(async () => {
-    if (!pool) {
-      let config: NodeJS.ProcessEnv;
-      try { config = env ?? loadFinanceEnvironment(); }
-      catch (error) { throw financeFailure(error, 'environment_file'); }
-      pool = mysql.createPool(financePoolOptions(config));
+  let dedicated = true;
+  const readOnly = new WeakSet<object>();
+  // Resolves credentials and creates the pool; connects nobody.
+  const resolve = () => {
+    if (pool) return;
+    let config: NodeJS.ProcessEnv;
+    try { config = env ?? loadFinanceEnvironment(); }
+    catch (error) { throw financeFailure(error, 'environment_file'); }
+    const resolved = financeConnectionConfig(config);
+    dedicated = resolved.dedicated;
+    pool = mysql.createPool(resolved.options);
+  };
+  const acquire = async () => {
+    resolve();
+    const connection = await pool!.getConnection();
+    if (!dedicated && !readOnly.has(connection.connection)) {
+      try { await connection.query('SET SESSION TRANSACTION READ ONLY'); }
+      catch (error) { connection.release(); throw error; }
+      readOnly.add(connection.connection);
     }
-    return pool.getConnection();
-  });
+    return connection;
+  };
+  const checked = guardedFinanceExecutor(acquire, true), unchecked = guardedFinanceExecutor(acquire, false);
+  const executor: SelectExecutor = {
+    async select(sql, parameters) {
+      try { resolve(); } catch (error) { throw financeFailure(error, 'configuration'); }
+      return (dedicated ? checked : unchecked).select(sql, parameters);
+    },
+  };
   return { executor, close: async () => { if (pool) { await pool.end(); pool = undefined; } } };
 }

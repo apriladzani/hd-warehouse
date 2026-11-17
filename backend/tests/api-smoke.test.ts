@@ -1179,3 +1179,65 @@ test('Multi-outlet: the outlet report covers every outlet the account holds, sti
     assert.equal((await outlet.call('GET', '/api/dashboard/finance-stats?outletIds=3')).status, 403);
   });
 });
+
+// Finance ledger input: Labor Cost, Rent... per Warehouse or outlet.
+async function financeClient(connection: any, base: string) {
+  await connection.query("INSERT INTO users (id, name, username, email, password, role, is_active) VALUES (9, 'Finance Smoke', 'smoke-finance', 'finance@smoke.test', 'finance-pass', 'FINANCE', 1)");
+  const finance = client(base);
+  assert.equal((await finance.call('POST', '/api/auth/login', { email: 'finance@smoke.test', password: 'finance-pass' })).status, 200);
+  return finance;
+}
+// Writes need the page's Origin, like a browser sends it.
+const ledgerPost = (who: ReturnType<typeof client>, base: string, path: string, body: unknown, origin = base) => fetch(`${base}/api/finance/v2/transactions${path}`, {
+  method: 'POST', body: JSON.stringify(body),
+  headers: { 'content-type': 'application/json', origin, cookie: [...who.cookies].map(([k, v]) => `${k}=${v}`).join('; ') },
+}).then(async (r) => ({ status: r.status, body: await r.json() }));
+const salary = (key: string, extra: Record<string, unknown> = {}) => ({
+  date: todayJakarta(), unit: { type: 'OUTLET', outletId: 1 }, accountCode: 'LC01', amount: '3500000', notes: 'Gaji November',
+  reference: 'SLIP-11', status: 'draft', nature: 'EXTERNAL', idempotencyKey: key, ...extra,
+});
+const period = () => `mode=OUTLET&startDate=${todayJakarta().slice(0, 8)}01&endDate=${todayJakarta()}`;
+
+test('Finance ledger: a Labor Cost is saved as draft, posted, voided, each change versioned and audited', async () => {
+  await withApi(async ({ connection, base }) => {
+    const finance = await financeClient(connection, base);
+    const created = await ledgerPost(finance, base, '', salary('smoke-salary-key-0001'));
+    assert.equal(created.status, 201);
+    const row = created.body.transaction;
+    assert.deepEqual([row.status, row.version, row.amount, row.unit], ['draft', 1, '3500000.000000', { type: 'OUTLET', outletId: 1 }]);
+
+    const listed = await finance.call('GET', `/api/finance/v2/transactions?${period()}`);
+    assert.equal(listed.status, 200);
+    assert.deepEqual(listed.body.transactions.map((t: any) => [t.id, t.status]), [[row.id, 'draft']], 'read back from the database');
+
+    assert.equal((await ledgerPost(finance, base, `/${row.id}/post`, { version: 1, reason: 'Disetujui' })).status, 200);
+    assert.equal((await ledgerPost(finance, base, `/${row.id}/post`, { version: 1, reason: 'lagi' })).status, 409, 'stale version');
+    assert.equal((await ledgerPost(finance, base, `/${row.id}/void`, { version: 2, reason: '' })).status, 409, 'void needs a reason');
+    assert.equal((await ledgerPost(finance, base, `/${row.id}/void`, { version: 2, reason: 'Salah outlet' })).status, 200);
+
+    const [[stored]] = await connection.query('SELECT status, version, amount FROM finance_transactions WHERE id = ?', [row.id]);
+    assert.deepEqual([stored.status, stored.version, String(stored.amount)], ['void', 3, '3500000.000000']);
+    const [audits] = await connection.query('SELECT action, actor_id, reason FROM finance_transaction_audits WHERE transaction_id = ? ORDER BY id', [row.id]);
+    assert.deepEqual(audits.map((a: any) => [a.action, a.actor_id, a.reason]), [['CREATE', 9, 'Create expense draft'], ['POST', 9, 'Disetujui'], ['VOID', 9, 'Salah outlet']]);
+  });
+});
+
+test('Finance ledger: only Finance writes, same origin only, valid outlet, no duplicate submit', async () => {
+  await withApi(async ({ warehouse, outlet, anonymous, connection, base }) => {
+    const finance = await financeClient(connection, base);
+    assert.equal((await ledgerPost(anonymous, base, '', salary('smoke-salary-key-0002'))).status, 401);
+    for (const other of [warehouse, outlet]) assert.equal((await ledgerPost(other, base, '', salary('smoke-salary-key-0002'))).status, 403);
+    assert.equal((await ledgerPost(finance, base, '', salary('smoke-salary-key-0002'), 'https://evil.example')).status, 403);
+    assert.equal((await ledgerPost(finance, base, '', salary('smoke-salary-key-0002', { unit: { type: 'OUTLET', outletId: 99 } }))).status, 400, 'unknown outlet');
+    await connection.query("INSERT INTO outlets (id, outlet_code, outlet_name, is_active) VALUES (5, 'closed', 'Tutup', 0)");
+    assert.equal((await ledgerPost(finance, base, '', salary('smoke-salary-key-0002', { unit: { type: 'OUTLET', outletId: 5 } }))).status, 400, 'inactive outlet');
+    assert.equal((await ledgerPost(finance, base, '', salary('smoke-salary-key-0002', { amount: '-5' }))).status, 400);
+    assert.equal((await ledgerPost(finance, base, '', salary('smoke-salary-key-0002'))).status, 201);
+    assert.equal((await ledgerPost(finance, base, '', salary('smoke-salary-key-0002'))).status, 400, 'a double click is not a second salary');
+    const warehouseRent = await ledgerPost(finance, base, '', salary('smoke-rent-key-000001', { unit: { type: 'WAREHOUSE' }, accountCode: 'LP01' }));
+    assert.equal(warehouseRent.status, 201);
+    const [[count]] = await connection.query('SELECT COUNT(*) AS n FROM finance_transactions');
+    assert.equal(Number(count.n), 2);
+    assert.equal((await finance.call('GET', '/api/finance/v2/accounts')).body.persistenceEnabled, true);
+  });
+});

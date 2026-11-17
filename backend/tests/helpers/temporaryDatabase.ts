@@ -2,6 +2,7 @@ import { mock } from 'node:test';
 import { createPool } from '../../src/db/index.ts';
 import { MILLISECOND_COLUMN_DEFINITION, MILLISECOND_TIMESTAMP_TABLES } from '../../src/db/timestampPrecision.ts';
 import { PASSWORD_RESET_COLUMNS, PURCHASE_CANCELLATION_COLUMNS, REQUEST_CANCELLATION_COLUMNS, USER_OUTLET_COLUMNS } from '../../src/db/repository.ts';
+import { FINANCE_ACCOUNT_COLUMNS, FINANCE_TRANSACTION_AUDIT_COLUMNS, FINANCE_TRANSACTION_COLUMNS, seedFinanceAccounts } from '../../src/finance/transactionRepository.ts';
 
 // Runs a test against the configured MySQL server without touching its data:
 // every table is shadowed by a connection-local TEMPORARY copy that disappears
@@ -32,6 +33,10 @@ export async function withTemporaryDatabase(run: (connection: any) => Promise<vo
     await connection.query(`CREATE TEMPORARY TABLE request_cancellations (${REQUEST_CANCELLATION_COLUMNS}) ENGINE=InnoDB`);
     await connection.query(`CREATE TEMPORARY TABLE purchase_cancellations (${PURCHASE_CANCELLATION_COLUMNS}) ENGINE=InnoDB`);
     await connection.query(`CREATE TEMPORARY TABLE user_outlets (${USER_OUTLET_COLUMNS}) ENGINE=InnoDB`);
+    await connection.query(`CREATE TEMPORARY TABLE finance_accounts (${FINANCE_ACCOUNT_COLUMNS}) ENGINE=InnoDB`);
+    await connection.query(`CREATE TEMPORARY TABLE finance_transactions (${FINANCE_TRANSACTION_COLUMNS}) ENGINE=InnoDB`);
+    await connection.query(`CREATE TEMPORARY TABLE finance_transaction_audits (${FINANCE_TRANSACTION_AUDIT_COLUMNS}) ENGINE=InnoDB`);
+    await seedFinanceAccounts(connection); // ensureFinanceTransactionSchema runs once per process
     await connection.query('ALTER TABLE items MODIFY avg_purchase_price DECIMAL(18,6) NOT NULL DEFAULT 0');
     await connection.query('ALTER TABLE stock_movements MODIFY movement_type VARCHAR(40) NOT NULL');
     // Independent of whether the server itself has had db:migrate-timestamps run.
