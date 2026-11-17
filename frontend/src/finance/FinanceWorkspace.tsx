@@ -52,10 +52,20 @@ export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User;
   const entries = (classes: ('DC' | 'DA' | 'CI')[]) => canEdit
     ? <EntryManager key={classes.join()} classes={classes} accounts={accounts.data} outlets={outlets} filter={filter} canEdit={canEdit} onChanged={reload} />
     : <p className="fn-section-note">Input dan daftar entri hanya untuk role Finance. Klik komponen di atas untuk melihat rincian per kode dan per entri.</p>;
+  // Input panels for each page. Finance sees them right under the filter card;
+  // other roles see the note at the bottom of the page.
+  const INPUTS: Partial<Record<typeof page, [string, ('DC' | 'DA' | 'CI')[]]>> = {
+    'commercial-income': ['Other Income (input Finance)', ['CI']],
+    'distribution-cost': ['Entri biaya', ['DC']],
+    'depreciation-amortization': ['Entri DA', ['DA']],
+  };
+  const input = INPUTS[page];
+  const inputPanel = input && <Panel title={input[0]}>{entries(input[1])}</Panel>;
 
   return <div className="fn-workspace">
     <header className="fn-heading"><div><p className="fn-eyebrow">FINANCE · HD WAREHOUSE</p><h1>{title}</h1><p className="fn-muted">Sumber: input Finance, transaksi Warehouse, dan laporan harian HD Outlet. Dihitung di backend per outlet dan periode.</p>{report && <HdOutletState report={report} />}</div><Button onClick={reload} disabled={remote.loading}><RefreshCw size={14} />Muat ulang</Button></header>
     {page !== 'settings' && <Filters filter={filter} onChange={setFilter} outlets={outlets} />}
+    {canEdit && inputPanel}
     {page !== 'settings' && <ApiState loading={remote.loading} error={remote.error} reload={reload} />}
     {accounts.error && <p role="alert">Master kode biaya: {accounts.error}</p>}
     {report?.sourceContext === 'test-fixture' && <p className="fn-notice" role="status">Sumber Finance saat ini adalah database fixture pengujian. Data ini bukan data operasional asli.</p>}
@@ -70,18 +80,18 @@ export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User;
     {report && page === 'commercial-income' && <>
       <Panel title="Commercial Income"><MetricTable keys={COMMERCIAL} report={report} onDetail={key => open(key)} /><EliminationNote report={report} /><p className="fn-section-note">Outlet: SI dan SH dari laporan harian HD Outlet; COGS = barang yang di-approve Warehouse untuk outlet (qty disetujui × harga di request). Warehouse: SI = penjualan ke outlet (qty disetujui × harga); COGS = HPP saat approve. Request yang dibatalkan tidak dihitung. OI dari input Finance.</p></Panel>
       <Panel title="Per unit"><UnitTable report={report} keys={['SI', 'OI', 'SH', 'COGS', 'CI']} onDetail={open} /></Panel>
-      <Panel title="Other Income (input Finance)">{entries(['CI'])}</Panel>
+      {!canEdit && inputPanel}
     </>}
     {report && page === 'distribution-cost' && <>
       <Panel title="Distribution Cost"><MetricTable report={report} keys={[...DC, 'DC']} onDetail={key => open(key)} /></Panel>
       <MissingInputs report={report} keys={DC} />
       <Panel title="Per unit"><UnitTable report={report} keys={[...DC, 'DC']} onDetail={open} /></Panel>
-      <Panel title="Entri biaya">{entries(['DC'])}</Panel>
+      {!canEdit && inputPanel}
     </>}
     {report && page === 'depreciation-amortization' && <>
       <Panel title="Depreciation & Amortization"><MetricTable report={report} keys={[...DA, 'DA']} onDetail={key => open(key)} /><p className="fn-section-note">DA tidak termasuk Distribution Cost; DA mengurangi EBIT, tidak EBITDA.</p></Panel>
       <MissingInputs report={report} keys={DA} />
-      <Panel title="Entri DA">{entries(['DA'])}</Panel>
+      {!canEdit && inputPanel}
     </>}
     {report && page === 'profit-loss' && <>
       <Panel title={`Profit & Loss · ${modeLabel(filter.mode)}`}><MetricTable keys={PROFIT_LOSS} report={report} onDetail={key => open(key)} /><EliminationNote report={report} /></Panel>

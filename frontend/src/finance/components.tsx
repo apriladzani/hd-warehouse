@@ -65,10 +65,11 @@ export function MetricTable({ keys, report, onDetail }: { keys: Metric[]; report
 }
 export function UnitTable({ report, keys = ['SI', 'CI', 'DC', 'EBITDA', 'EBIT'], onDetail }: { report: Report | null; keys?: Metric[]; onDetail: (key: Metric, unit: Unit) => void }) {
   if (!report?.byUnit.length) return <StateMessage>Tidak ada unit pada filter ini.</StateMessage>;
-  return <div className="fn-table-wrap"><table className="fn-table"><thead><tr><th>Unit</th>{keys.map(key => <th key={key} className="fn-right">{key}</th>)}</tr></thead><tbody>{report.byUnit.map(row => {
-    const name = unitLabel(row.unit, report.outlets);
-    return <tr key={name}><th scope="row">{name}</th>{keys.map(key => <td className="fn-right" key={key}><button className="fn-value-link" onClick={() => onDetail(key, row.unit)} aria-label={`${key} ${name}`}><span>{valueText(row.metrics[key])}</span>{row.metrics[key].status !== 'Available' && <Status value={row.metrics[key].status} />}</button></td>)}</tr>;
-  })}</tbody></table></div>;
+  // Codes run down the rows, units run across the columns.
+  const units = report.byUnit.map(row => ({ row, name: unitLabel(row.unit, report.outlets) }));
+  return <div className="fn-table-wrap"><table className="fn-table fn-pivot"><thead><tr><th>Kode</th>{units.map(({ name }) => <th key={name} className="fn-right">{name}</th>)}</tr></thead><tbody>{keys.map(key =>
+    <tr key={key} className={TOTAL_ROWS.includes(key) ? 'fn-total-row' : ''}><th scope="row" title={LABELS[key]}>{key} <span className="fn-formula">{LABELS[key]}</span></th>{units.map(({ row, name }) => <td className="fn-right" key={name}><button className="fn-value-link" onClick={() => onDetail(key, row.unit)} aria-label={`${key} ${name}`}><span>{valueText(row.metrics[key])}</span>{row.metrics[key].status !== 'Available' && <Status value={row.metrics[key].status} />}</button></td>)}</tr>
+  )}</tbody></table></div>;
 }
 
 // Units and costs without any input in the period: counted as Rp0, listed so a
