@@ -108,6 +108,16 @@ test('entry list: Finance can add, others read only; inactive codes and non-manu
   assert.ok(!viewer.includes('Input biaya')); assert.ok(viewer.includes('hanya untuk role Finance'));
 });
 
+test('entry list: folded by default with a toggle, while "Input biaya" stays reachable', () => {
+  const gateway: EntryGateway = { list: async () => [], saveBatch: async () => {}, update: async () => {}, remove: async () => {}, upload: async () => 'x' };
+  const html = renderToStaticMarkup(<EntryManager classes={['DC']} accounts={accounts} outlets={[]} filter={filter} canEdit gateway={gateway} />);
+  assert.match(html, /<button[^>]*class="fn-entry-toggle"[^>]*aria-expanded="false"[^>]*aria-controls="fn-entry-list-DC"/);
+  assert.match(html, /<div id="fn-entry-list-DC" hidden="">/);
+  assert.ok(html.includes('Tampilkan daftar entri'));
+  const toolbar = html.slice(html.indexOf('fn-entry-toolbar'), html.indexOf('id="fn-entry-list-DC"'));
+  assert.ok(toolbar.includes('Input biaya'), 'input button is outside the folded list');
+});
+
 test('chart of accounts: add a code to a classification, synced codes cannot be switched off', () => {
   const html = renderToStaticMarkup(<AccountSettings accounts={accounts} canEdit onChanged={() => {}} />);
   assert.ok(html.includes('Tambah kode')); assert.ok(html.includes('UC01')); assert.ok(html.includes('Nonaktif · aktifkan'), 'UC02 inactive, can be re-activated');

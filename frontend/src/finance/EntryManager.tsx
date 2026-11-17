@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Paperclip, Plus, Trash2, Pencil } from 'lucide-react';
+import { ChevronDown, Paperclip, Plus, Trash2, Pencil } from 'lucide-react';
 import type { TransactionRecord } from '../../../backend/src/finance/transactionPlan.ts';
 import { Button, StateMessage } from '../components/common/UI.tsx';
 import { Modal, attachmentUrl } from './components.tsx';
@@ -36,6 +36,11 @@ export function createEntryGateway(request: typeof fetch = fetch): EntryGateway 
 type Draft = { key: string; group: string; accountCode: string; unit: string; date: string; amountText: string; notes: string; attachment: string | null; attachmentName: string };
 const unitValue = (unit: Unit) => unit.type === 'WAREHOUSE' ? 'WAREHOUSE' : String(unit.outletId);
 const unitFrom = (value: string): Unit => value === 'WAREHOUSE' ? { type: 'WAREHOUSE' } : { type: 'OUTLET', outletId: Number(value) };
+// The entry list gets long: it can be folded away. The choice is remembered per
+// page (DC, DA, CI) in this browser only; it starts folded.
+const listOpenKey = (classes: string[]) => `hd-finance-entry-list-open:${classes.join()}`;
+const readListOpen = (classes: string[]) => { try { return localStorage.getItem(listOpenKey(classes)) === '1'; } catch { return false; } };
+const writeListOpen = (classes: string[], open: boolean) => { try { localStorage.setItem(listOpenKey(classes), open ? '1' : '0'); } catch { /* storage unavailable */ } };
 const newKey = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/[^a-zA-Z0-9_-]/g, '');
 
 // Rows complete enough to send; the backend checks them again.
@@ -64,15 +69,19 @@ export function EntryManager({ classes, accounts, outlets, filter, canEdit, onCh
   const blank = (): Draft => ({ key: newKey(), group: groups.length === 1 ? groups[0].code : '', accountCode: '', unit: defaultUnit, date: filter.endDate, amountText: '', notes: '', attachment: null, attachmentName: '' });
 
   const [rows, setRows] = useState<TransactionRecord[]>([]), [loading, setLoading] = useState(false), [error, setError] = useState(''), [revision, setRevision] = useState(0);
+  const [loaded, setLoaded] = useState(false);
   const [unitFilter, setUnitFilter] = useState(''), [groupFilter, setGroupFilter] = useState('');
   const [adding, setAdding] = useState<Draft[] | null>(null), [batchKey, setBatchKey] = useState('');
   const [editing, setEditing] = useState<{ row: TransactionRecord; draft: Draft; reason: string } | null>(null);
   const [removing, setRemoving] = useState<{ row: TransactionRecord; reason: string } | null>(null);
   const [busy, setBusy] = useState(false), [formError, setFormError] = useState('');
+  const [listOpen, setListOpen] = useState(() => readListOpen(classes));
+  const toggleList = () => setListOpen(open => { writeListOpen(classes, !open); return !open; });
+  const listId = `fn-entry-list-${classes.join('-')}`;
   const filterKey = reportQuery(filter);
   useEffect(() => {
     let active = true; setLoading(true); setError('');
-    api.list(filter).then(list => { if (active) setRows(list); }).catch(e => { if (active) setError(e instanceof Error ? e.message : 'Daftar entri gagal dimuat.'); }).finally(() => { if (active) setLoading(false); });
+    api.list(filter).then(list => { if (active) { setRows(list); setLoaded(true); } }).catch(e => { if (active) setError(e instanceof Error ? e.message : 'Daftar entri gagal dimuat.'); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [api, filterKey, revision]);
   const refresh = () => { setRevision(v => v + 1); onChanged?.(); };
@@ -105,10 +114,18 @@ export function EntryManager({ classes, accounts, outlets, filter, canEdit, onCh
 
   const problems = adding?.map(draftProblem) ?? [];
   return <>
+    <div className="fn-entry-toolbar">
+      <button type="button" className="fn-entry-toggle" aria-expanded={listOpen} aria-controls={listId} onClick={toggleList}>
+        <ChevronDown size={16} className="fn-entry-chevron" aria-hidden />
+        <span>{listOpen ? 'Sembunyikan daftar entri' : 'Tampilkan daftar entri'}</span>
+        <span className="fn-muted">{error ? 'gagal dimuat' : loading || !loaded ? 'memuat…' : `${shown.length} entri · ${formatMoney(total.toFixed(6))}`}</span>
+      </button>
+      <div className="fn-actions">{canEdit ? <Button variant="primary" disabled={!accounts?.persistenceEnabled} onClick={() => { setFormError(''); setBatchKey(newKey()); setAdding([blank()]); }}><Plus size={14} />Input biaya</Button> : <span className="fn-muted">Input hanya untuk role Finance.</span>}</div>
+    </div>
+    <div id={listId} hidden={!listOpen}>
     <div className="fn-transaction-filters">
       <label>Unit/Outlet<select className="hd-input" value={unitFilter} onChange={e => setUnitFilter(e.target.value)}><option value="">Semua unit</option><option value="WAREHOUSE">Warehouse</option>{outlets.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></label>
       <label>Klasifikasi<select className="hd-input" value={groupFilter} onChange={e => setGroupFilter(e.target.value)}><option value="">Semua klasifikasi</option>{groups.map(g => <option key={g.code} value={g.code}>{g.code} – {g.name}</option>)}</select></label>
-      <div className="fn-actions fn-actions--end">{canEdit ? <Button variant="primary" disabled={!accounts?.persistenceEnabled} onClick={() => { setFormError(''); setBatchKey(newKey()); setAdding([blank()]); }}><Plus size={14} />Input biaya</Button> : <span className="fn-muted">Input hanya untuk role Finance.</span>}</div>
     </div>
     {error && <StateMessage kind="error">{error}</StateMessage>}
     <div className="fn-table-wrap"><table className="fn-table"><thead><tr>{['Tanggal', 'Unit', 'Kode', 'Nominal', 'Keterangan', 'Sumber', ''].map((s, i) => <th key={i} className={s === 'Nominal' ? 'fn-right' : undefined}>{s}</th>)}</tr></thead><tbody>
@@ -121,6 +138,7 @@ export function EntryManager({ classes, accounts, outlets, filter, canEdit, onCh
       </tr>)}
     </tbody>{shown.length > 0 && <tfoot><tr><th colSpan={3}>Total ({shown.length} entri)</th><td className="fn-money">{formatMoney(total.toFixed(6))}</td><td colSpan={3} /></tr></tfoot>}</table></div>
     {!loading && !error && !shown.length && <StateMessage>Belum ada entri pada filter ini.</StateMessage>}
+    </div>
 
     {adding && <Modal wide title="Input biaya" onClose={() => setAdding(null)}>
       <p className="fn-muted">Pilih klasifikasi dulu, lalu kode biaya, unit, tanggal, nominal, dan keterangan. Tambah baris untuk menyimpan beberapa entri sekaligus.</p>
