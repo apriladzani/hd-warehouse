@@ -5,7 +5,9 @@ import { defineConfig, loadEnv } from 'vite';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, 'VITE_');
-  const backend = new URL(process.env.VITE_API_URL || env.VITE_API_URL || 'http://127.0.0.1:5001');
+  // VITE_API_URL is often relative ('/api', same origin in production); the dev proxy needs an absolute target.
+  const rawApiUrl = process.env.VITE_API_URL || env.VITE_API_URL || '';
+  const backend = new URL(/^https?:\/\//i.test(rawApiUrl) ? rawApiUrl : 'http://127.0.0.1:5001');
   // Backend listens on IPv4; avoid localhost IPv6 resolution mismatches.
   if (backend.hostname === 'localhost') backend.hostname = '127.0.0.1';
   const apiTarget = backend.toString();
