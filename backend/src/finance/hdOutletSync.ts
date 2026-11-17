@@ -202,27 +202,46 @@ const newCounts = (): Counts => ({ created: 0, updated: 0, voided: 0, skippedClo
 const closedMessage = (counts: Counts) => counts.skippedClosed
   ? [`${counts.skippedClosed} perubahan tidak diterapkan karena tanggalnya di periode yang sudah ditutup (${[...counts.closedDates].sort().join(', ')}).`] : [];
 
-// A new HD Outlet outlet is paired with the Warehouse outlet of exactly the same
-// name (trimmed, ignoring case) when that name is unique and not paired yet.
-// matched_by 'auto' marks it for Finance to check in Pengaturan Finance; a
-// pairing Finance set or cleared ('finance') is never touched again.
+// Outlet names compared without case, spaces, punctuation or a parenthesised
+// code: "RiaBusana" = "Ria Busana", "Central Kitchen (CK)" = "Central Kitchen".
+const nameKey = (name: unknown) => String(name ?? '').replace(/\([^)]*\)/g, ' ').toLowerCase().replace(/[^a-z0-9]/g, '');
+// HD Outlet names often start with a short outlet code ("CTG Cieunteung",
+// "CK Central Kitchen"): the name without it is tried as well.
+const withoutCode = (name: string) => { const m = /^\s*[A-Z]{2,4}\s+(.+)$/.exec(name); return m ? m[1] : null; };
+
+// The Warehouse outlet an HD Outlet outlet name stands for, or null when no
+// Warehouse outlet, or more than one, fits (e.g. "TMS TamanSari" against both
+// "Taman Sari" and "Tamansari"): an ambiguous name is never guessed.
+export function matchOutletName(hdName: string, outlets: { id: number; name: string }[]): number | null {
+  for (const candidate of [hdName, withoutCode(hdName)]) {
+    if (!candidate || !nameKey(candidate)) continue;
+    const hits = outlets.filter(o => nameKey(o.name) === nameKey(candidate));
+    if (hits.length === 1) return hits[0].id;
+    if (hits.length > 1) return null;
+  }
+  return null;
+}
+
+// A new HD Outlet outlet is paired with the one Warehouse outlet its name
+// stands for (matchOutletName), when that outlet is not paired yet and no other
+// HD Outlet outlet claims it. matched_by 'auto' marks it for Finance to check
+// in Pengaturan Finance; a pairing Finance set or cleared ('finance') is never
+// touched again.
 export async function autoMatchOutlets(executor: Query = pool) {
   const [rows] = await executor.query('SELECT hd_outlet_id AS hdOutletId, hd_outlet_name AS name FROM hdoutlet_outlet_mappings WHERE outlet_id IS NULL AND matched_by IS NULL');
   if (!(rows as any[]).length) return 0;
-  const [outlets] = await executor.query('SELECT id, outlet_name AS name FROM outlets WHERE is_active = 1');
+  const [outletRows] = await executor.query('SELECT id, outlet_name AS name FROM outlets WHERE is_active = 1');
+  const outlets = (outletRows as any[]).map(o => ({ id: Number(o.id), name: String(o.name) }));
   const [taken] = await executor.query('SELECT outlet_id AS outletId FROM hdoutlet_outlet_mappings WHERE outlet_id IS NOT NULL');
   const used = new Set((taken as any[]).map(r => Number(r.outletId)));
-  const key = (name: unknown) => String(name ?? '').trim().toLowerCase();
-  const byName = new Map<string, number[]>();
-  for (const o of outlets as any[]) byName.set(key(o.name), [...(byName.get(key(o.name)) ?? []), Number(o.id)]);
-  const wanted = new Map<string, number>();
-  for (const r of rows as any[]) wanted.set(key(r.name), (wanted.get(key(r.name)) ?? 0) + 1);
+  const proposals = (rows as any[]).map(r => ({ hdOutletId: Number(r.hdOutletId), outletId: matchOutletName(String(r.name), outlets) }));
+  const claims = new Map<number, number>();
+  for (const p of proposals) if (p.outletId !== null) claims.set(p.outletId, (claims.get(p.outletId) ?? 0) + 1);
   let paired = 0;
-  for (const r of rows as any[]) {
-    const candidates = byName.get(key(r.name)) ?? [];
-    if (candidates.length !== 1 || wanted.get(key(r.name)) !== 1 || used.has(candidates[0])) continue;
-    await executor.query("UPDATE hdoutlet_outlet_mappings SET outlet_id = ?, matched_by = 'auto' WHERE hd_outlet_id = ? AND outlet_id IS NULL", [candidates[0], r.hdOutletId]);
-    used.add(candidates[0]); paired++;
+  for (const p of proposals) {
+    if (p.outletId === null || claims.get(p.outletId) !== 1 || used.has(p.outletId)) continue;
+    await executor.query("UPDATE hdoutlet_outlet_mappings SET outlet_id = ?, matched_by = 'auto' WHERE hd_outlet_id = ? AND outlet_id IS NULL", [p.outletId, p.hdOutletId]);
+    used.add(p.outletId); paired++;
   }
   return paired;
 }
@@ -414,5 +433,22 @@ export function startHdOutletScheduler(config: HdOutletConfig = hdOutletConfig()
   };
   const timer = setInterval(() => { void tick(); }, 5 * 60 * 1000);
   timer.unref();
-  return () => clearInterval(timer);
+  // First start with the integration on: nothing has ever been synced, so pull
+  // the current month at once instead of waiting for the night.
+  const first = setTimeout(() => { void initialSync(config, now).catch(error => console.warn('[hd-outlet-sync] initial', String(error?.message ?? error))); }, 20_000);
+  first.unref();
+  return () => { clearInterval(timer); clearTimeout(first); };
+}
+
+// Syncs from the 1st of the current month (Asia/Jakarta) to today, only when no
+// sync has ever succeeded. Both PM2 hosts may try; the sync lock lets one run.
+export async function initialSync(config: HdOutletConfig = hdOutletConfig(), now = () => new Date()) {
+  await ensureHdOutletSchema();
+  const [done] = await pool.query("SELECT id FROM hdoutlet_sync_runs WHERE trigger_type <> 'mapping' AND status IN ('success', 'partial') LIMIT 1");
+  if ((done as any[]).length || running) return null;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now());
+  const result = await syncHdOutlet({ startDate: `${today.slice(0, 8)}01`, endDate: today, trigger: 'schedule', config })
+    .catch(error => ({ status: 'failed', messages: [String(error?.message ?? error)] }));
+  console.log('[hd-outlet-sync] initial', result.status, result.messages.join(' | '));
+  return result;
 }

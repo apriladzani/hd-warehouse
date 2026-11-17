@@ -266,3 +266,14 @@ test('prepared router checks access and filters before source reads, without soc
   const manifest = await requestRoute('FINANCE', false, '/accounts'); assert.equal(manifest.body.persistenceEnabled, false);
   assert.ok(manifest.body.groups.some((g: any) => g.code === 'UC' && g.name === 'Utility Cost' && g.classCode === 'DC'));
 });
+
+test('HD Outlet outlet names pair with Warehouse outlets despite codes, spaces and case; ambiguous names are not guessed', async () => {
+  const { matchOutletName } = await import('../src/finance/hdOutletSync.ts');
+  // Production names, 17 Nov 2026.
+  const warehouse = [[29, 'Aboh'], [395, 'Bantar Malam'], [41, 'Bebedahan'], [185, 'Bebedahan malam'], [46, 'Central Kitchen (CK)'], [32, 'Ciburuyan'], [30, 'Cieunteung'], [31, 'Cigeureung'],
+    [372, 'Cisalak'], [28, 'Cisalak Malam'], [27, 'Cisalak Pagi'], [39, 'City Garden'], [393, 'Indihiang'], [36, 'Kawalu'], [33, 'Panglayungan'], [38, 'Ria Busana'], [394, 'Taman Sari'], [35, 'Tamansari']]
+    .map(([id, name]) => ({ id: id as number, name: name as string }));
+  const expected: [string, number | null][] = [['Cisalak', 372], ['CTG Cieunteung', 30], ['CGR Cigeureung', 31], ['CBR Ciburuyan', 32], ['ABH Aboh', 29], ['BRP Panglayungan', 33], ['IND Indihiang', 393],
+    ['TMS TamanSari', null], ['KWL Kawalu', 36], ['CK Central Kitchen', 46], ['City garden', 39], ['RiaBusana', 38], ['CSK 2 Cisalak', null], ['BBD Bebedahan', 41]];
+  for (const [hd, id] of expected) assert.equal(matchOutletName(hd, warehouse), id, hd);
+});
