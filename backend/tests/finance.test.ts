@@ -277,3 +277,11 @@ test('HD Outlet outlet names pair with Warehouse outlets despite codes, spaces a
     ['TMS TamanSari', null], ['KWL Kawalu', 36], ['CK Central Kitchen', 46], ['City garden', 39], ['RiaBusana', 38], ['CSK 2 Cisalak', null], ['BBD Bebedahan', 41]];
   for (const [hd, id] of expected) assert.equal(matchOutletName(hd, warehouse), id, hd);
 });
+
+test('a report of "Cigeureung" belongs to HD Outlet outlet "CGR Cigeureung"', async () => {
+  const { sameOutletName } = await import('../src/finance/hdOutletSync.ts');
+  assert.equal(sameOutletName('CGR Cigeureung', 'Cigeureung'), true);
+  assert.equal(sameOutletName('Cisalak', 'CSK 2 Cisalak'), false);
+  assert.equal(sameOutletName('City garden', 'City Garden'), true);
+  assert.equal(sameOutletName('TMS TamanSari', 'Taman Sari'), true);
+});

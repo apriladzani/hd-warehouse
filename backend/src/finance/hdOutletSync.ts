@@ -140,7 +140,9 @@ async function rebuildReport(conn: Query, reportId: number, ctx: { outletOf: Map
     const after = { ...entry, date: report.reportDate, unit: { type: 'OUTLET', outletId }, status: 'posted', source: 'hdoutlet' };
     const before = existing.get(entry.sourceRef);
     if (!before) {
-      if (skip(report.reportDate)) continue;
+      // A report never synced before is added even inside a closed period:
+      // closing freezes Warehouse stock and HPP, not outlet sales HD Outlet
+      // reports late. What is already in the ledger stays frozen (below).
       const id = randomUUID();
       await conn.query(`INSERT INTO finance_transactions (id, account_id, unit_type, outlet_id, transaction_date, amount, notes, evidence_reference, status, nature,
         idempotency_key, version, source, source_ref, created_by) VALUES (?, ?, 'OUTLET', ?, ?, ?, ?, ?, 'posted', 'EXTERNAL', ?, 1, 'hdoutlet', ?, ?)`,
@@ -208,6 +210,13 @@ const nameKey = (name: unknown) => String(name ?? '').replace(/\([^)]*\)/g, ' ')
 // HD Outlet names often start with a short outlet code ("CTG Cieunteung",
 // "CK Central Kitchen"): the name without it is tried as well.
 const withoutCode = (name: string) => { const m = /^\s*[A-Z]{2,4}\s+(.+)$/.exec(name); return m ? m[1] : null; };
+
+// Two names for the same outlet, either possibly with its code in front.
+export function sameOutletName(a: string, b: string): boolean {
+  const keys = (name: string) => [name, withoutCode(name)].filter(Boolean).map(nameKey).filter(Boolean);
+  const other = keys(b);
+  return keys(a).some(key => other.includes(key));
+}
 
 // The Warehouse outlet an HD Outlet outlet name stands for, or null when no
 // Warehouse outlet, or more than one, fits (e.g. "TMS TamanSari" against both
@@ -288,12 +297,12 @@ async function runSync(input: Parameters<typeof syncHdOutlet>[0]): Promise<SyncR
         await pool.query('INSERT INTO hdoutlet_expense_mappings (expense_key, expense_name) VALUES (?, ?) ON DUPLICATE KEY UPDATE expense_name = VALUES(expense_name)', [key, name.slice(0, 255)]);
       }
       // HD Outlet reports name their outlet; its id comes from HD Outlet's own
-      // outlet list (exact name, ignoring case). The Warehouse outlet only ever
-      // comes from the mapping table Finance maintains.
-      const byName = new Map<string, number>();
-      for (const outlet of outlets) { const key = outlet.name.toLowerCase(); byName.set(key, byName.has(key) ? -1 : outlet.id); }
+      // outlet list (same name, with or without its code: a report of
+      // "Cigeureung" belongs to "CGR Cigeureung"). The Warehouse outlet only
+      // ever comes from the mapping table.
       for (const report of result.reports) {
-        const hdOutletId = byName.get(report.outletName.toLowerCase());
+        const hits = outlets.filter(o => sameOutletName(o.name, report.outletName));
+        const hdOutletId = hits.length === 1 ? hits[0].id : hits.length ? -1 : undefined;
         if (hdOutletId === undefined || hdOutletId < 0) messages.push(`Laporan #${report.id}: outlet "${report.outletName}" tidak ada (atau ganda) di daftar outlet HD Outlet.`);
         for (const key of Object.keys(report.expenses)) {
           await pool.query('INSERT IGNORE INTO hdoutlet_expense_mappings (expense_key, expense_name) VALUES (?, ?)', [key, (names.get(key) ?? key).slice(0, 255)]);

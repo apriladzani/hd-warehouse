@@ -1344,6 +1344,14 @@ test('Finance entries: closed period refused; synced rows cannot be edited by ha
     const yesterday = new Date(Date.parse(`${day}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
     const refused = await ledgerPost(finance, base, '/batch', { batchKey: 'closed-period-key-0001', rows: [{ date: yesterday, unit: { type: 'WAREHOUSE' }, accountCode: 'UC01', amount: '1000', notes: 'Listrik' }] });
     assert.equal(refused.status, 409); assert.match(refused.body.error, /sudah ditutup/);
+
+    // A daily report HD Outlet delivers late is still added inside the closed
+    // period (closing freezes Warehouse stock/HPP, not outlet sales) …
+    const late = await syncHdOutlet({ startDate: yesterday, endDate: yesterday, trigger: 'manual', client: fakeHdOutlet(() => [cisalakReport({ id: 502, reportDate: yesterday })]) });
+    assert.equal(late.created, 3, late.messages.join(' | '));
+    // … but what is already in the ledger there is not changed any more.
+    const changed = await syncHdOutlet({ startDate: yesterday, endDate: yesterday, trigger: 'manual', client: fakeHdOutlet(() => [cisalakReport({ id: 502, reportDate: yesterday, totalIncome: '1.00' })]) });
+    assert.deepEqual([changed.updated, changed.skippedClosed], [0, 1]);
   });
 });
 
