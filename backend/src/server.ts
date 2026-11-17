@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { createAdminSessionAccess } from './finance/adminSessionAccess.ts';
 import { dashboardSessionAccess } from './finance/dashboardSessionAccess.ts';
 import { pool as operationalPool } from './db/index.ts';
-import { mysqlSelectExecutor } from './finance/WarehouseFinanceDataSource.ts';
+import { mysqlSelectExecutor } from './finance/selectExecutor.ts';
 import { createOperationalSessions } from './finance/operationalSession.ts';
 import express from 'express';
 import type { Request, Response } from 'express';
@@ -98,6 +98,7 @@ import { createFinanceScope, outletView } from './finance/outletScope.ts';
 import type { ItemCategory } from './db/repository.ts';
 import { canAccessDashboard, canReadFinanceDashboard } from './dashboardAccess.ts';
 import { mountFinanceReadOnly } from './finance/mount.ts';
+import { startHdOutletScheduler } from './finance/hdOutletSync.ts';
 import { createFinanceTransactionRepository } from './finance/transactionRepository.ts';
 import { chooseRequestOutlet, requestOutletOptions } from './finance/requestOutlet.ts';
 import { LOGO_MAX_BYTES, PRINT_TEMPLATE_KEY, PrintTemplateError, diffTemplates, resolveDeliveryOrderTemplate, validateDeliveryOrderTemplate } from './printTemplate.ts';
@@ -125,7 +126,9 @@ app.use(cors());
 app.use(express.json());
 app.set('trust proxy', 1);
 const operationalSessions = createOperationalSessions(mysqlSelectExecutor(operationalPool));
-const financeReadAuth = mountFinanceReadOnly(app, undefined, operationalSessions, createFinanceTransactionRepository());
+// Tests run on one connection-local temporary database (tests/helpers), which
+// only the operational pool sees; production reads through the read-only pool.
+const financeReadAuth = mountFinanceReadOnly(app, process.env.NODE_ENV === 'test' ? mysqlSelectExecutor(operationalPool) : undefined, operationalSessions, createFinanceTransactionRepository());
 
 const getAdminUser = createAdminSessionAccess(operationalSessions.identity);
 
@@ -1372,4 +1375,7 @@ if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Backend server running on http://0.0.0.0:${PORT}`);
   });
+  // Nightly HD Outlet → Finance sync; only when OUTLET_FINANCE_API_ENABLED=true.
+  // Its tables are created by the first sync, not here.
+  if (startHdOutletScheduler()) console.log('HD Outlet sync scheduled nightly (Asia/Jakarta).');
 }

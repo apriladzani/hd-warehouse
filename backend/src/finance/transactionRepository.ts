@@ -1,22 +1,18 @@
 import { pool } from '../db/index.ts';
-import { ACCOUNTS, validateTransaction } from './validation.ts';
+import { closedPeriodChecker, logAdminActivity } from '../db/repository.ts';
+import { FINANCE_ACCOUNT_COLUMNS, migrateFinanceAccounts, seedFinanceAccounts } from './accounts.ts';
+import { ACCOUNT_GROUPS, validateTransaction } from './validation.ts';
 import type { Filter, Unit } from './domain.ts';
-import type { TransactionRecord } from './transactionPlan.ts';
-import type { TransactionRepository } from './transactionApi.ts';
+import { TransactionRuleError, type AuditPlan, type TransactionRecord } from './transactionPlan.ts';
+import type { TransactionRepository, TransactionChange } from './transactionApi.ts';
 
-// Finance ledger: what Finance types in (Labor Cost, Utilities, Rent, DA...),
-// per unit (Warehouse or one outlet). WarehouseFinanceDataSource reads the
-// POSTED rows of finance_transactions joined to finance_accounts as facts.
-// Draft → posted → void; posted financial fields never change, every change is
-// versioned and audited in the same database transaction.
+export { FINANCE_ACCOUNT_COLUMNS, seedFinanceAccounts };
 
-export const FINANCE_ACCOUNT_COLUMNS = `
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  code VARCHAR(10) NOT NULL,
-  name VARCHAR(100) NOT NULL,
-  metric VARCHAR(10) NOT NULL,
-  UNIQUE KEY uq_finance_account_code (code)`;
-
+// Finance ledger, one row per amount booked to a unit (Warehouse or an outlet),
+// date and account code. Rows typed in by Finance have source 'manual'; rows
+// synced from HD Outlet daily reports have source 'hdoutlet' and a source_ref
+// (hdo:<report id>:<component>) that makes a re-sync an update, never a duplicate.
+// Only status 'posted' counts in reports; 'void' is a soft delete.
 export const FINANCE_TRANSACTION_COLUMNS = `
   id CHAR(36) NOT NULL PRIMARY KEY,
   account_id INT NOT NULL,
@@ -33,10 +29,14 @@ export const FINANCE_TRANSACTION_COLUMNS = `
   idempotency_key VARCHAR(100) NOT NULL,
   legacy_entry_id VARCHAR(20) NULL,
   version INT NOT NULL,
+  source ENUM('manual','hdoutlet') NOT NULL DEFAULT 'manual',
+  source_ref VARCHAR(120) NULL,
+  attachment_path VARCHAR(80) NULL,
   created_by INT NULL,
   created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY uq_finance_transaction_idempotency (idempotency_key),
+  UNIQUE KEY uq_finance_transaction_source_ref (source_ref),
   INDEX idx_finance_transaction_date (transaction_date),
   INDEX idx_finance_transaction_outlet (outlet_id),
   INDEX idx_finance_transaction_account (account_id)`;
@@ -52,15 +52,20 @@ export const FINANCE_TRANSACTION_AUDIT_COLUMNS = `
   after_json LONGTEXT NOT NULL,
   INDEX idx_finance_audit_transaction (transaction_id)`;
 
-const ACCOUNT_ROWS = Object.entries(ACCOUNTS).map(([code, [name, metric]]) => [code, name, metric]);
-
-// The chart of accounts is code-defined; new codes are added, existing rows kept.
-export async function seedFinanceAccounts(executor: { query: (sql: string, values: unknown[]) => Promise<unknown> }) {
-  await executor.query(`INSERT IGNORE INTO finance_accounts (code, name, metric) VALUES ${ACCOUNT_ROWS.map(() => '(?, ?, ?)').join(', ')}`, ACCOUNT_ROWS.flat());
+type Query = { query: (sql: string, values?: unknown[]) => Promise<any> };
+// Columns added after the first release, for ledgers created before them.
+export async function migrateFinanceTransactions(executor: Query) {
+  const [columns] = await executor.query('SHOW COLUMNS FROM finance_transactions');
+  const present = new Set((columns as any[]).map(c => c.Field));
+  if (!present.has('source')) await executor.query("ALTER TABLE finance_transactions ADD COLUMN source ENUM('manual','hdoutlet') NOT NULL DEFAULT 'manual' AFTER version");
+  if (!present.has('source_ref')) await executor.query('ALTER TABLE finance_transactions ADD COLUMN source_ref VARCHAR(120) NULL AFTER source');
+  if (!present.has('attachment_path')) await executor.query('ALTER TABLE finance_transactions ADD COLUMN attachment_path VARCHAR(80) NULL AFTER source_ref');
+  const [index] = await executor.query("SHOW INDEX FROM finance_transactions WHERE Key_name = 'uq_finance_transaction_source_ref'");
+  if (!(index as any[]).length) await executor.query('ALTER TABLE finance_transactions ADD UNIQUE KEY uq_finance_transaction_source_ref (source_ref)');
 }
 
 let schemaReady: Promise<void> | null = null;
-// Creates the tables only when missing; existing tables and rows are untouched.
+// Creates missing tables and columns; existing rows are untouched.
 export function ensureFinanceTransactionSchema() {
   if (!schemaReady) schemaReady = (async () => {
     const exists = async (table: string) => {
@@ -69,6 +74,7 @@ export function ensureFinanceTransactionSchema() {
     if (!await exists('finance_accounts')) {
       await pool.query(`CREATE TABLE IF NOT EXISTS finance_accounts (${FINANCE_ACCOUNT_COLUMNS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
     }
+    await migrateFinanceAccounts(pool);
     if (!await exists('finance_transactions')) {
       await pool.query(`CREATE TABLE IF NOT EXISTS finance_transactions (${FINANCE_TRANSACTION_COLUMNS},
         CONSTRAINT fk_finance_transaction_account FOREIGN KEY (account_id) REFERENCES finance_accounts (id),
@@ -76,6 +82,7 @@ export function ensureFinanceTransactionSchema() {
         CONSTRAINT fk_finance_transaction_counterparty FOREIGN KEY (counterparty_outlet_id) REFERENCES outlets (id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
     }
+    await migrateFinanceTransactions(pool);
     if (!await exists('finance_transaction_audits')) {
       await pool.query(`CREATE TABLE IF NOT EXISTS finance_transaction_audits (${FINANCE_TRANSACTION_AUDIT_COLUMNS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
     }
@@ -84,28 +91,34 @@ export function ensureFinanceTransactionSchema() {
   return schemaReady;
 }
 
-const SELECT_RECORD = `SELECT t.id, a.code AS accountCode, t.unit_type AS unitType, t.outlet_id AS outletId,
+export const SELECT_RECORD = `SELECT t.id, a.code AS accountCode, t.unit_type AS unitType, t.outlet_id AS outletId,
   DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS date, CAST(t.amount AS CHAR) AS amount, t.notes, t.evidence_reference AS reference,
   t.status, t.nature, t.counterparty_type AS counterpartyType, t.counterparty_outlet_id AS counterpartyOutletId,
-  t.idempotency_key AS idempotencyKey, t.legacy_entry_id AS legacyEntryId, t.version
+  t.idempotency_key AS idempotencyKey, t.legacy_entry_id AS legacyEntryId, t.version,
+  t.source, t.source_ref AS sourceRef, t.attachment_path AS attachment
   FROM finance_transactions t JOIN finance_accounts a ON a.id = t.account_id`;
 
 const unitOf = (type: unknown, outletId: unknown): Unit | null =>
   type === 'WAREHOUSE' ? { type: 'WAREHOUSE' } : type === 'OUTLET' ? { type: 'OUTLET', outletId: Number(outletId) } : null;
 
-function toRecord(row: any): TransactionRecord {
+export function toRecord(row: any): TransactionRecord {
   return {
     ...validateTransaction({
       date: row.date, unit: unitOf(row.unitType, row.outletId), accountCode: row.accountCode, amount: row.amount,
       notes: row.notes, reference: row.reference, status: row.status, nature: row.nature,
       counterparty: unitOf(row.counterpartyType, row.counterpartyOutletId), idempotencyKey: row.idempotencyKey,
       legacyEntryId: row.legacyEntryId ?? null, version: Number(row.version),
+      source: row.source ?? 'manual', sourceRef: row.sourceRef ?? null, attachment: row.attachment ?? null,
     }),
     id: String(row.id),
   };
 }
 
-export function createFinanceTransactionRepository(): TransactionRepository {
+// 409 for a closed period, 400 for anything else the rules refuse.
+export class LedgerConflictError extends TransactionRuleError { status = 409 as const; }
+
+export function createFinanceTransactionRepository(options: { periodCheck?: () => Promise<(day: string) => string | null> } = {}): TransactionRepository {
+  const periodCheck = options.periodCheck ?? (() => closedPeriodChecker());
   return {
     async list(filter: Filter) {
       await ensureFinanceTransactionSchema();
@@ -121,53 +134,81 @@ export function createFinanceTransactionRepository(): TransactionRepository {
       return (rows as any[]).map(toRecord);
     },
 
-    async change(id, expectedVersion, plan) {
+    async change(id, expectedVersion, plan, actor) {
+      return (await this.changeMany([{ id, expectedVersion, plan }], actor))[0];
+    },
+
+    // All or nothing: a batch of new entries is saved only if every row is valid.
+    async changeMany(changes: TransactionChange[], actor) {
       await ensureFinanceTransactionSchema();
+      const closedLabel = await periodCheck();
       const connection = await pool.getConnection();
+      const audits: AuditPlan[] = [];
+      const records: TransactionRecord[] = [];
       try {
         await connection.beginTransaction();
-        const [found] = await connection.query(`${SELECT_RECORD} WHERE t.id = ? FOR UPDATE`, [id]);
-        const before = (found as any[]).length ? toRecord((found as any[])[0]) : null;
-        if (expectedVersion === null ? before !== null : before?.version !== expectedVersion) throw new Error('Version conflict');
-        const { record, audit } = plan(before);
-        const [accounts] = await connection.query('SELECT id FROM finance_accounts WHERE code = ? LIMIT 1', [record.accountCode]);
-        const accountId = Number((accounts as any[])[0]?.id);
-        if (!accountId) throw new Error('Unknown account');
-        if (!before) {
-          // A new entry must name an active outlet; voiding an old one never re-checks.
-          for (const unit of [record.unit, record.counterparty]) {
-            if (unit?.type !== 'OUTLET') continue;
-            const [outlets] = await connection.query('SELECT id FROM outlets WHERE id = ? AND is_active = 1 LIMIT 1', [unit.outletId]);
-            if (!(outlets as any[]).length) throw new Error('Unknown or inactive outlet');
+        for (const [index, change] of changes.entries()) {
+          const row = changes.length > 1 ? `Baris ${index + 1}: ` : '';
+          const [found] = await connection.query(`${SELECT_RECORD} WHERE t.id = ? FOR UPDATE`, [change.id]);
+          const before = (found as any[]).length ? toRecord((found as any[])[0]) : null;
+          if (change.expectedVersion === null ? before !== null : before?.version !== change.expectedVersion) throw new LedgerConflictError(`${row}Data sudah diubah orang lain. Muat ulang lalu coba lagi.`);
+          const { record, audit } = change.plan(before);
+          for (const day of new Set([record.date, before?.date].filter(Boolean) as string[])) {
+            const closed = closedLabel(day);
+            if (closed) throw new LedgerConflictError(`${row}${closed} sudah ditutup. Entri tanggal ${day} tidak dapat ditambah, diubah, atau dihapus.`);
           }
-          const [duplicate] = await connection.query('SELECT id FROM finance_transactions WHERE idempotency_key = ? LIMIT 1', [record.idempotencyKey]);
-          if ((duplicate as any[]).length) throw new Error('Duplicate idempotency key');
-          await connection.query(`INSERT INTO finance_transactions (id, account_id, unit_type, outlet_id, transaction_date, amount, notes, evidence_reference,
-            status, nature, counterparty_type, counterparty_outlet_id, idempotency_key, legacy_entry_id, version, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
-            record.id, accountId, record.unit.type, record.unit.type === 'OUTLET' ? record.unit.outletId : null, record.date, record.amount,
-            record.notes, record.reference, record.status, record.nature, record.counterparty?.type ?? null,
-            record.counterparty?.type === 'OUTLET' ? record.counterparty.outletId : null, record.idempotencyKey, record.legacyEntryId,
-            record.version, audit.actorId,
-          ]);
-        } else {
-          // planTransactionChange already refused edits to posted fields; only
-          // status and version move here.
-          const [result] = await connection.query('UPDATE finance_transactions SET status = ?, version = ? WHERE id = ? AND version = ?',
-            [record.status, record.version, record.id, before.version]);
-          if ((result as any).affectedRows !== 1) throw new Error('Version conflict');
+          const [accounts] = await connection.query('SELECT id, group_code AS groupCode, is_active AS isActive FROM finance_accounts WHERE code = ? LIMIT 1', [record.accountCode]);
+          const account = (accounts as any[])[0];
+          if (!account) throw new TransactionRuleError(`${row}Kode akun ${record.accountCode} tidak dikenal.`);
+          const accountChanged = !before || before.accountCode !== record.accountCode;
+          if (accountChanged && (Number(account.isActive) !== 1 || !ACCOUNT_GROUPS[account.groupCode]?.manual)) throw new TransactionRuleError(`${row}Kode akun ${record.accountCode} tidak aktif atau tidak untuk input manual.`);
+          if (!before || JSON.stringify(before.unit) !== JSON.stringify(record.unit)) {
+            for (const unit of [record.unit, record.counterparty]) {
+              if (unit?.type !== 'OUTLET') continue;
+              const [outlets] = await connection.query('SELECT id FROM outlets WHERE id = ? AND is_active = 1 LIMIT 1', [unit.outletId]);
+              if (!(outlets as any[]).length) throw new TransactionRuleError(`${row}Outlet tidak ditemukan atau nonaktif.`);
+            }
+          }
+          if (!before) {
+            const [duplicate] = await connection.query('SELECT id FROM finance_transactions WHERE idempotency_key = ? LIMIT 1', [record.idempotencyKey]);
+            if ((duplicate as any[]).length) throw new LedgerConflictError(`${row}Entri ini sudah tersimpan.`);
+            await connection.query(`INSERT INTO finance_transactions (id, account_id, unit_type, outlet_id, transaction_date, amount, notes, evidence_reference,
+              status, nature, counterparty_type, counterparty_outlet_id, idempotency_key, legacy_entry_id, version, source, source_ref, attachment_path, created_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+              record.id, Number(account.id), record.unit.type, record.unit.type === 'OUTLET' ? record.unit.outletId : null, record.date, record.amount,
+              record.notes, record.reference, record.status, record.nature, record.counterparty?.type ?? null,
+              record.counterparty?.type === 'OUTLET' ? record.counterparty.outletId : null, record.idempotencyKey, record.legacyEntryId,
+              record.version, record.source, record.sourceRef, record.attachment, audit.actorId,
+            ]);
+          } else {
+            const [result] = await connection.query(`UPDATE finance_transactions SET account_id = ?, unit_type = ?, outlet_id = ?, transaction_date = ?, amount = ?,
+              notes = ?, evidence_reference = ?, attachment_path = ?, status = ?, version = ? WHERE id = ? AND version = ?`, [
+              Number(account.id), record.unit.type, record.unit.type === 'OUTLET' ? record.unit.outletId : null, record.date, record.amount,
+              record.notes, record.reference, record.attachment, record.status, record.version, record.id, before.version,
+            ]);
+            if ((result as any).affectedRows !== 1) throw new LedgerConflictError(`${row}Data sudah diubah orang lain. Muat ulang lalu coba lagi.`);
+          }
+          await connection.query(`INSERT INTO finance_transaction_audits (transaction_id, action, actor_id, occurred_at, reason, before_json, after_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`, [audit.entityId, audit.action, audit.actorId, audit.occurredAt, audit.reason,
+            audit.before ? JSON.stringify(audit.before) : null, JSON.stringify(audit.after)]);
+          audits.push(audit); records.push(record);
         }
-        await connection.query(`INSERT INTO finance_transaction_audits (transaction_id, action, actor_id, occurred_at, reason, before_json, after_json)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`, [audit.entityId, audit.action, audit.actorId, audit.occurredAt, audit.reason,
-          audit.before ? JSON.stringify(audit.before) : null, JSON.stringify(audit.after)]);
         await connection.commit();
-        return record;
       } catch (error) {
         await connection.rollback().catch(() => {});
         throw error;
       } finally {
         connection.release();
       }
+      // The ledger audit is authoritative; the activity log is the shared trail.
+      for (const audit of audits) {
+        await logAdminActivity({
+          actorId: audit.actorId, actorName: actor?.name || `user#${audit.actorId}`, action: `FINANCE_ENTRY_${audit.action}`,
+          targetType: 'finance_transaction', targetId: audit.entityId,
+          details: { reason: audit.reason, accountCode: audit.after.accountCode, amount: audit.after.amount, date: audit.after.date, unit: audit.after.unit, before: audit.before && { accountCode: audit.before.accountCode, amount: audit.before.amount, date: audit.before.date, unit: audit.before.unit } },
+        }).catch(() => {});
+      }
+      return records;
     },
   };
 }

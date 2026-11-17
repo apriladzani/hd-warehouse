@@ -1,7 +1,7 @@
 import { createHash, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { Request } from 'express';
-import type { SelectExecutor } from './WarehouseFinanceDataSource.ts';
+import type { SelectExecutor } from './selectExecutor.ts';
 import type { FinancePrincipal } from './router.ts';
 import { financeFailure } from './readOnlyConnection.ts';
 const derive = promisify(scrypt);

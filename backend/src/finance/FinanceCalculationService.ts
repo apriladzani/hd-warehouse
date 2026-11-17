@@ -1,28 +1,47 @@
-import { BASE_METRICS, missing, type BaseMetric, type Metric, type Value } from './domain.ts';
+import { BASE_METRICS, worstStatus, type BaseMetric, type DataStatus, type Metric, type Value } from './domain.ts';
 import { decimal, money } from './decimal.ts';
+
 export type Calculation = Record<Metric, Value>;
+export type Adjustment = { status: Exclude<DataStatus, 'Available'>; reasons: string[] };
+
+// Formulas:
+//   CM = (SI + OI) − SH        COGS = CRW + CSM + CPM      CI = CM − COGS
+//   DC = LC + UC + MC + TC + AC + LP + TX                  DA = DA01 + DA02
+//   EBITDA = CI − DC           EBIT = CI − (DC + DA)
+// A result's status is the worst of its terms; its amount is always the exact sum.
+// `adjust` lowers the status of a metric itself (e.g. DC while an HD Outlet
+// expense still waits for its account code), and that flows into what uses it.
+export const FORMULAS: [Metric, [Metric, bigint][]][] = [
+  ['CM', [['SI', 1n], ['OI', 1n], ['SH', -1n]]],
+  ['COGS', [['CRW', 1n], ['CSM', 1n], ['CPM', 1n]]],
+  ['CI', [['CM', 1n], ['COGS', -1n]]],
+  ['DC', [['LC', 1n], ['UC', 1n], ['MC', 1n], ['TC', 1n], ['AC', 1n], ['LP', 1n], ['TX', 1n]]],
+  ['DA', [['DA01', 1n], ['DA02', 1n]]],
+  ['EBITDA', [['CI', 1n], ['DC', -1n]]],
+  ['EBIT', [['CI', 1n], ['DC', -1n], ['DA', -1n]]],
+];
+
 export class FinanceCalculationService {
-  calculate(input: Partial<Record<BaseMetric, Value>>): Calculation {
-    const result = Object.fromEntries(BASE_METRICS.map(key => [key, input[key] ?? missing(`${key}: coverage unavailable`)])) as Calculation;
+  calculate(input: Partial<Record<BaseMetric, Value>>, adjust: Partial<Record<Metric, Adjustment>> = {}): Calculation {
+    const result = {} as Calculation;
     for (const key of BASE_METRICS) {
-      const value = result[key];
-      if (value.status === 'Available' && value.amount !== null) result[key] = { ...value, amount: money(decimal(value.amount)) };
-      else result[key] = { ...value, amount: null, status: value.status === 'Available' ? 'Missing' : value.status };
+      const value = input[key] ?? { amount: '0', status: 'Missing', reasons: [`${key}: data tidak tersedia`] };
+      result[key] = merge({ ...value, amount: money(decimal(value.amount)) }, adjust[key]);
     }
-    const compute = (target: Metric, terms: [Metric, bigint][]) => {
-      const unavailable = terms.map(([key]) => result[key]).filter(value => value.status !== 'Available' || value.amount === null);
-      if (unavailable.length) {
-        const status = unavailable.some(v => v.status === 'Error') ? 'Error' : unavailable.some(v => v.status === 'Unmapped') ? 'Unmapped' : 'Missing';
-        result[target] = { amount: null, status, reasons: [...new Set(unavailable.flatMap(v => v.reasons))] };
-      } else result[target] = { amount: money(terms.reduce((sum, [key, sign]) => sum + decimal(result[key].amount!) * sign, 0n)), status: 'Available', reasons: [] };
-    };
-    compute('CM', [['SI', 1n], ['OI', 1n], ['SH', -1n]]);
-    compute('COGS', [['CRW', 1n], ['CSM', 1n], ['CPM', 1n]]);
-    compute('CI', [['CM', 1n], ['COGS', -1n]]);
-    compute('DC', ['LC', 'UC', 'MC', 'TC', 'AC', 'LP', 'TX'].map(key => [key as Metric, 1n]));
-    compute('DA', [['DA01', 1n], ['DA02', 1n]]);
-    compute('EBITDA', [['CI', 1n], ['DC', -1n]]);
-    compute('EBIT', [['CI', 1n], ['DC', -1n], ['DA', -1n]]);
+    for (const [target, terms] of FORMULAS) {
+      const values = terms.map(([key]) => result[key]);
+      const computed: Value = {
+        amount: money(terms.reduce((sum, [key, sign]) => sum + decimal(result[key].amount) * sign, 0n)),
+        status: worstStatus(values.map(v => v.status)),
+        reasons: [...new Set(values.flatMap(v => v.reasons))],
+      };
+      result[target] = merge(computed, adjust[target]);
+    }
     return result;
   }
+}
+
+function merge(value: Value, adjustment?: Adjustment): Value {
+  if (!adjustment) return value;
+  return { amount: value.amount, status: worstStatus([value.status, adjustment.status]), reasons: [...new Set([...value.reasons, ...adjustment.reasons])] };
 }

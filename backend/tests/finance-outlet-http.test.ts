@@ -1,66 +1,69 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
-import { OutletHttpTransport, createConfiguredOutletSource, type OutletHttpContract } from '../src/finance/OutletHttpTransport.ts';
-import { OutletFinanceDataSource, type OutletPage } from '../src/finance/OutletFinanceDataSource.ts';
-import { FinanceAggregationService } from '../src/finance/FinanceAggregationService.ts';
-import type { Filter } from '../src/finance/domain.ts';
-const filter: Filter = { mode: 'OUTLET', startDate: '2026-10-01', endDate: '2026-10-31', outletIds: [1], timezone: 'Asia/Jakarta' };
-const mapping = { externalOutletId: 'mock-A', outletId: 1, status: 'validated' as const, validFrom: '2026-01-01', validTo: null, displayName: 'Mock only', evidence: 'isolated test' };
-const page: OutletPage = { outletIds: ['mock-A'], rows: [{ id: 'receipt', externalOutletId: 'mock-A', date: '2026-10-02', metric: 'SI', amount: '12.34', nature: 'EXTERNAL', reference: 'mock receipt' }], complete: true, nextCursor: null };
-// Consumer test protocol ONLY: no claim about provider path/query/schema.
-const contract: OutletHttpContract = { id: 'MOCK-ONLY', evidence: 'test protocol', reportRequest: (f, cursor) => ({ path: 'mock-reports', query: { start: f.startDate, end: f.endDate, timezone: f.timezone, cursor: cursor ?? '' } }), decodeReport: body => body as OutletPage };
-test('real HTTP mock: auth, GET-only, failures, amounts, mappings, modes and no secret leakage', async t => {
-  const token = 'isolated-test-token'; let status = 200; let body: unknown = page; let delay = 0;
-  const logs: unknown[][] = [];
-  for (const method of ['log', 'warn', 'error'] as const) t.mock.method(console, method, (...args: unknown[]) => { logs.push(args); });
-  const calls: string[] = [];
-  const server = createServer((req, res) => {
-    calls.push(req.method!); assert.equal(req.headers.authorization, `Bearer ${token}`);
-    const url = new URL(req.url!, 'http://mock');
-    assert.equal(url.pathname, '/api/mock-reports'); assert.equal(url.searchParams.get('start'), filter.startDate);
-    assert.equal(url.searchParams.get('end'), filter.endDate); assert.equal(url.searchParams.get('timezone'), 'Asia/Jakarta');
-    setTimeout(() => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); }, delay);
-  });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => { server.closeAllConnections(); server.close(); });
-  const base = `http://127.0.0.1:${(server.address() as any).port}/api`;
-  const source = (mappings = [mapping], timeout = 500) => new OutletFinanceDataSource(mappings, new OutletHttpTransport(base, token, timeout, contract), timeout + 100);
-  let result = await source().read(filter);
-  assert.equal(result.facts[0].amount, '12.34'); assert.equal(result.coverage[0].status, 'Missing');
-  for (status of [401, 403, 404, 429, 500, 503]) {
-    result = await source().read(filter); assert.equal(result.issues[0].status, 'Error'); assert.deepEqual(result.facts, []);
-    assert.ok(!JSON.stringify(result).includes(token));
-  }
-  status = 200;
-  for (const amount of [12.34, 'NaN', '1e3', '12,34', '0.1234567']) {
-    body = { ...page, rows: [{ ...page.rows[0], amount }] };
-    assert.equal((await source().read(filter)).issues[0].status, 'Error');
-  }
-  body = { unexpected: true }; assert.equal((await source().read(filter)).issues[0].status, 'Error');
-  body = page; delay = 100; assert.equal((await source([mapping], 10).read(filter)).issues[0].status, 'Error'); delay = 0;
-  assert.equal((await source([]).read(filter)).issues[0].status, 'Unmapped');
-  assert.equal((await source().read({ ...filter, outletIds: [2] })).facts.length, 0);
-  body = { ...page, rows: [page.rows[0], page.rows[0]] }; assert.equal((await source().read(filter)).facts.length, 1);
-  body = { ...page, rows: [{ ...page.rows[0], nature: 'INTERNAL' }] };
-  result = await source().read(filter);
-  for (const mode of ['WAREHOUSE', 'OUTLET', 'ALL'] as const) {
-    const report = new FinanceAggregationService().aggregate({ ...filter, mode }, [result]);
-    assert.equal(report.complete, false); assert.equal(report.metrics.EBIT.amount, null);
-    assert.equal(report.byUnit.some(u => u.knownAmounts.SI !== '0.000000'), false);
-    if (mode === 'ALL') assert.equal(report.eliminationVerified, false);
-  }
-  const count = calls.length;
-  await createConfiguredOutletSource({}).read(filter);
-  assert.equal((await createConfiguredOutletSource({ OUTLET_FINANCE_API_ENABLED: 'true' }).read(filter)).issues[0].status, 'Missing');
-  assert.equal((await createConfiguredOutletSource({ OUTLET_FINANCE_API_ENABLED: 'true' }, contract).read(filter)).issues[0].status, 'Unmapped');
-  assert.equal(calls.length, count); assert.ok(calls.every(method => method === 'GET'));
-  server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
-  assert.equal((await source().read(filter)).issues[0].status, 'Error');
-  assert.ok(!JSON.stringify(logs).includes(token));
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { HdOutletClient, HdOutletError } from '../src/finance/hdOutletClient.ts';
+
+// HD Outlet API client against a real local HTTP server (the API documented at
+// https://hdoutlett.kii.lat/api-docs/): X-API-Key auth, GET only, failures as
+// readable HdOutletError, and the key never leaving for another host.
+const KEY = 'hdfc_fixture_key_only_for_tests_000000000000000';
+const report = (id: number, date: string, outlet: string, extra: Record<string, unknown> = {}) => ({
+  id, report_date: date, outlet_name: outlet, staff_name: 'Budi', total_income: 891500, total_expense: 23000, total_loss: 0,
+  final_total: 868500, promo: 0, expenses: { gas: 0, meal: 13000, bonus: 10000, lain_lain_keterangan: 'catatan', total_expense: 23000 },
+  payments: { tunai: 500000, qr: 391500, tf: 0, total_payment: 891500 }, ...extra,
 });
-test('unsafe configuration and redirect cannot forward bearer credentials', async () => {
-  for (const url of ['http://example.com/api', 'https://user:pass@example.com/api', 'https://example.com/api?secret=x']) assert.throws(() => new OutletHttpTransport(url, 'test', 50, contract));
-  const transport = new OutletHttpTransport('http://127.0.0.1/api', 'test', 50, { ...contract, reportRequest: () => ({ path: 'https://example.com/steal', query: {} }) });
-  await assert.rejects(() => transport.page(filter, null), /UNSAFE_PATH/);
+
+async function withServer(handler: (req: IncomingMessage, res: ServerResponse) => void, run: (base: string, seen: IncomingMessage[]) => Promise<void>) {
+  const seen: IncomingMessage[] = [];
+  const server = createServer((req, res) => { seen.push(req); handler(req, res); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try { await run(`http://127.0.0.1:${(server.address() as any).port}/api-docs/`, seen); }
+  finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+}
+const json = (res: ServerResponse, status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+
+test('reads outlets, expense categories and reports with the API key header', async () => {
+  await withServer((req, res) => {
+    if (req.headers['x-api-key'] !== KEY) return json(res, 401, { error: 'API key tidak valid atau sudah dicabut' });
+    const url = new URL(req.url!, 'http://x');
+    if (url.pathname === '/api/outlets') return json(res, 200, [{ id: 1, name: 'Cisalak', active: true }, { id: 2, name: 'Aboh', active: false }]);
+    if (url.pathname === '/api/master/expense-categories') return json(res, 200, [{ key: 'meal', name: 'Uang Makan' }, { key: 'galon', name: 'Air Galon' }]);
+    if (url.pathname === '/api/reports') {
+      assert.deepEqual([url.searchParams.get('startDate'), url.searchParams.get('endDate')], ['2026-11-17', '2026-11-17']);
+      return json(res, 200, [report(5, '2026-11-17', 'Cisalak'), report(5, '2026-11-17', 'Cisalak'), report(6, '2026-11-18', 'Cisalak'), { id: 'x' }]);
+    }
+    json(res, 404, { error: 'not found' });
+  }, async (base, seen) => {
+    const client = new HdOutletClient(base, KEY, 2000);
+    assert.deepEqual(await client.outlets(), [{ id: 1, name: 'Cisalak', active: true }, { id: 2, name: 'Aboh', active: false }]);
+    assert.deepEqual((await client.expenseCategories()).map(c => c.name), ['Uang Makan', 'Air Galon']);
+    const { reports, errors } = await client.reports('2026-11-17', '2026-11-17');
+    assert.equal(reports.length, 1, 'duplicate and out-of-range reports are dropped');
+    assert.deepEqual([reports[0].totalIncome, reports[0].totalLoss, reports[0].expenses], ['891500.00', '0.00', { gas: '0.00', meal: '13000.00', bonus: '10000.00' }]);
+    assert.equal(errors.length, 1, 'an unreadable report is reported, not fatal');
+    assert.ok(seen.every(r => r.method === 'GET'));
+    assert.ok(seen.every(r => r.url!.startsWith('/api/')), 'the docs URL is normalised to the API base');
+  });
+});
+
+test('a rejected key, server error, non-JSON answer and timeout are readable errors', async () => {
+  for (const [handler, code] of [
+    [(_: IncomingMessage, res: ServerResponse) => json(res, 401, { error: 'API key tidak valid' }), 'HTTP_401'],
+    [(_: IncomingMessage, res: ServerResponse) => json(res, 500, { error: 'boom' }), 'HTTP_500'],
+    [(_: IncomingMessage, res: ServerResponse) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<!doctype html>'); }, 'INVALID_RESPONSE'],
+    [() => { /* never answers */ }, 'TIMEOUT'],
+  ] as const) {
+    await withServer(handler, async (base) => {
+      await assert.rejects(() => new HdOutletClient(base, KEY, 300).outlets(), (e: unknown) => e instanceof HdOutletError && e.code === code && !e.message.includes(KEY));
+    });
+  }
+});
+
+test('the key is never sent to another host: redirects refused, https only, key required', async () => {
+  await withServer((_req, res) => { res.writeHead(302, { location: 'http://127.0.0.2:1/steal' }); res.end(); }, async (base) => {
+    await assert.rejects(() => new HdOutletClient(base, KEY, 1000).outlets(), HdOutletError);
+  });
+  assert.throws(() => new HdOutletClient('http://hdoutlett.kii.lat/api/', KEY), HdOutletError, 'plain http only for localhost');
+  assert.throws(() => new HdOutletClient('https://user:pass@hdoutlett.kii.lat/api/', KEY), HdOutletError);
+  assert.throws(() => new HdOutletClient('https://hdoutlett.kii.lat/api/', ''), /OUTLET_FINANCE_API_TOKEN/);
 });

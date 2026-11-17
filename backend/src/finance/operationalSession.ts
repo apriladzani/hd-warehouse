@@ -1,7 +1,7 @@
 import { financeFailure } from './readOnlyConnection.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Request, Response } from 'express';
-import type { SelectExecutor } from './WarehouseFinanceDataSource.ts';
+import type { SelectExecutor } from './selectExecutor.ts';
 import { createFinanceReadAuthenticator, financeCookie, verifyFinanceLoginPassword } from './authentication.ts';
 const COOKIE = 'hd_operational_session';
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');

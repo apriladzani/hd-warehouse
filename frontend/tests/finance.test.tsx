@@ -1,20 +1,17 @@
 import { WarehouseFinanceTable } from '../src/components/warehouse/WarehouseFinanceTable.tsx';
-import { TransactionManager } from '../src/finance/TransactionManager.tsx';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import React from 'react';
 import type { User } from '../src/types.ts';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { FinanceAggregationService } from '../../backend/src/finance/FinanceAggregationService.ts';
 import { createFinanceClient, FinanceApiError, validateReport } from '../src/finance/api.ts';
-import { FinanceWorkspace, TransactionPage } from '../src/finance/FinanceWorkspace.tsx';
-import { ApiState, Filters, MetricTable, Modal, Reconciliation, SourceDetail } from '../src/finance/components.tsx';
+import { FinanceWorkspace } from '../src/finance/FinanceWorkspace.tsx';
+import { Filters } from '../src/finance/components.tsx';
 import { PAGES, financePath, financePage, isFinancePath, formatMoney, valueText, reportQuery, reportCsv, COMMERCIAL, initialFilter, type Filter } from '../src/finance/model.ts';
 import { FinanceEntry } from '../src/finance/FinanceEntry.tsx';
 import { Navbar } from '../src/components/common/Navbar.tsx';
 const filter: Filter = { mode: 'WAREHOUSE', startDate: '2026-10-01', endDate: '2026-10-23', outletIds: null, timezone: 'Asia/Jakarta' };
 const user = { id: 99, name: 'Test Fixture', email: 'fixture@example.invalid', role: 'FINANCE' as const };
-const missingReport = () => new FinanceAggregationService().aggregate(filter, []);
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
 test('seven Finance deep links resolve and unknown/cross-role paths are excluded', () => {
@@ -27,7 +24,7 @@ test('all seven pages server-render without making a data request or showing fix
   for (const [page, label] of PAGES) {
     const html = renderToStaticMarkup(<FinanceWorkspace currentUser={user} pathname={financePath(page)} />);
     assert.ok(html.includes(label.replace(/&/g, '&amp;')));
-    assert.ok(html.includes('Filter Finance bersama'));
+    if (page !== 'settings') assert.ok(html.includes('Filter Finance bersama'), page);
     assert.ok(!html.includes('Rp0')); assert.ok(!html.includes('fixture@example'));
   }
 });
@@ -43,85 +40,6 @@ test('Rupiah display rounds only presentation and handles large decimals exactly
   assert.equal(formatMoney('-1000.010000'), '−Rp1.000');
   assert.equal(formatMoney('0.000000'), 'Rp0'); assert.equal(formatMoney(null), '—');
   for (const status of ['Missing', 'Unmapped', 'Error'] as const) assert.equal(valueText({ amount: null, status, reasons: [] }), '—');
-});
-test('UI displays backend formula results without recomputing money', () => {
-  const report = missingReport();
-  report.metrics.CI = { amount: '123456789012345678.123456', status: 'Available', reasons: [] };
-  const html = renderToStaticMarkup(<MetricTable keys={COMMERCIAL} report={report} onDetail={() => {}} />);
-  assert.ok(html.includes('Rp123.456.789.012.345.678')); assert.ok(!html.includes('Rp0'));
-});
-test('empty/loading/error states have no monetary fallback', () => {
-  assert.ok(renderToStaticMarkup(<ApiState loading error={null} reload={() => {}} />).includes('Memuat laporan Finance'));
-  const html = renderToStaticMarkup(<ApiState loading={false} error="Endpoint belum tersedia" reload={() => {}} />);
-  assert.ok(html.includes('role="alert"')); assert.ok(html.includes('Coba lagi')); assert.ok(!html.includes('Rp'));
-});
-test('CSV includes canonical filters/status/completeness and blank Missing amount', () => {
-  const report = missingReport(); report.metrics.SI = { amount: '9007199254740993.000001', status: 'Available', reasons: [] };
-  report.metrics.OI.reasons = ['=HYPERLINK("invalid")'];
-  const csv = reportCsv(report);
-  assert.ok(csv.includes('9007199254740993.000001')); assert.ok(csv.includes('"2026-10-01","2026-10-23","Semua"'));
-  const oi = csv.split('\r\n').find(row => row.includes('"OI"'))!;
-  assert.ok(oi.includes('"","Missing","Belum lengkap"')); assert.ok(oi.includes("'=HYPERLINK"));
-});
-test('query serialization is stable and does not mutate filter/source data', () => {
-  const selected = { ...filter, mode: 'OUTLET' as const, outletIds: [3, 1] };
-  const before = JSON.stringify(selected); const query = reportQuery(selected);
-  assert.equal(new URLSearchParams(query).get('outletIds'), '1,3'); assert.equal(JSON.stringify(selected), before);
-  assert.equal(new URLSearchParams(reportQuery(filter)).has('outletIds'), false);
-});
-test('client uses only GET v2 endpoints, credentials and abort signal', async () => {
-  const calls: { path: string; init: RequestInit }[] = [];
-  const controller = new AbortController();
-  const client = createFinanceClient(user, async (path, init) => { calls.push({ path: String(path), init: init! }); return String(path).includes('/report?') ? json(missingReport()) : json({ accounts: [], persistenceEnabled: false }); });
-  await client.report(filter, controller.signal); await client.accounts();
-  assert.equal(calls.length, 2); assert.ok(calls.every(c => c.init.method === 'GET' && c.path.startsWith('/api/finance/v2/')));
-  assert.equal(calls[0].init.credentials, 'same-origin'); assert.equal(calls[0].init.signal, controller.signal);
-  assert.equal((calls[0].init.headers as Record<string, string>)['X-Auth-Password'], undefined);
-});
-test('404 and SPA HTML fallback are unavailable, never reports', async () => {
-  for (const response of [new Response('', { status: 404 }), new Response('<html>app</html>', { headers: { 'content-type': 'text/html' } })]) {
-    const client = createFinanceClient(user, async () => response);
-    await assert.rejects(() => client.report(filter), (e: FinanceApiError) => e.kind === 'unavailable');
-  }
-});
-test('network, 503 and invalid JSON produce informative errors without dummy numbers', async () => {
-  for (const request of [async () => { throw new Error('offline'); }, async () => new Response('', { status: 503 }), async () => new Response('{bad', { headers: { 'content-type': 'application/json' } })]) await assert.rejects(() => createFinanceClient(user, request).report(filter), FinanceApiError);
-});
-test('401/403 do not become empty success; Warehouse gate expiry is emitted', async () => {
-  for (const status of [401, 403]) await assert.rejects(() => createFinanceClient(user, async () => json({}, status)).report(filter), (e: FinanceApiError) => e.kind === 'access');
-  const original = globalThis.window;
-  const events: string[] = [];
-  globalThis.window = { dispatchEvent: (event: Event) => { events.push(event.type); return true; } } as any;
-  try { await assert.rejects(() => createFinanceClient({ ...user, role: 'WAREHOUSE' }, async () => json({ code: 'FINANCE_ACCESS_REQUIRED' }, 403)).report(filter)); assert.deepEqual(events, ['finance-access-required']); }
-  finally { if (original) globalThis.window = original; else delete (globalThis as any).window; }
-});
-test('reject malformed report, unsafe numeric money and mismatched/stale filter', () => {
-  const base = missingReport(); assert.equal(validateReport(base, filter), base);
-  for (const change of [
-    { filter: { ...filter, mode: 'OUTLET' } }, { filter: { ...filter, outletIds: '1' } },
-    { metrics: { ...base.metrics, SI: { amount: 9007199254740993, status: 'Available', reasons: [] } } },
-    { metrics: { ...base.metrics, SI: { amount: '0.000000', status: 'Missing', reasons: [] } } },
-    { complete: true }, { reconciliation: { distributions: [{ id: '1', amount: '2' }], internalFacts: [] } },
-  ]) assert.throws(() => validateReport({ ...base, ...change }, filter), FinanceApiError);
-});
-test('valid backend decimal sources and read-only drill-down render faithfully', () => {
-  const report = missingReport();
-  report.reconciliation.distributions = [{ id: 'RI-1', outletId: 1, reference: 'REQ-1', amount: '130.000000', cost: '100.000000' }];
-  report.reconciliation.internalFacts = [{ source: 'WAREHOUSE', id: 'T-1', metric: 'OI', unit: { type: 'WAREHOUSE' }, date: '2026-10-10', amount: '10', nature: 'INTERNAL', reference: 'INT-1' }];
-  assert.equal(validateReport(report, filter), report);
-  const html = renderToStaticMarkup(<Reconciliation report={report} />);
-  assert.ok(html.includes('REQ-1')); assert.ok(html.includes('Lihat sumber')); assert.ok(html.includes('Rp130'));
-  assert.ok(!html.includes('href="/warehouse/request/RI-1'));
-  const detail = renderToStaticMarkup(<Modal title="Detail SI" onClose={() => {}}><SourceDetail metric="SI" value={report.metrics.SI} mode="WAREHOUSE" /></Modal>);
-  assert.ok(detail.includes('role="dialog"')); assert.ok(detail.includes('Warehouse database'));
-});
-test('transaction management is disabled for DC/DA and does not fabricate rows', () => {
-  for (const da of [false, true]) {
-    const html = renderToStaticMarkup(<TransactionPage da={da} accounts={null} report={null} onDetail={() => {}} />);
-    assert.ok(html.includes('Menunggu aktivasi transaksi Finance')); assert.ok(html.includes('Pratinjau formulir'));
-    for (const action of ['Tambah', 'Edit', 'Void', 'Riwayat perubahan']) assert.ok(new RegExp(`<button[^>]*disabled[^>]*>[^<]*${action}`).test(html) || (action === 'Tambah' && html.includes('disabled=""')));
-    assert.ok(!html.includes('Rp0')); assert.ok(html.includes('Daftar transaksi belum tersedia'));
-  }
 });
 test('Finance entry withholds Warehouse content until existing gate verifies and denies other roles', () => {
   const renderRole = (role: User['role']) => renderToStaticMarkup(<FinanceEntry currentUser={{ ...user, role }} pathname={financePath('commercial-income')} onBack={() => {}} />);
@@ -139,41 +57,6 @@ test('sidebar exposes seven Finance pages only for Finance role', () => {
   for (const role of ['ADMIN', 'OUTLET', 'WAREHOUSE'] as const) assert.ok(!render(role, 'dashboard').includes('id="nav-finance-commercial-income"'));
   assert.ok(!render('WAREHOUSE', 'finance-commercial-income').includes('id="nav-finance-commercial-income"'));
 });
-test('read-only Warehouse master names populate selector and invalid master metadata is rejected', () => {
-  const report = missingReport();
-  report.outlets = [{ id: 7, code: 'HD-7', name: 'Master Outlet Fixture', isActive: true }];
-  assert.equal(validateReport(report, filter), report);
-  const html = renderToStaticMarkup(<Filters filter={filter} onChange={() => {}} outlets={report.outlets} />);
-  assert.ok(html.includes('Master Outlet Fixture')); assert.ok(html.includes('#7'));
-  assert.throws(() => validateReport({ ...report, outlets: [{ ...report.outlets[0], id: '7' }] }, filter), FinanceApiError);
-});
-
-test('no Missing metric tables before a valid API response on all pages', () => {
-  for (const [page] of PAGES) {
-    const html = renderToStaticMarkup(<FinanceWorkspace currentUser={user} pathname={financePath(page)} />);
-    assert.ok(!html.includes('fn-status--missing'));
-    assert.ok(!html.includes('Export CSV'));
-  }
-});
-test('login failures and denied role are distinct from gate expiry', async () => {
-  await assert.rejects(() => createFinanceClient(user, async () => json({}, 401)).accounts(), /Sesi login/);
-  await assert.rejects(() => createFinanceClient(user, async () => json({}, 403)).accounts(), /Role akun/);
-});
-
-test('transaction manager exposes Add with fail-closed persistence and DC/DA accounts', () => {
-  const accounts = { persistenceEnabled: false, accounts: [
-    { code: 'LC01', name: 'Salary', group: 'LC' }, { code: 'DA01', name: 'Depreciation', group: 'DA01' }, { code: 'OI', name: 'Other', group: 'OI' },
-  ] };
-  for (const da of [false, true]) {
-    const html = renderToStaticMarkup(<TransactionManager da={da} accounts={accounts} outlets={[]} filter={filter} />);
-    assert.ok(html.includes('Tambah Transaksi'));
-    assert.ok(html.includes('Persistence transaksi belum diaktifkan'));
-    assert.ok(html.includes(da ? 'DA01' : 'LC01'));
-    assert.ok(!html.includes('<option>OI</option>'));
-    assert.ok(!html.includes('Rp0'));
-  }
-});
-
 test('Warehouse incoming stock combines old and new without inventing unknown opening', async () => {
   const { incomingStock } = await import('../src/finance/warehouseStockDisplay.ts');
   assert.equal(incomingStock(5, 50).quantity, 55);

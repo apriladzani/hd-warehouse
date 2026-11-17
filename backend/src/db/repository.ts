@@ -1471,11 +1471,21 @@ export async function getFinancePeriods(ledger?: LedgerData): Promise<FinancePer
 export async function assertOpenPeriodDate(executor: InventoryExecutor, date: string) {
   const day = String(date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
+  const closed = (await closedPeriodChecker(executor))(day);
+  if (closed) throw new Error(`${closed} sudah ditutup. Gunakan form koreksi.`);
+}
+
+// The same rule for many dates at once (Finance entries, HD Outlet sync): the
+// label of the closed period a business date falls in, or null when it is open.
+export async function closedPeriodChecker(executor: InventoryExecutor = db): Promise<(day: string) => string | null> {
   const ledger = await loadLedger(executor);
-  const at = effectiveTime(Date.now(), day);
-  if (!ledger.periods.some((period) => at < period.end)) return;
-  const closed = (await getFinancePeriods(ledger)).find((period) => period.status === 'Closed' && period.endAt && at < Date.parse(period.endAt));
-  throw new Error(`${closed?.label ?? 'Periode sebelumnya'} sudah ditutup. Gunakan form koreksi.`);
+  const periods = await getFinancePeriods(ledger); // from the loaded ledger, no further query
+  return (day: string) => {
+    const at = effectiveTime(Date.now(), day);
+    if (!ledger.periods.some((period) => at < period.end)) return null;
+    const closed = periods.find((period) => period.status === 'Closed' && period.endAt && at < Date.parse(period.endAt));
+    return closed?.label ?? 'Periode sebelumnya';
+  };
 }
 
 export async function seedHDItemsIfEmpty() {

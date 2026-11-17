@@ -1233,11 +1233,140 @@ test('Finance ledger: only Finance writes, same origin only, valid outlet, no du
     assert.equal((await ledgerPost(finance, base, '', salary('smoke-salary-key-0002', { unit: { type: 'OUTLET', outletId: 5 } }))).status, 400, 'inactive outlet');
     assert.equal((await ledgerPost(finance, base, '', salary('smoke-salary-key-0002', { amount: '-5' }))).status, 400);
     assert.equal((await ledgerPost(finance, base, '', salary('smoke-salary-key-0002'))).status, 201);
-    assert.equal((await ledgerPost(finance, base, '', salary('smoke-salary-key-0002'))).status, 400, 'a double click is not a second salary');
+    assert.equal((await ledgerPost(finance, base, '', salary('smoke-salary-key-0002'))).status, 409, 'a double click is not a second salary');
     const warehouseRent = await ledgerPost(finance, base, '', salary('smoke-rent-key-000001', { unit: { type: 'WAREHOUSE' }, accountCode: 'LP01' }));
     assert.equal(warehouseRent.status, 201);
     const [[count]] = await connection.query('SELECT COUNT(*) AS n FROM finance_transactions');
     assert.equal(Number(count.n), 2);
     assert.equal((await finance.call('GET', '/api/finance/v2/accounts')).body.persistenceEnabled, true);
+  });
+});
+
+// Brief scenario: HD Outlet daily report of Outlet Cisalak, 17 Nov 2026.
+const CISALAK_DAY = '2026-11-17';
+const cisalakReport = (extra: Record<string, unknown> = {}) => ({
+  id: 501, reportDate: CISALAK_DAY, outletName: 'Cisalak', totalIncome: '891500.00', totalLoss: '0.00', totalExpense: '23000.00',
+  expenses: { gas: '0.00', meal: '13000.00', bonus: '10000.00' }, payload: { id: 501, payments: { tunai: 500000, qr: 391500, tf: 0 } }, ...extra,
+});
+const fakeHdOutlet = (reports: () => any[], fail = false) => ({
+  outlets: async () => { if (fail) throw Object.assign(new Error('HD Outlet tidak dapat dihubungi.'), { code: 'NETWORK' }); return [{ id: 77, name: 'Cisalak', active: true }]; },
+  expenseCategories: async () => [{ key: 'meal', name: 'Meal' }, { key: 'bonus', name: 'Bonus' }, { key: 'gas', name: 'Gas' }],
+  reports: async () => ({ reports: reports(), errors: [] }),
+}) as any;
+async function withCisalak(connection: any) {
+  await connection.query("INSERT INTO outlets (id, outlet_code, outlet_name, is_active) VALUES (3, 'CSL', 'Cisalak', 1)");
+  // Warehouse approved for Cisalak that day: 10 kg chicken (Raw Material) and 5 boxes (Packaging) at the request price.
+  await connection.query(`INSERT INTO requests (id, request_code, user_id, requester_name, outlet_id, request_date, status, payment_method, total_amount)
+    VALUES (90, 'REQ-CSL-1', 1, 'Cisalak', 3, ?, 'Approved', 'Transfer', 510000), (91, 'REQ-CSL-2', 1, 'Cisalak', 3, ?, 'Cancelled', 'Transfer', 450000)`, [CISALAK_DAY, CISALAK_DAY]);
+  // HPP at approval: chicken 20.000/kg, box 9.000.
+  await connection.query(`INSERT INTO request_items (request_id, item_id, requested_quantity, approved_quantity, price, status, approved_at, unit_cost_snapshot) VALUES
+    (90, 1, 10, 10, 45000, 'Approved', ?, 20000), (90, 2, 5, 5, 12000, 'Approved', ?, 9000), (91, 1, 10, 10, 45000, 'Cancelled', ?, 20000)`, [`${CISALAK_DAY} 09:00:00`, `${CISALAK_DAY} 09:00:00`, `${CISALAK_DAY} 10:00:00`]);
+}
+const cisalakReport_ = (finance: ReturnType<typeof client>) => finance.call('GET', `/api/finance/v2/report?mode=OUTLET&startDate=${CISALAK_DAY}&endDate=${CISALAK_DAY}&outletIds=3`);
+const amountOf = (report: any, metric: string) => report.metrics[metric].amount;
+
+test('Cisalak 17 Nov: HD Outlet + manual Listrik + Warehouse COGS give CI, DC, EBITDA, EBIT; re-sync does not double', async () => {
+  await withApi(async ({ connection, base }) => {
+    const { syncHdOutlet } = await import('../src/finance/hdOutletSync.ts');
+    await withCisalak(connection);
+    const finance = await financeClient(connection, base);
+    const first = await syncHdOutlet({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: fakeHdOutlet(() => [cisalakReport()]) });
+    assert.equal(first.status, 'success', first.messages.join(' | '));
+    assert.equal(first.created, 3, 'SI, Meal, Bonus (SH and gas are zero)');
+    const [[mapping]] = await connection.query('SELECT outlet_id, matched_by FROM hdoutlet_outlet_mappings WHERE hd_outlet_id = 77');
+    assert.deepEqual([mapping.outlet_id, mapping.matched_by], [3, 'auto'], 'same name, paired automatically for Finance to check');
+
+    const again = await syncHdOutlet({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: fakeHdOutlet(() => [cisalakReport()]) });
+    assert.deepEqual([again.created, again.updated, again.voided], [0, 0, 0]);
+    const [[count]] = await connection.query("SELECT COUNT(*) AS n FROM finance_transactions WHERE source = 'hdoutlet'");
+    assert.equal(Number(count.n), 3, 'syncing the same report twice does not double it');
+
+    let report = (await cisalakReport_(finance)).body;
+    assert.deepEqual([amountOf(report, 'SI'), amountOf(report, 'SH'), amountOf(report, 'LC')], ['891500.000000', '0.000000', '23000.000000']);
+    assert.equal(report.metrics.SI.status, 'Available');
+    assert.deepEqual(report.sources.SI, ['HD Outlet API']);
+
+    const listrik = await ledgerPost(finance, base, '/batch', { batchKey: 'cisalak-listrik-000001', rows: [{ date: CISALAK_DAY, unit: { type: 'OUTLET', outletId: 3 }, accountCode: 'UC01', amount: '300000', notes: 'Listrik' }] });
+    assert.equal(listrik.status, 201);
+    report = (await cisalakReport_(finance)).body;
+    // COGS: 10 × 45.000 (CRW) + 5 × 12.000 (CPM); the cancelled request is not COGS.
+    const cogs = 10 * 45000 + 5 * 12000, ci = 891500 - 0 - cogs, dc = 323000;
+    for (const [metric, expected] of [['UC', 300000], ['DC', dc], ['CRW', 450000], ['CPM', 60000], ['COGS', cogs], ['CM', 891500], ['CI', ci], ['EBITDA', ci - dc], ['DA', 0], ['EBIT', ci - dc]] as const) {
+      assert.equal(amountOf(report, metric), `${expected}.000000`, metric);
+    }
+    assert.deepEqual(report.sources.DC, ['Finance manual', 'HD Outlet API']);
+    assert.deepEqual(report.sources.COGS, ['Warehouse']);
+
+    const detail = (await finance.call('GET', `/api/finance/v2/report/detail?mode=OUTLET&startDate=${CISALAK_DAY}&endDate=${CISALAK_DAY}&outletIds=3&metric=LC`)).body;
+    assert.deepEqual(detail.accounts.map((a: any) => [a.code, a.amount]), [['LC03', '10000.000000'], ['LC04', '13000.000000']]);
+  });
+});
+
+test('HD Outlet: a corrected report updates in place, an unknown expense waits for a code, the API down keeps old data', async () => {
+  await withApi(async ({ connection, base }) => {
+    const { syncHdOutlet } = await import('../src/finance/hdOutletSync.ts');
+    await withCisalak(connection);
+    const finance = await financeClient(connection, base);
+    await syncHdOutlet({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: fakeHdOutlet(() => [cisalakReport()]) });
+    const corrected = await syncHdOutlet({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual',
+      client: fakeHdOutlet(() => [cisalakReport({ totalIncome: '900000.00', expenses: { meal: '13000.00', bonus: '10000.00', galon: '8000.00' } })]) });
+    assert.deepEqual([corrected.created, corrected.updated], [0, 1]);
+    let report = (await cisalakReport_(finance)).body;
+    assert.equal(amountOf(report, 'SI'), '900000.000000');
+    assert.equal(report.metrics.DC.status, 'Partial', 'Galon has no code yet');
+    assert.ok(report.metrics.DC.reasons.some((r: string) => /belum dipetakan/.test(r)));
+
+    const down = await syncHdOutlet({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: fakeHdOutlet(() => [], true) });
+    assert.equal(down.status, 'failed');
+    report = (await cisalakReport_(finance)).body;
+    assert.equal(amountOf(report, 'SI'), '900000.000000', 'data synced before stays');
+    const [[run]] = await connection.query('SELECT status, message FROM hdoutlet_sync_runs ORDER BY id DESC LIMIT 1');
+    assert.equal(run.status, 'failed'); assert.match(run.message, /tidak dapat dihubungi/);
+  });
+});
+
+test('Finance entries: closed period refused; synced rows cannot be edited by hand', async () => {
+  await withApi(async ({ connection, base, warehouse }) => {
+    const { syncHdOutlet } = await import('../src/finance/hdOutletSync.ts');
+    await withCisalak(connection);
+    const finance = await financeClient(connection, base);
+    const day = todayJakarta();
+    await syncHdOutlet({ startDate: day, endDate: day, trigger: 'manual', client: fakeHdOutlet(() => [cisalakReport({ reportDate: day })]) });
+    const [[synced]] = await connection.query("SELECT id, version FROM finance_transactions WHERE source = 'hdoutlet' LIMIT 1");
+    const edit = await fetch(`${base}/api/finance/v2/transactions/${synced.id}`, { method: 'PUT', headers: { 'content-type': 'application/json', origin: base, cookie: [...finance.cookies].map(([k, v]) => `${k}=${v}`).join('; ') },
+      body: JSON.stringify({ date: day, unit: { type: 'OUTLET', outletId: 3 }, accountCode: 'LC04', amount: '1', notes: 'x', version: synced.version }) });
+    assert.equal(edit.status, 400); assert.match((await edit.json()).error, /HD Outlet/);
+
+    const closed = await warehouse.call('POST', '/api/inventory/stock-opname', { examinationDate: day, createdBy: 'Gudang', createdByUserId: 2, submissionKey: 'finance-closing',
+      physicalStocks: [{ itemId: 1, physicalStock: 100 }, { itemId: 2, physicalStock: 100 }] });
+    assert.equal(closed.status, 201);
+    // Closing today closes everything up to the closing moment: yesterday is inside it.
+    const yesterday = new Date(Date.parse(`${day}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
+    const refused = await ledgerPost(finance, base, '/batch', { batchKey: 'closed-period-key-0001', rows: [{ date: yesterday, unit: { type: 'WAREHOUSE' }, accountCode: 'UC01', amount: '1000', notes: 'Listrik' }] });
+    assert.equal(refused.status, 409); assert.match(refused.body.error, /sudah ditutup/);
+  });
+});
+
+test('Warehouse sells to outlets: its Sales Income and HPP; Keseluruhan removes the internal sale, CI unchanged', async () => {
+  await withApi(async ({ connection, base }) => {
+    const { syncHdOutlet } = await import('../src/finance/hdOutletSync.ts');
+    await withCisalak(connection);
+    const finance = await financeClient(connection, base);
+    await syncHdOutlet({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: fakeHdOutlet(() => [cisalakReport()]) });
+    await ledgerPost(finance, base, '/batch', { batchKey: 'cisalak-listrik-000002', rows: [{ date: CISALAK_DAY, unit: { type: 'OUTLET', outletId: 3 }, accountCode: 'UC01', amount: '300000', notes: 'Listrik' }] });
+    const view = async (mode: string) => (await finance.call('GET', `/api/finance/v2/report?mode=${mode}&startDate=${CISALAK_DAY}&endDate=${CISALAK_DAY}&outletIds=3`)).body;
+
+    // Warehouse: 10 × 45.000 + 5 × 12.000 sold to Cisalak (the cancelled request is not a sale); HPP 10 × 20.000 + 5 × 9.000.
+    const warehouse = await view('WAREHOUSE');
+    for (const [metric, expected] of [['SI', 510000], ['CRW', 200000], ['CPM', 45000], ['COGS', 245000], ['CI', 265000]] as const) assert.equal(amountOf(warehouse, metric), `${expected}.000000`, `Warehouse ${metric}`);
+    assert.deepEqual(warehouse.sources.SI, ['Warehouse']);
+    assert.equal(warehouse.metrics.SI.status, 'Available');
+
+    // Keseluruhan: the 510.000 Warehouse → Cisalak is internal.
+    const all = await view('ALL');
+    assert.equal(all.elimination.amount, '510000.000000');
+    for (const [metric, expected] of [['SI', 891500], ['COGS', 245000], ['CI', 646500], ['DC', 323000], ['EBITDA', 323500], ['EBIT', 323500]] as const) assert.equal(amountOf(all, metric), `${expected}.000000`, `Keseluruhan ${metric}`);
+    const unitCi = all.byUnit.map((u: any) => Number(u.metrics.CI.amount)).reduce((a: number, b: number) => a + b, 0);
+    assert.equal(unitCi, 646500, 'CI of the whole = Cisalak CI + Warehouse CI');
   });
 });

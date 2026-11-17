@@ -1,5 +1,5 @@
 import mysql, { type Pool, type PoolConnection } from 'mysql2/promise';
-import { mysqlSelectExecutor, type SelectExecutor } from './WarehouseFinanceDataSource.ts';
+import { mysqlSelectExecutor, type SelectExecutor } from './selectExecutor.ts';
 import { loadFinanceEnvironment, FINANCE_ENV_KEYS } from './environment.ts';
 
 export type FinanceFailureCategory = 'configuration' | 'environment_file' | 'sql_guard' | 'connection' | 'grants_metadata' | 'grants_policy' | 'query' | 'authentication';

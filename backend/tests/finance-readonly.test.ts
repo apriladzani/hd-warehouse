@@ -6,9 +6,8 @@ import { createHash, scryptSync } from 'node:crypto';
 import { mountFinanceReadOnly } from '../src/finance/mount.ts';
 import { createFinanceReadAuthenticator, verifyFinanceLoginPassword } from '../src/finance/authentication.ts';
 import { assertSelectOnlyGrants, guardedFinanceExecutor, financePoolOptions, createFinanceReadDatabase, FinanceReadUnavailable } from '../src/finance/readOnlyConnection.ts';
-import { WarehouseFinanceDataSource, type SelectExecutor } from '../src/finance/WarehouseFinanceDataSource.ts';
-import { FinanceAggregationService } from '../src/finance/FinanceAggregationService.ts';
-import { unavailable, type Filter } from '../src/finance/domain.ts';
+import type { SelectExecutor } from '../src/finance/selectExecutor.ts';
+import type { Filter } from '../src/finance/domain.ts';
 import { createFinanceClient } from '../../frontend/src/finance/api.ts';
 const filter: Filter = { mode: 'WAREHOUSE', startDate: '2026-10-01', endDate: '2026-10-23', outletIds: [7], timezone: 'Asia/Jakarta' };
 const cookie = 'a'.repeat(43), password = 'fixture-password';
@@ -22,8 +21,8 @@ function dbFixture(role = 'FINANCE', gate = true) {
     if (/FROM finance_access_sessions/.test(sql)) return gate ? [{ expiresIn: 500 }] : [];
     if (/FROM finance_security/.test(sql)) return [{ configured: 1 }];
     if (/FROM outlets/.test(sql)) return [{ id: 7, code: 'HD-7', name: 'Verified fixture master', isActive: 1 }];
-    if (/information_schema.COLUMNS/.test(sql)) return [{ tableName: 'request_items', columnName: 'unit_cost_snapshot' }];
-    if (/FROM request_items/.test(sql)) return [{ id: '41', outletId: 7, reference: 'REQ-FIXTURE', quantity: '2', price: '130', unitCost: '100.000001' }];
+    if (/FROM finance_accounts ORDER/.test(sql)) throw new Error('table not created yet');
+    if (/FROM request_items/.test(sql)) return [{ id: '41', outletId: 7, reference: 'REQ-FIXTURE', quantity: '2', price: '130', date: '2026-10-10', category: 'Raw Material', itemName: 'Ayam' }];
     return [];
   } };
   return { db, calls };
@@ -38,7 +37,7 @@ function invoke(app: Express, url: string, hdrs = headers, method = 'GET') {
     app.handle(req as any, res as any, error => error ? reject(error) : resolve({ status: 404, body: null }));
   });
 }
-const reportUrl = (mode = 'WAREHOUSE') => `/api/finance/v2/report?mode=${mode}&startDate=2026-10-01&endDate=2026-10-23&outletIds=7`;
+const reportUrl = (mode = 'OUTLET') => `/api/finance/v2/report?mode=${mode}&startDate=2026-10-01&endDate=2026-10-23&outletIds=7`;
 
 test('actual server registers v2 paths before fallbacks without listening or touching DB in test mode', async () => {
   const previous = process.env.NODE_ENV;
@@ -54,21 +53,23 @@ test('actual server registers v2 paths before fallbacks without listening or tou
 test('mounted production router serves both exact v2 paths and not unprefixed paths', async () => {
   const app = express(), fixture = dbFixture(); mountFinanceReadOnly(app, fixture.db);
   const accounts = await invoke(app, '/api/finance/v2/accounts');
-  assert.equal(accounts.status, 200); assert.equal(accounts.body.accounts.length, 27); assert.equal(accounts.body.persistenceEnabled, false);
-  const report = await invoke(app, reportUrl()); assert.equal(report.status, 200); assert.equal(report.body.reconciliation.distributions[0].reference, 'REQ-FIXTURE');
+  assert.equal(accounts.status, 200); assert.equal(accounts.body.accounts.length, 31, 'before the first write the seed chart of accounts is shown');
+  assert.equal(accounts.body.persistenceEnabled, false);
+  const report = await invoke(app, reportUrl()); assert.equal(report.status, 200); assert.equal(report.body.metrics.CRW.amount, '260.000000');
   assert.equal((await invoke(app, '/accounts')).status, 404);
   assert.equal((await invoke(app, '/api/finance/v2/report', headers, 'POST')).status, 405);
   assert.ok(fixture.calls.every(call => /^SELECT\s/.test(call.sql)));
 });
-test('mounted report passes date/outlet filters, master, exact reconciliation cost and Missing external metrics', async () => {
+test('mounted report passes date/outlet filters, master, COGS from approved Warehouse lines and Missing outlet sales', async () => {
   const app = express(), { db, calls } = dbFixture(); mountFinanceReadOnly(app, db);
   const { body } = await invoke(app, reportUrl());
-  assert.deepEqual(body.filter, filter); assert.equal(body.outlets[0].name, 'Verified fixture master');
-  assert.equal(body.reconciliation.distributions[0].cost, '200.000002');
-  assert.equal(body.metrics.SI.amount, null); assert.equal(body.metrics.COGS.amount, null); assert.equal(body.metrics.CI.amount, null);
-  assert.equal(body.metrics.SI.status, 'Missing'); assert.equal(body.complete, false);
+  assert.deepEqual(body.filter, { ...filter, mode: 'OUTLET' }); assert.equal(body.outlets[0].name, 'Verified fixture master');
+  assert.deepEqual([body.metrics.CRW.amount, body.metrics.CRW.status], ['260.000000', 'Available']);
+  assert.deepEqual(body.sources.CRW, ['Warehouse']);
+  assert.equal(body.metrics.SI.status, 'Missing'); assert.equal(body.metrics.CI.status, 'Missing'); assert.equal(body.complete, false);
   const query = calls.find(c => c.sql.includes('FROM request_items'))!;
   assert.deepEqual(query.parameters, ['2026-10-01', '2026-10-23', 7]); assert.ok(query.sql.includes('r.outlet_id IN (?)'));
+  assert.ok(query.sql.includes("r.status <> 'Cancelled'"), 'cancelled requests never reach COGS');
 });
 test('mounted role matrix and gate prevent unauthorized report reads', async () => {
   for (const [role, gate, expected] of [['FINANCE', false, 200], ['WAREHOUSE', true, 200], ['WAREHOUSE', false, 403], ['ADMIN', true, 403], ['OUTLET', true, 403]] as const) {
@@ -113,12 +114,12 @@ test('invalid date/outlet filters rejected before Warehouse queries', async () =
   for (const url of ['/api/finance/v2/report?mode=WAREHOUSE&startDate=2026-02-30&endDate=2026-10-23', reportUrl().replace('outletIds=7', 'outletIds=7%20OR%201=1')]) assert.equal((await invoke(app, url)).status, 400);
   assert.ok(fixture.calls.every(c => c.sql.includes('FROM users')));
 });
-test('Outlet and All modes keep Outlet API disabled and totals incomplete', async () => {
+test('Outlet and All modes: an outlet without HD Outlet data is Missing, the totals incomplete, amounts still the known sum', async () => {
   const app = express(), fixture = dbFixture(); mountFinanceReadOnly(app, fixture.db);
   for (const mode of ['OUTLET', 'ALL']) {
     const response = await invoke(app, reportUrl(mode)); assert.equal(response.status, 200);
-    assert.equal(response.body.complete, false); assert.equal(response.body.metrics.SI.amount, null);
-    assert.ok(response.body.issues.some((i: any) => i.reason.includes('integration disabled')));
+    assert.equal(response.body.complete, false); assert.equal(response.body.metrics.SI.status, 'Missing'); assert.equal(response.body.metrics.SI.amount, '0.000000');
+    assert.ok(response.body.metrics.SI.reasons.some((r: string) => r.includes('belum dipetakan')));
   }
 });
 test('database failure during authentication is 503; data failure is explicit Error/null', async () => {
@@ -126,21 +127,8 @@ test('database failure during authentication is 503; data failure is explicit Er
   assert.equal((await invoke(app, '/api/finance/v2/accounts')).status, 503);
   const dataApp = express(), fixture = dbFixture();
   mountFinanceReadOnly(dataApp, { select: async (sql, args) => { if (sql.includes('FROM users')) return fixture.db.select(sql, args); throw new Error('database down secret'); } });
-  const response = await invoke(dataApp, reportUrl()); assert.equal(response.status, 200); assert.equal(response.body.metrics.CI.status, 'Error'); assert.equal(response.body.metrics.CI.amount, null);
+  const response = await invoke(dataApp, reportUrl()); assert.equal(response.status, 503, 'no partial numbers when the database cannot be read');
   assert.ok(!JSON.stringify(response.body).includes('database down secret'));
-});
-test('Outlet mode with no readable units preserves Error rather than silently becoming Missing', () => {
-  const result = new FinanceAggregationService().aggregate({ ...filter, mode: 'OUTLET', outletIds: null }, [unavailable('WAREHOUSE', 'Error', 'DB unavailable'), unavailable('OUTLET', 'Missing', 'Disabled')]);
-  assert.equal(result.metrics.SI.status, 'Error'); assert.equal(result.metrics.EBIT.amount, null);
-});
-test('missing historical snapshot schema uses NULL cost, never triggers migration', async () => {
-  const queries: string[] = [];
-  const result = await new WarehouseFinanceDataSource({ async select(sql) {
-    queries.push(sql);
-    if (sql.includes('FROM request_items')) { assert.ok(sql.includes('CAST(NULL AS CHAR) AS unitCost')); assert.ok(!sql.includes('JOIN inventory_cost_snapshots')); return [{ id: '2', outletId: null, reference: 'REQ-2', quantity: '1', price: '1', unitCost: null }]; }
-    return [];
-  } }).read({ ...filter, outletIds: null });
-  assert.equal(result.distributions[0].cost, null); assert.ok(queries.every(sql => /^SELECT\s/.test(sql)));
 });
 test('SELECT-only grants accepted; write/admin/FILE/EXECUTE/roles/grant option rejected', () => {
   const grant = (text: string) => ({ Grant: text });
@@ -173,7 +161,7 @@ test('frontend typed client consumes actual mounted mock-backed report contract 
     const result = await invoke(app, String(url), h);
     return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
   });
-  const report = await client.report(filter); assert.equal(report.outlets[0].id, 7); assert.equal(report.metrics.SI.amount, null);
+  const report = await client.report({ ...filter, mode: 'OUTLET' }); assert.equal(report.outlets[0].id, 7); assert.equal(report.metrics.SI.status, 'Missing'); assert.equal(report.metrics.CRW.amount, '260.000000');
   const accounts = await client.accounts(); assert.equal(accounts.persistenceEnabled, false);
 });
 
