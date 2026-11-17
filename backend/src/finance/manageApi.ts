@@ -6,17 +6,20 @@ import { ensureFinanceTransactionSchema } from './transactionRepository.ts';
 import { financeWriteGuard, type Actor } from './transactionApi.ts';
 import { hdOutletOverview, MappingError, setExpenseMapping, setOutletMapping, syncHdOutlet } from './hdOutletSync.ts';
 import { HdOutletError } from './hdOutletClient.ts';
+import { hdAttendanceOverview, setHdaOutletMapping, syncHdAttendance } from './hdAttendanceSync.ts';
+import { HdAttendanceError } from './hdAttendanceClient.ts';
 import { date } from './validation.ts';
 
 // Finance administration, FINANCE role only (mounted at /api/finance/v2/manage):
-// chart of accounts, HD Outlet mappings, sync log and "Sinkron sekarang".
-export function createFinanceManageRouter(authenticate: (req: Request) => Promise<Actor | null>, trustedOrigins: string[] = [], sync: typeof syncHdOutlet = syncHdOutlet) {
+// chart of accounts, HD Outlet and HD Attendance mappings, sync logs and
+// "Sinkron sekarang".
+export function createFinanceManageRouter(authenticate: (req: Request) => Promise<Actor | null>, trustedOrigins: string[] = [], sync: typeof syncHdOutlet = syncHdOutlet, syncAttendance: typeof syncHdAttendance = syncHdAttendance) {
   const router = Router();
   router.use(financeWriteGuard(authenticate, trustedOrigins));
   const actorOf = (res: Response) => res.locals.actor as Actor;
   const fail = (res: Response, error: unknown, fallback: string) => {
     if (error instanceof AccountError || error instanceof MappingError) { res.status(400).json({ error: error.message }); return; }
-    if (error instanceof HdOutletError && error.code === 'BUSY') { res.status(409).json({ error: error.message }); return; }
+    if ((error instanceof HdOutletError || error instanceof HdAttendanceError) && error.code === 'BUSY') { res.status(409).json({ error: error.message }); return; }
     console.error('[finance-manage]', error instanceof Error ? error.message : error);
     res.status(500).json({ error: fallback });
   };
@@ -46,12 +49,16 @@ export function createFinanceManageRouter(authenticate: (req: Request) => Promis
   });
 
   // "Sinkron sekarang" for a period (at most 62 days per run).
-  router.post('/hdoutlet/sync', async (req, res) => {
-    let startDate: string, endDate: string;
+  const period = (req: Request, res: Response) => {
     try {
-      startDate = date(req.body?.startDate); endDate = date(req.body?.endDate);
+      const startDate = date(req.body?.startDate), endDate = date(req.body?.endDate);
       if (endDate < startDate || (Date.parse(endDate) - Date.parse(startDate)) / 86400000 > 62) throw new Error();
-    } catch { res.status(400).json({ error: 'Periode sinkron tidak valid (maksimal 62 hari).' }); return; }
+      return { startDate, endDate };
+    } catch { res.status(400).json({ error: 'Periode sinkron tidak valid (maksimal 62 hari).' }); return null; }
+  };
+  router.post('/hdoutlet/sync', async (req, res) => {
+    const range = period(req, res); if (!range) return;
+    const { startDate, endDate } = range;
     try {
       const actor = actorOf(res);
       const result = await sync({ startDate, endDate, trigger: 'manual', actor });
@@ -68,6 +75,24 @@ export function createFinanceManageRouter(authenticate: (req: Request) => Promis
   router.put('/hdoutlet/expenses/:key', async (req, res) => {
     if (!/^[a-z][a-z0-9_]{0,59}$/.test(req.params.key)) { res.status(400).json({ error: 'Jenis pengeluaran tidak valid.' }); return; }
     try { res.json(await setExpenseMapping(req.params.key, req.body ?? {}, actorOf(res))); } catch (error) { fail(res, error, 'Mapping pengeluaran gagal disimpan.'); }
+  });
+
+  router.get('/hdattendance', async (_req, res) => {
+    try { res.json(await hdAttendanceOverview()); } catch (error) { fail(res, error, 'Status integrasi HD Attendance tidak dapat dibaca.'); }
+  });
+
+  router.post('/hdattendance/sync', async (req, res) => {
+    const range = period(req, res); if (!range) return;
+    try {
+      const result = await syncAttendance({ ...range, trigger: 'manual', actor: actorOf(res) });
+      res.status(result.status === 'failed' ? 502 : 200).json(result);
+    } catch (error) { fail(res, error, 'Sinkron HD Attendance gagal dijalankan.'); }
+  });
+
+  router.put('/hdattendance/outlets/:hdaOutletId', async (req, res) => {
+    const hdaOutletId = Number(req.params.hdaOutletId), outletId = req.body?.outletId;
+    if (!Number.isSafeInteger(hdaOutletId) || hdaOutletId <= 0 || !(outletId === null || (Number.isSafeInteger(outletId) && outletId > 0))) { res.status(400).json({ error: 'Mapping outlet tidak valid.' }); return; }
+    try { res.json(await setHdaOutletMapping(hdaOutletId, outletId, actorOf(res))); } catch (error) { fail(res, error, 'Mapping outlet gagal disimpan.'); }
   });
 
   return router;

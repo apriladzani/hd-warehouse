@@ -63,7 +63,7 @@ export async function loadReportInput(db: SelectExecutor, filter: Filter, option
       facts.push({
         id: `L:${text(row, 'id')}`, kind: 'ledger', metric, accountCode: text(row, 'accountCode'), accountName: text(row, 'accountName'), amount, date: text(row, 'date'),
         unit: row.unitType === 'WAREHOUSE' ? { type: 'WAREHOUSE' } : { type: 'OUTLET', outletId: id(row.outletId) },
-        source: row.source === 'hdoutlet' ? 'HD Outlet API' : 'Finance manual', reference: String(row.reference ?? ''), notes: String(row.notes ?? ''),
+        source: row.source === 'hdoutlet' ? 'HD Outlet API' : row.source === 'hdattendance' ? 'HD Attendance API' : 'Finance manual', reference: String(row.reference ?? ''), notes: String(row.notes ?? ''),
         attachment: row.attachment == null ? null : String(row.attachment),
       });
     }
@@ -167,6 +167,29 @@ export async function loadReportInput(db: SelectExecutor, filter: Filter, option
         if (last) status.lastSync = { status: String(last.status), finishedAt: last.finishedMs == null ? null : new Date(Number(last.finishedMs)).toISOString(), message: last.message == null ? null : String(last.message) };
         if (last?.status === 'failed' && coverage.some(c => c.metrics.includes('SI'))) issues.push({ metrics: [...hdMetrics], status: 'Partial', reason: `Sinkron HD Outlet terakhir gagal; data lama tetap dipakai. ${String(last.message ?? '').split('\n')[0]}` });
       }
+    }
+  }
+  // HD Attendance salaries (LC01) arrive as ledger entries; what stays out of
+  // them is flagged: attendance of an outlet not mapped yet, attendance without
+  // a daily wage, a failed last sync.
+  if (outletScope && await probe('SELECT 1 FROM hdattendance_records r JOIN hdattendance_outlet_mappings m ON m.hda_outlet_id = r.hda_outlet_id LIMIT 0')) {
+    const rows = await db.select(`SELECT r.hda_outlet_name AS name, m.outlet_id AS outletId, COUNT(*) AS count,
+      SUM(r.daily_wage IS NULL OR r.daily_wage <= 0) AS withoutWage
+      FROM hdattendance_records r LEFT JOIN hdattendance_outlet_mappings m ON m.hda_outlet_id = r.hda_outlet_id
+      WHERE r.deleted_at IS NULL AND r.status = 'present' AND r.attendance_date >= ? AND r.attendance_date <= ?
+      GROUP BY r.hda_outlet_id, r.hda_outlet_name, m.outlet_id`, [filter.startDate, filter.endDate]);
+    for (const r of rows) {
+      const name = String(r.name ?? 'outlet tidak dikenal');
+      if (r.outletId == null) {
+        if (!filter.outletIds) issues.push({ metrics: ['LC'], status: 'Partial', reason: `Absensi HD Attendance "${name}" (${Number(r.count)} hari kerja) belum dipetakan ke outlet Warehouse; gajinya belum dihitung (Pengaturan Finance → HD Attendance).` });
+        continue;
+      }
+      const outletId = id(r.outletId);
+      if (Number(r.withoutWage) > 0 && scopeOutlets.includes(outletId)) coverage.push({ unit: { type: 'OUTLET', outletId }, metrics: ['LC'], status: 'Partial', reason: `${outletName(outletId)}: ${Number(r.withoutWage)} absensi HD Attendance tanpa upah harian (posisi karyawan belum diisi); belum dihitung ke gaji.` });
+    }
+    if (await probe('SELECT 1 FROM hdattendance_sync_runs LIMIT 0')) {
+      const [last] = await db.select("SELECT status, message FROM hdattendance_sync_runs WHERE trigger_type <> 'mapping' AND status <> 'running' ORDER BY id DESC LIMIT 1", []);
+      if (last?.status === 'failed') issues.push({ metrics: ['LC'], status: 'Partial', reason: `Sinkron HD Attendance terakhir gagal; data gaji lama tetap dipakai. ${String(last.message ?? '').split('\n')[0]}` });
     }
   }
   return { outlets, facts, coverage, issues, hdOutlet: status };

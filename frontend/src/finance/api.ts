@@ -8,7 +8,7 @@ const record = (value: unknown): value is Record<string, any> => !!value && type
 const amount = (value: unknown) => typeof value === 'string' && /^-?\d{1,18}\.\d{6}$/.test(value);
 const unit = (value: unknown) => record(value) && (value.type === 'WAREHOUSE' || (value.type === 'OUTLET' && Number.isSafeInteger(value.outletId) && value.outletId > 0));
 const STATUSES = ['Available', 'Partial', 'Missing'];
-const SOURCES = ['Finance manual', 'HD Outlet API', 'Warehouse'];
+const SOURCES = ['Finance manual', 'HD Outlet API', 'HD Attendance API', 'Warehouse'];
 function metrics(value: unknown): boolean {
   return record(value) && Object.keys(LABELS).every(key => {
     const metric = value[key];

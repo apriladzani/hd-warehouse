@@ -61,7 +61,7 @@ export function accountMetric(code: string, group: string): BaseMetric {
   return group as BaseMetric;
 }
 
-export type TransactionSource = 'manual' | 'hdoutlet';
+export type TransactionSource = 'manual' | 'hdoutlet' | 'hdattendance';
 export type FinanceTransactionDraft = {
   date: string; unit: Unit; accountCode: string; amount: string; notes: string;
   reference: string; status: 'draft' | 'posted' | 'void'; nature: 'INTERNAL' | 'EXTERNAL';
@@ -92,9 +92,9 @@ export function validateTransaction(input: Record<string, unknown>): FinanceTran
   if (input.legacyEntryId != null && (typeof input.legacyEntryId !== 'string' || !/^[1-9]\d*$/.test(input.legacyEntryId))) throw new Error('Invalid legacy reference');
   if (!Number.isSafeInteger(input.version) || (input.version as number) < 1) throw new Error('Invalid version');
   const source = input.source ?? 'manual';
-  if (source !== 'manual' && source !== 'hdoutlet') throw new Error('Invalid source');
+  if (source !== 'manual' && source !== 'hdoutlet' && source !== 'hdattendance') throw new Error('Invalid source');
   const sourceRef = input.sourceRef == null ? null : text(input.sourceRef, 120, true);
-  if (source === 'hdoutlet' && !sourceRef) throw new Error('Synced entry requires its source reference');
+  if (source !== 'manual' && !sourceRef) throw new Error('Synced entry requires its source reference');
   const attachment = input.attachment == null || input.attachment === '' ? null : String(input.attachment);
   if (attachment !== null && !ATTACHMENT_PATH.test(attachment)) throw new Error('Invalid attachment');
   const counterparty = input.counterparty as Unit | undefined;

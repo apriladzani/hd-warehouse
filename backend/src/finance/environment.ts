@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'dotenv';
-export const FINANCE_ENV_KEYS = ['FINANCE_DB_HOST', 'FINANCE_DB_PORT', 'FINANCE_DB_NAME', 'FINANCE_DB_USER', 'FINANCE_DB_PASSWORD', 'OUTLET_FINANCE_API_BASE_URL', 'OUTLET_FINANCE_API_TOKEN', 'OUTLET_FINANCE_API_TIMEOUT_MS', 'OUTLET_FINANCE_API_ENABLED', 'OUTLET_FINANCE_SYNC_DAYS', 'OUTLET_FINANCE_SYNC_HOUR'] as const;
+export const FINANCE_ENV_KEYS = ['FINANCE_DB_HOST', 'FINANCE_DB_PORT', 'FINANCE_DB_NAME', 'FINANCE_DB_USER', 'FINANCE_DB_PASSWORD', 'OUTLET_FINANCE_API_BASE_URL', 'OUTLET_FINANCE_API_TOKEN', 'OUTLET_FINANCE_API_TIMEOUT_MS', 'OUTLET_FINANCE_API_ENABLED', 'OUTLET_FINANCE_SYNC_DAYS', 'OUTLET_FINANCE_SYNC_HOUR',
+  'HDATTENDANCE_API_ENABLED', 'HDATTENDANCE_API_BASE_URL', 'HDATTENDANCE_API_KEY', 'HDATTENDANCE_API_TIMEOUT_MS', 'HDATTENDANCE_SYNC_DAYS', 'HDATTENDANCE_SYNC_HOUR'] as const;
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 // Source: backend/src/finance; esbuild output: backend/dist/server.js.
 export const FINANCE_ENV_FILE = basename(moduleDirectory) === 'dist'

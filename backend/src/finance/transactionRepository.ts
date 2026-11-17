@@ -11,7 +11,9 @@ export { FINANCE_ACCOUNT_COLUMNS, seedFinanceAccounts };
 // Finance ledger, one row per amount booked to a unit (Warehouse or an outlet),
 // date and account code. Rows typed in by Finance have source 'manual'; rows
 // synced from HD Outlet daily reports have source 'hdoutlet' and a source_ref
-// (hdo:<report id>:<component>) that makes a re-sync an update, never a duplicate.
+// (hdo:<report id>:<component>); salaries from HD Attendance have source
+// 'hdattendance' (hda:<outlet>:<date>:LC01). The source_ref makes a re-sync an
+// update, never a duplicate.
 // Only status 'posted' counts in reports; 'void' is a soft delete.
 export const FINANCE_TRANSACTION_COLUMNS = `
   id CHAR(36) NOT NULL PRIMARY KEY,
@@ -29,7 +31,7 @@ export const FINANCE_TRANSACTION_COLUMNS = `
   idempotency_key VARCHAR(100) NOT NULL,
   legacy_entry_id VARCHAR(20) NULL,
   version INT NOT NULL,
-  source ENUM('manual','hdoutlet') NOT NULL DEFAULT 'manual',
+  source ENUM('manual','hdoutlet','hdattendance') NOT NULL DEFAULT 'manual',
   source_ref VARCHAR(120) NULL,
   attachment_path VARCHAR(80) NULL,
   created_by INT NULL,
@@ -57,7 +59,11 @@ type Query = { query: (sql: string, values?: unknown[]) => Promise<any> };
 export async function migrateFinanceTransactions(executor: Query) {
   const [columns] = await executor.query('SHOW COLUMNS FROM finance_transactions');
   const present = new Set((columns as any[]).map(c => c.Field));
-  if (!present.has('source')) await executor.query("ALTER TABLE finance_transactions ADD COLUMN source ENUM('manual','hdoutlet') NOT NULL DEFAULT 'manual' AFTER version");
+  if (!present.has('source')) await executor.query("ALTER TABLE finance_transactions ADD COLUMN source ENUM('manual','hdoutlet','hdattendance') NOT NULL DEFAULT 'manual' AFTER version");
+  else if (!String((columns as any[]).find(c => c.Field === 'source')?.Type ?? '').includes("'hdattendance'")) {
+    // Adding an enum value keeps every existing row as it is.
+    await executor.query("ALTER TABLE finance_transactions MODIFY COLUMN source ENUM('manual','hdoutlet','hdattendance') NOT NULL DEFAULT 'manual'");
+  }
   if (!present.has('source_ref')) await executor.query('ALTER TABLE finance_transactions ADD COLUMN source_ref VARCHAR(120) NULL AFTER source');
   if (!present.has('attachment_path')) await executor.query('ALTER TABLE finance_transactions ADD COLUMN attachment_path VARCHAR(80) NULL AFTER source_ref');
   const [index] = await executor.query("SHOW INDEX FROM finance_transactions WHERE Key_name = 'uq_finance_transaction_source_ref'");

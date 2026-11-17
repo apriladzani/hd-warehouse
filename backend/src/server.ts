@@ -99,6 +99,7 @@ import type { ItemCategory } from './db/repository.ts';
 import { canAccessDashboard, canReadFinanceDashboard } from './dashboardAccess.ts';
 import { mountFinanceReadOnly } from './finance/mount.ts';
 import { startHdOutletScheduler } from './finance/hdOutletSync.ts';
+import { startHdAttendanceScheduler } from './finance/hdAttendanceSync.ts';
 import { createFinanceTransactionRepository } from './finance/transactionRepository.ts';
 import { chooseRequestOutlet, requestOutletOptions } from './finance/requestOutlet.ts';
 import { LOGO_MAX_BYTES, PRINT_TEMPLATE_KEY, PrintTemplateError, diffTemplates, resolveDeliveryOrderTemplate, validateDeliveryOrderTemplate } from './printTemplate.ts';
@@ -1378,4 +1379,5 @@ if (process.env.NODE_ENV !== 'test') {
   // Nightly HD Outlet → Finance sync; only when OUTLET_FINANCE_API_ENABLED=true.
   // Its tables are created by the first sync, not here.
   if (startHdOutletScheduler()) console.log('HD Outlet sync scheduled nightly (Asia/Jakarta).');
+  if (startHdAttendanceScheduler()) console.log('HD Attendance salary sync scheduled nightly (Asia/Jakarta).');
 }

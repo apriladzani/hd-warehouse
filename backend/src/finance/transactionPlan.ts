@@ -25,9 +25,9 @@ export function planTransactionChange(
   let action: AuditPlan['action'] = 'CREATE';
   if (!before) {
     if (after.status === 'void' || after.version !== 1) throw new TransactionRuleError('Create as draft or posted version 1');
-    if (after.source !== 'manual') throw new TransactionRuleError('Entri HD Outlet hanya dibuat oleh sinkronisasi.');
+    if (after.source !== 'manual') throw new TransactionRuleError('Entri HD Outlet / HD Attendance hanya dibuat oleh sinkronisasi.');
   } else {
-    if (before.source !== 'manual') throw new TransactionRuleError('Data dari HD Outlet tidak dapat diubah manual. Koreksi di HD Outlet lalu sinkron ulang.');
+    if (before.source !== 'manual') throw new TransactionRuleError(before.source === 'hdattendance' ? 'Data gaji dari HD Attendance tidak dapat diubah manual. Koreksi absensi/posisi di HD Attendance lalu sinkron ulang.' : 'Data dari HD Outlet tidak dapat diubah manual. Koreksi di HD Outlet lalu sinkron ulang.');
     for (const field of ['id', 'idempotencyKey', 'legacyEntryId', 'source', 'sourceRef'] as const) {
       if (before[field] !== after[field]) throw new TransactionRuleError('Identity conflict');
     }

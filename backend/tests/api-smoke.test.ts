@@ -1378,3 +1378,57 @@ test('Warehouse sells to outlets: its Sales Income and HPP; Keseluruhan removes 
     assert.equal(unitCi, 646500, 'CI of the whole = Cisalak CI + Warehouse CI');
   });
 });
+
+// HD Attendance salary: present attendance × daily wage of the position, one
+// LC01 entry per outlet per day.
+const fakeHdAttendance = (attendance: () => any[]) => ({
+  outlets: async () => [{ id: 1, name: 'Cisalak' }, { id: 10, name: 'CSK 2 Cisalak' }],
+  positions: async () => [{ id: 1, name: 'Staff/1', dailyWage: '50000.00' }, { id: 3, name: 'Leader/3', dailyWage: '80000.00' }],
+  employees: async () => [{ id: 42, positionId: 1 }, { id: 43, positionId: 3 }, { id: 44, positionId: null }, { id: 46, positionId: 1 }],
+  attendance: async () => ({ rows: attendance(), errors: [] }),
+}) as any;
+const present = (id: number, employeeId: number, outletId = 1, extra: Record<string, unknown> = {}) => ({ id, employeeId, outletId, outletName: outletId === 1 ? 'Cisalak' : 'CSK 2 Cisalak', date: CISALAK_DAY, status: 'present', ...extra });
+
+test('HD Attendance: Cisalak 17 Nov salary = present days × daily wage into LC01; re-sync does not double; not editable by hand', async () => {
+  await withApi(async ({ connection, base }) => {
+    const { syncHdAttendance } = await import('../src/finance/hdAttendanceSync.ts');
+    await withCisalak(connection);
+    const finance = await financeClient(connection, base);
+    const day = () => [present(1, 42), present(2, 43), present(3, 44), present(4, 46, 1, { status: 'sick' }), present(5, 42, 10)];
+    const first = await syncHdAttendance({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: fakeHdAttendance(day) });
+    assert.equal(first.status, 'partial', 'one present employee has no daily wage');
+    assert.equal(first.created, 1, 'only Cisalak is mapped (same name); CSK 2 Cisalak waits for Finance');
+    assert.match(first.messages.join(' '), /1 absensi hadir tanpa upah harian/);
+    assert.match(first.messages.join(' '), /"sick" \(1\)/);
+    const [[entry]] = await connection.query("SELECT t.outlet_id, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS date, CAST(t.amount AS CHAR) AS amount, a.code, t.notes FROM finance_transactions t JOIN finance_accounts a ON a.id = t.account_id WHERE t.source = 'hdattendance'");
+    assert.deepEqual([entry.outlet_id, entry.date, entry.amount, entry.code], [3, CISALAK_DAY, '130000.000000', 'LC01'], 'Staff 50.000 + Leader 80.000');
+    assert.match(entry.notes, /2 karyawan hadir/);
+
+    const again = await syncHdAttendance({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: fakeHdAttendance(day) });
+    assert.deepEqual([again.created, again.updated, again.voided], [0, 0, 0]);
+
+    let report = (await finance.call('GET', `/api/finance/v2/report?mode=OUTLET&startDate=${CISALAK_DAY}&endDate=${CISALAK_DAY}`)).body;
+    assert.equal(report.byUnit.find((u: any) => u.unit.outletId === 3).metrics.LC.amount, '130000.000000');
+    assert.ok(report.sources.LC.includes('HD Attendance API'));
+    assert.ok(report.issues.some((i: any) => /CSK 2 Cisalak/.test(i.reason)), 'unmapped attendance is flagged');
+
+    // The Leader is removed in HD Attendance: the day is recalculated, not added twice.
+    const corrected = await syncHdAttendance({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: fakeHdAttendance(() => day().filter(r => r.id !== 2)) });
+    assert.deepEqual([corrected.created, corrected.updated], [0, 1]);
+    const [[after]] = await connection.query("SELECT CAST(amount AS CHAR) AS amount, id, version FROM finance_transactions WHERE source = 'hdattendance'");
+    assert.equal(after.amount, '50000.000000');
+
+    const edit = await fetch(`${base}/api/finance/v2/transactions/${after.id}`, { method: 'PUT', headers: { 'content-type': 'application/json', origin: base, cookie: [...finance.cookies].map(([k, v]) => `${k}=${v}`).join('; ') },
+      body: JSON.stringify({ date: CISALAK_DAY, unit: { type: 'OUTLET', outletId: 3 }, accountCode: 'LC01', amount: '1', notes: 'x', version: after.version, reason: 'coba' }) });
+    assert.equal(edit.status, 400); assert.match((await edit.json()).error, /HD Attendance/);
+
+    // Finance maps CSK 2 Cisalak: its stored attendance counts at once, without a new sync.
+    await connection.query("INSERT INTO outlets (id, outlet_code, outlet_name, is_active) VALUES (4, 'CSK2', 'Cisalak Pagi', 1)");
+    const { setHdaOutletMapping } = await import('../src/finance/hdAttendanceSync.ts');
+    const mapped = await setHdaOutletMapping(10, 4, { id: 1, name: 'Finance' });
+    assert.equal(mapped.created, 1);
+    report = (await finance.call('GET', `/api/finance/v2/report?mode=OUTLET&startDate=${CISALAK_DAY}&endDate=${CISALAK_DAY}`)).body;
+    assert.equal(report.byUnit.find((u: any) => u.unit.outletId === 4).metrics.LC.amount, '50000.000000');
+    assert.ok(!report.issues.some((i: any) => /CSK 2 Cisalak/.test(i.reason)));
+  });
+});

@@ -22,7 +22,7 @@ export type Unit = { type: 'WAREHOUSE' } | { type: 'OUTLET'; outletId: number };
 export type Filter = { mode: 'WAREHOUSE' | 'OUTLET' | 'ALL'; startDate: string; endDate: string; outletIds: number[] | null; timezone: 'Asia/Jakarta' };
 export type Value = { amount: string; status: DataStatus; reasons: string[] };
 
-export const SOURCES = ['Finance manual', 'HD Outlet API', 'Warehouse'] as const;
+export const SOURCES = ['Finance manual', 'HD Outlet API', 'HD Attendance API', 'Warehouse'] as const;
 export type SourceLabel = typeof SOURCES[number];
 
 // One amount booked to one unit, date and account. Ledger rows (manual or synced

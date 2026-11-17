@@ -4,7 +4,7 @@ import type { User } from '../types.ts';
 import { Button, StateMessage } from '../components/common/UI.tsx';
 import { ApiState, DetailView, EliminationNote, Filters, Issues, MetricTable, MissingInputs, Modal, Panel, Status, UnitTable } from './components.tsx';
 import { EntryManager } from './EntryManager.tsx';
-import { AccountSettings, HdOutletSettings } from './FinanceSettings.tsx';
+import { AccountSettings, HdAttendanceSettings, HdOutletSettings } from './FinanceSettings.tsx';
 import { createFinanceClient } from './api.ts';
 import { useFinance } from './hooks.ts';
 import { COMMERCIAL, DA, DC, LABELS, PAGES, PL, PROFIT_LOSS, financePage, initialFilter, modeLabel, reportCsv, unavailableValue, unitLabel, valueText, type Detail, type Metric, type OutletOption, type Report, type Unit } from './model.ts';
@@ -92,7 +92,7 @@ export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User;
       <Panel title="Perbandingan unit"><UnitTable report={report} onDetail={open} /></Panel>
     </>}
     {page === 'settings' && (canEdit
-      ? <><HdOutletSettings filter={filter} accounts={accounts.data} outlets={outlets} onChanged={reload} /><AccountSettings accounts={accounts.data} canEdit={canEdit} onChanged={reload} /></>
+      ? <><HdOutletSettings filter={filter} accounts={accounts.data} outlets={outlets} onChanged={reload} /><HdAttendanceSettings filter={filter} outlets={outlets} onChanged={reload} /><AccountSettings accounts={accounts.data} canEdit={canEdit} onChanged={reload} /></>
       : <><StateMessage>Pengaturan integrasi dan master kode hanya untuk role Finance.</StateMessage><AccountSettings accounts={accounts.data} canEdit={false} onChanged={reload} /></>)}
 
     {report && selected && <Modal wide title={`Detail ${selected.key} · ${LABELS[selected.key]}`} onClose={() => setSelected(null)}>
