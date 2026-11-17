@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Finance proof attachments are user data: never in git
+backend/uploads/finance/
