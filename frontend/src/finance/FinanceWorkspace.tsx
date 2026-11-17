@@ -60,7 +60,7 @@ export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User;
     'depreciation-amortization': ['Entri DA', ['DA']],
   };
   const input = INPUTS[page];
-  const inputPanel = input && <Panel title={input[0]}>{entries(input[1])}</Panel>;
+  const inputPanel = input && <Panel title={input[0]} collapseKey={`input:${page}`}>{entries(input[1])}</Panel>;
 
   return <div className="fn-workspace">
     <header className="fn-heading"><div><p className="fn-eyebrow">FINANCE · HD WAREHOUSE</p><h1>{title}</h1><p className="fn-muted">Sumber: input Finance, transaksi Warehouse, dan laporan harian HD Outlet. Dihitung di backend per outlet dan periode.</p>{report && <HdOutletState report={report} />}</div><Button onClick={reload} disabled={remote.loading}><RefreshCw size={14} />Muat ulang</Button></header>

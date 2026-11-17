@@ -1,11 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, RefreshCw, ChevronRight, Database, Info, Paperclip } from 'lucide-react';
+import { X, RefreshCw, ChevronRight, ChevronDown, ChevronUp, Database, Info, Paperclip } from 'lucide-react';
 import { Button, StateMessage } from '../components/common/UI.tsx';
 import { FORMULA_TEXT, LABELS, TOTAL_ROWS, modeLabel, unitLabel, unavailableValue, valueText, formatMoney, sourceText, type Detail, type Metric, type Value, type Filter, type Report, type OutletOption, type Unit } from './model.ts';
 
 export function Status({ value = 'Missing' }: { value?: string }) { return <span className={`fn-status fn-status--${value.toLowerCase()}`}>{value}</span>; }
-export function Panel({ title, children, action }: { title: string; children: React.ReactNode; action?: React.ReactNode }) {
-  return <section className="hd-surface fn-panel"><header className="fn-panel-heading"><h2>{title}</h2>{action}</header>{children}</section>;
+// With collapseKey the panel can be closed; the choice is kept per browser.
+export function Panel({ title, children, action, collapseKey }: { title: string; children: React.ReactNode; action?: React.ReactNode; collapseKey?: string }) {
+  const storage = collapseKey && `fn-panel-closed:${collapseKey}`;
+  const [closed, setClosed] = useState(() => { try { return !!storage && localStorage.getItem(storage) === '1'; } catch { return false; } });
+  const toggle = () => setClosed(value => { try { if (storage) localStorage.setItem(storage, value ? '0' : '1'); } catch { /* not stored */ } return !value; });
+  return <section className="hd-surface fn-panel"><header className="fn-panel-heading"><h2>{title}</h2><div className="fn-actions">{action}{collapseKey && <Button variant="ghost" aria-expanded={!closed} onClick={toggle}>{closed ? <><ChevronDown size={14} />Buka</> : <><ChevronUp size={14} />Tutup</>}</Button>}</div></header>{!closed && children}</section>;
 }
 export function Modal({ title, children, onClose, wide = false }: { title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
