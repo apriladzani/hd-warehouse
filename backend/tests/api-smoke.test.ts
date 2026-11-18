@@ -1465,3 +1465,90 @@ test('HD Attendance: Cisalak 17 Nov salary = present days × daily wage into LC0
     assert.ok(!report.issues.some((i: any) => /CSK 2 Cisalak/.test(i.reason)));
   });
 });
+
+test('Outlet management: revoking an account from one outlet keeps its requests and its other outlets, and is logged', async () => {
+  await withApi(async ({ outlet, warehouse, anonymous, connection, base }) => {
+    await withMoreOutlets(connection);
+    const admin = await adminClient(connection, base);
+    assert.equal((await setOutlets(admin, [1, 2], 2)).status, 200);
+    const made = await placeRequest(outlet, 2);
+    assert.equal(made.status, 200);
+    const before = await requestOutlet(connection, made.body.request.id);
+
+    for (const who of [warehouse, outlet]) assert.equal((await who.call('DELETE', '/api/admin/outlets/2/users/1')).status, 403);
+    assert.equal((await anonymous.call('DELETE', '/api/admin/outlets/2/users/1')).status, 401);
+
+    const revoked = await admin.call('DELETE', '/api/admin/outlets/2/users/1');
+    assert.equal(revoked.status, 200);
+    assert.equal(revoked.body.remainingOutlets, 1);
+    assert.deepEqual(await heldRows(connection), [[1, 1]], 'outlet 1 stays and becomes the default');
+    const [[user]]: any = await connection.query('SELECT outlet_id, is_active FROM users WHERE id = 1');
+    assert.equal(user.outlet_id, 1);
+    assert.equal(Number(user.is_active), 1, 'the account itself is untouched');
+
+    assert.deepEqual(await requestOutlet(connection, made.body.request.id), before, 'the request keeps its outlet and requester');
+    assert.equal((await placeRequest(outlet, 2)).status, 403, 'no new request for the revoked outlet');
+    const listed = (await admin.call('GET', '/api/admin/outlets')).body.outlets.find((o: any) => o.id === 2);
+    assert.equal(listed.assignedUsers, 0);
+    assert.equal(listed.requestCount, 1, 'the request still counts for the outlet');
+
+    assert.equal((await admin.call('DELETE', '/api/admin/outlets/2/users/1')).status, 404, 'already gone');
+    const [logs]: any = await connection.query("SELECT details FROM activity_logs WHERE action = 'OUTLET_ASSIGNMENT_CHANGED' ORDER BY id DESC LIMIT 1");
+    assert.deepEqual(JSON.parse(logs[0].details).removed, ['Cibubur']);
+  });
+});
+
+test('Outlet management: revoking a deactivated account from its last outlet leaves it with no outlet', async () => {
+  await withApi(async ({ connection, base }) => {
+    const admin = await adminClient(connection, base);
+    await connection.query('UPDATE users SET is_active = 0 WHERE id = 1');
+    assert.equal((await admin.call('DELETE', '/api/admin/outlets/1/users/1')).status, 200);
+    assert.deepEqual(await heldRows(connection), []);
+    const [[user]]: any = await connection.query('SELECT outlet_id FROM users WHERE id = 1');
+    assert.equal(user.outlet_id, null);
+    assert.equal((await admin.call('GET', '/api/admin/outlets')).body.outlets.find((o: any) => o.id === 1).assignedUsers, 0);
+  });
+});
+
+test('Mapping gabungan: CSK 1 and CSK 2 Cisalak of HD Outlet and HD Attendance both book into Warehouse Cisalak', async () => {
+  await withApi(async ({ connection, base }) => {
+    const { syncHdOutlet, setOutletMapping } = await import('../src/finance/hdOutletSync.ts');
+    const { syncHdAttendance, setHdaOutletMapping } = await import('../src/finance/hdAttendanceSync.ts');
+    await withCisalak(connection);
+    const finance = await financeClient(connection, base);
+    const twoOutlets = (reports: any[]) => ({ ...fakeHdOutlet(() => reports), outlets: async () => [{ id: 77, name: 'Cisalak', active: true }, { id: 78, name: 'CSK 2 Cisalak', active: true }] }) as any;
+    const csk2 = cisalakReport({ id: 601, outletName: 'CSK 2 Cisalak', totalIncome: '400000.00', expenses: { meal: '5000.00' } });
+
+    await syncHdOutlet({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: twoOutlets([cisalakReport(), csk2]) });
+    const [[before]] = await connection.query('SELECT outlet_id FROM hdoutlet_outlet_mappings WHERE hd_outlet_id = 78');
+    assert.equal(before.outlet_id, null, 'a second outlet is never merged automatically');
+
+    // Finance merges CSK 2 into Cisalak (outlet 3), which Cisalak already holds.
+    await setOutletMapping(78, 3, { id: 1, name: 'Finance' });
+    const [rows] = await connection.query('SELECT hd_outlet_id FROM hdoutlet_outlet_mappings WHERE outlet_id = 3 ORDER BY hd_outlet_id');
+    assert.deepEqual((rows as any[]).map((r) => r.hd_outlet_id), [77, 78]);
+    let report = (await cisalakReport_(finance)).body;
+    assert.equal(amountOf(report, 'SI'), '1291500.000000', '891.500 + 400.000');
+    assert.equal(amountOf(report, 'LC'), '28000.000000', 'meal 13.000 + bonus 10.000 + CSK 2 meal 5.000');
+    assert.ok(!report.coverage?.some?.((c: any) => /HD Outlet/.test(c.reason)) && !JSON.stringify(report).includes('belum dipetakan ke outlet HD Outlet'));
+
+    // A day only CSK 1 reported: Partial, naming the source that is missing.
+    const day2 = '2026-11-16';
+    await syncHdOutlet({ startDate: day2, endDate: day2, trigger: 'manual', client: twoOutlets([cisalakReport({ id: 502, reportDate: day2 })]) });
+    const partial = (await finance.call('GET', `/api/finance/v2/report?mode=OUTLET&startDate=${day2}&endDate=${day2}&outletIds=3`)).body;
+    assert.equal(partial.metrics.SI.status, 'Partial');
+    assert.equal(amountOf(partial, 'SI'), '891500.000000');
+    assert.match(JSON.stringify(partial), /Cisalak \(HD Outlet \\"CSK 2 Cisalak\\"\): laporan harian HD Outlet belum masuk/);
+
+    // HD Attendance: CSK 2 Cisalak salaries go to Cisalak too, as their own entries.
+    // CSK 2 Cisalak follows its HD Outlet pairing (merged into Cisalak) without competing with Cisalak itself.
+    await syncHdAttendance({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: fakeHdAttendance(() => [present(1, 42), present(5, 43, 10)]) });
+    const [hda] = await connection.query('SELECT hda_outlet_id AS id, outlet_id AS outletId, matched_by AS by_ FROM hdattendance_outlet_mappings ORDER BY hda_outlet_id');
+    assert.deepEqual((hda as any[]).map((r) => [r.id, r.outletId, r.by_]), [[1, 3, 'auto'], [10, 3, 'auto']]);
+    await setHdaOutletMapping(10, 3, { id: 1, name: 'Finance' }); // Finance confirms: allowed although Cisalak already holds HD Attendance "Cisalak" 
+    const [salaries] = await connection.query("SELECT source_ref, CAST(amount AS CHAR) AS amount FROM finance_transactions WHERE source = 'hdattendance' AND outlet_id = 3 AND status = 'posted' ORDER BY amount");
+    assert.deepEqual((salaries as any[]).map((r) => [r.source_ref, r.amount]), [[`hda:1:${CISALAK_DAY}:LC01`, '50000.000000'], [`hda:10:${CISALAK_DAY}:LC01`, '80000.000000']]);
+    report = (await cisalakReport_(finance)).body;
+    assert.equal(amountOf(report, 'LC'), '158000.000000', '28.000 from HD Outlet + 50.000 + 80.000 salaries');
+  });
+});

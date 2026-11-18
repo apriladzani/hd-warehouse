@@ -3,7 +3,7 @@ import { pool } from '../db/index.ts';
 import { closedPeriodChecker, logAdminActivity } from '../db/repository.ts';
 import { decimal, money } from './decimal.ts';
 import { ensureFinanceTransactionSchema } from './transactionRepository.ts';
-import { HDOUTLET_SYNC_RUN_COLUMNS, matchOutletName, MappingError, sameOutletName } from './hdOutletSync.ts';
+import { HDOUTLET_SYNC_RUN_COLUMNS, allowSharedOutlet, matchOutletName, MappingError, sameOutletName } from './hdOutletSync.ts';
 import { HdAttendanceClient, HdAttendanceError, hdAttendanceConfig, type HdAttendanceConfig } from './hdAttendanceClient.ts';
 
 // HD Attendance → Finance ledger, salary (LC01) per outlet per day:
@@ -26,7 +26,7 @@ export const HDATTENDANCE_OUTLET_MAPPING_COLUMNS = `
   matched_by VARCHAR(10) NULL,
   updated_by INT NULL,
   updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  UNIQUE KEY uq_hdattendance_mapping_outlet (outlet_id)`;
+  KEY idx_hdattendance_mapping_outlet (outlet_id)`;
 export const HDATTENDANCE_RECORD_COLUMNS = `
   attendance_id INT NOT NULL PRIMARY KEY,
   employee_id INT NOT NULL,
@@ -53,6 +53,7 @@ export function ensureHdAttendanceSchema() {
       ['hdattendance_sync_runs', HDATTENDANCE_SYNC_RUN_COLUMNS]] as const) {
       if (!await exists(table)) await pool.query(`CREATE TABLE IF NOT EXISTS ${table} (${columns}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
     }
+    await allowSharedOutlet('hdattendance_outlet_mappings', 'uq_hdattendance_mapping_outlet', 'idx_hdattendance_mapping_outlet');
   })().catch((error) => { schemaReady = null; throw error; });
   return schemaReady;
 }
@@ -166,20 +167,22 @@ export async function autoMatchHdaOutlets(executor: Query = pool) {
   const active = new Set(outlets.map(o => o.id));
   const [taken] = await executor.query('SELECT outlet_id AS outletId FROM hdattendance_outlet_mappings WHERE outlet_id IS NOT NULL');
   const used = new Set((taken as any[]).map(r => Number(r.outletId)));
+  // A pairing taken over from HD Outlet was set there (and checked) by Finance,
+  // merges included: it does not compete with the others for the outlet.
   const proposals = (rows as any[]).map(r => {
     const name = String(r.name);
-    let outletId = matchOutletName(name, outlets);
+    let outletId = matchOutletName(name, outlets), inherited = false;
     if (outletId === null) {
       const viaHd = [...new Set(hdOutlet.filter(h => sameOutletName(h.name, name)).map(h => h.outletId))];
-      if (viaHd.length === 1 && active.has(viaHd[0])) outletId = viaHd[0];
+      if (viaHd.length === 1 && active.has(viaHd[0])) { outletId = viaHd[0]; inherited = true; }
     }
-    return { id: Number(r.id), outletId };
+    return { id: Number(r.id), outletId, inherited };
   });
   const claims = new Map<number, number>();
-  for (const p of proposals) if (p.outletId !== null) claims.set(p.outletId, (claims.get(p.outletId) ?? 0) + 1);
+  for (const p of proposals) if (p.outletId !== null && !p.inherited) claims.set(p.outletId, (claims.get(p.outletId) ?? 0) + 1);
   let paired = 0;
   for (const p of proposals) {
-    if (p.outletId === null || claims.get(p.outletId) !== 1 || used.has(p.outletId)) continue;
+    if (p.outletId === null || (!p.inherited && (claims.get(p.outletId) !== 1 || used.has(p.outletId)))) continue;
     await executor.query("UPDATE hdattendance_outlet_mappings SET outlet_id = ?, matched_by = 'auto' WHERE hda_outlet_id = ? AND outlet_id IS NULL", [p.outletId, p.id]);
     used.add(p.outletId); paired++;
   }
@@ -298,8 +301,6 @@ export async function setHdaOutletMapping(hdaOutletId: number, outletId: number 
   if (outletId !== null) {
     const [outlets] = await pool.query('SELECT id FROM outlets WHERE id = ? AND is_active = 1', [outletId]);
     if (!(outlets as any[]).length) throw new MappingError('Outlet Warehouse tidak ditemukan atau nonaktif.');
-    const [taken] = await pool.query('SELECT hda_outlet_name AS name FROM hdattendance_outlet_mappings WHERE outlet_id = ? AND hda_outlet_id <> ?', [outletId, hdaOutletId]);
-    if ((taken as any[]).length) throw new MappingError(`Outlet Warehouse ini sudah dipetakan ke "${(taken as any[])[0].name}".`);
   }
   await pool.query("UPDATE hdattendance_outlet_mappings SET outlet_id = ?, matched_by = 'finance', updated_by = ? WHERE hda_outlet_id = ?", [outletId, actor.id, hdaOutletId]);
   await logAdminActivity({ actorId: actor.id, actorName: actor.name || `user#${actor.id}`, action: 'FINANCE_HDATTENDANCE_OUTLET_MAPPING', targetType: 'hdattendance_outlet', targetId: hdaOutletId, details: { hdaOutletName: before.name, before: before.outletId, after: outletId } }).catch(() => {});

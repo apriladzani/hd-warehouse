@@ -22,7 +22,7 @@ export const HDOUTLET_OUTLET_MAPPING_COLUMNS = `
   matched_by VARCHAR(10) NULL,
   updated_by INT NULL,
   updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  UNIQUE KEY uq_hdoutlet_mapping_outlet (outlet_id)`;
+  KEY idx_hdoutlet_mapping_outlet (outlet_id)`;
 export const HDOUTLET_EXPENSE_MAPPING_COLUMNS = `
   expense_key VARCHAR(60) NOT NULL PRIMARY KEY,
   expense_name VARCHAR(255) NOT NULL,
@@ -78,9 +78,17 @@ export function ensureHdOutletSchema() {
     }
     const [matched] = await pool.query("SHOW COLUMNS FROM hdoutlet_outlet_mappings LIKE 'matched_by'");
     if (!(matched as any[]).length) await pool.query('ALTER TABLE hdoutlet_outlet_mappings ADD COLUMN matched_by VARCHAR(10) NULL AFTER outlet_id');
+    await allowSharedOutlet('hdoutlet_outlet_mappings', 'uq_hdoutlet_mapping_outlet', 'idx_hdoutlet_mapping_outlet');
     await seedExpenseMappings(pool);
   })().catch((error) => { schemaReady = null; throw error; });
   return schemaReady;
+}
+// Several outlets of HD Outlet or HD Attendance may be booked to one Warehouse
+// outlet (CSK 1 Cisalak and CSK 2 Cisalak into Cisalak). Tables made when each
+// Warehouse outlet took one at most lose that unique key here.
+export async function allowSharedOutlet(table: string, uniqueKey: string, plainKey: string) {
+  const [unique] = await pool.query(`SHOW INDEX FROM \`${table}\` WHERE Key_name = ?`, [uniqueKey]);
+  if ((unique as any[]).length) await pool.query(`ALTER TABLE \`${table}\` DROP INDEX \`${uniqueKey}\`, ADD INDEX \`${plainKey}\` (outlet_id)`);
 }
 export async function seedExpenseMappings(executor: Query) {
   for (const [key, name, code] of DEFAULT_EXPENSE_MAPPINGS) {
@@ -367,8 +375,6 @@ export async function setOutletMapping(hdOutletId: number, outletId: number | nu
   if (outletId !== null) {
     const [outlets] = await pool.query('SELECT id FROM outlets WHERE id = ? AND is_active = 1', [outletId]);
     if (!(outlets as any[]).length) throw new MappingError('Outlet Warehouse tidak ditemukan atau nonaktif.');
-    const [taken] = await pool.query('SELECT hd_outlet_name AS name FROM hdoutlet_outlet_mappings WHERE outlet_id = ? AND hd_outlet_id <> ?', [outletId, hdOutletId]);
-    if ((taken as any[]).length) throw new MappingError(`Outlet Warehouse ini sudah dipetakan ke "${(taken as any[])[0].name}".`);
   }
   await pool.query("UPDATE hdoutlet_outlet_mappings SET outlet_id = ?, matched_by = 'finance', updated_by = ? WHERE hd_outlet_id = ?", [outletId, actor.id, hdOutletId]);
   await logAdminActivity({ actorId: actor.id, actorName: actor.name || `user#${actor.id}`, action: 'FINANCE_HDOUTLET_OUTLET_MAPPING', targetType: 'hdoutlet_outlet', targetId: hdOutletId, details: { hdOutletName: before.name, before: before.outletId, after: outletId } }).catch(() => {});

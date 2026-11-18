@@ -58,13 +58,13 @@ export function HdOutletSettings({ filter, accounts, outlets, onChanged }: { fil
     </Panel>}
 
     {data && <Panel title="Mapping outlet HD Outlet ↔ Warehouse">
-      <p className="fn-section-note">Laporan outlet HD Outlet hanya dihitung setelah dipasangkan dengan outlet Warehouse. Pasangan bertanda <em>otomatis</em> dibuat dari nama yang persis sama — mohon dicek.</p>
+      <p className="fn-section-note">Laporan outlet HD Outlet hanya dihitung setelah dipasangkan dengan outlet Warehouse. Pasangan bertanda <em>otomatis</em> dibuat dari nama yang persis sama — mohon dicek. Beberapa outlet HD Outlet boleh dipetakan ke satu outlet Warehouse (misalnya CSK 1 dan CSK 2 ke Cisalak); angkanya dijumlahkan.</p>
       {data.unmappedReports.length > 0 && <p className="fn-section-note fn-error">Laporan yang belum dihitung karena outletnya belum dipetakan: {data.unmappedReports.map(r => `${r.name} (${r.count})`).join(', ')}.</p>}
       <div className="fn-table-wrap"><table className="fn-table"><thead><tr><th>Outlet HD Outlet</th><th className="fn-right">Laporan</th><th>Outlet Warehouse</th><th>Keterangan</th></tr></thead><tbody>
         {data.outlets.map(o => <tr key={o.hdOutletId}><td>{o.hdOutletName}</td><td className="fn-right">{o.reportCount}</td>
           <td><select className="hd-input" value={o.outletId ?? ''} disabled={!!busy} onChange={e => act(`out:${o.hdOutletId}`, () => financeWrite(`${MANAGE}/hdoutlet/outlets/${o.hdOutletId}`, 'PUT', { outletId: e.target.value ? Number(e.target.value) : null }), applied)}>
             <option value="">— Belum dipetakan —</option>{outlets.filter(x => x.isActive !== false || x.id === o.outletId).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></td>
-          <td>{o.outletId == null ? <Status value="Missing" /> : o.matchedBy === 'auto' ? <span className="fn-muted">otomatis (nama sama) — cek</span> : <span className="fn-muted">dipilih Finance</span>}</td></tr>)}
+          <td>{o.outletId == null ? <Status value="Missing" /> : o.matchedBy === 'auto' ? <span className="fn-muted">otomatis (nama sama) — cek</span> : <span className="fn-muted">dipilih Finance</span>}<MergedWith names={data.outlets.filter(x => x.outletId === o.outletId && x.hdOutletId !== o.hdOutletId).map(x => x.hdOutletName)} show={o.outletId != null} /></td></tr>)}
         {!data.outlets.length && <tr><td colSpan={4}>Belum ada outlet dari HD Outlet. Jalankan sinkron pertama.</td></tr>}
       </tbody></table></div>
     </Panel>}
@@ -123,7 +123,7 @@ export function HdAttendanceSettings({ filter, outlets, onChanged }: { filter: F
         {data.outlets.map(o => <tr key={o.hdaOutletId}><td>{o.hdaOutletName}</td><td className="fn-right">{o.recordCount}</td>
           <td><select className="hd-input" value={o.outletId ?? ''} disabled={!!busy} onChange={e => act(`out:${o.hdaOutletId}`, () => financeWrite(`${MANAGE}/hdattendance/outlets/${o.hdaOutletId}`, 'PUT', { outletId: e.target.value ? Number(e.target.value) : null }), applied)}>
             <option value="">— Belum dipetakan —</option>{outlets.filter(x => x.isActive !== false || x.id === o.outletId).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></td>
-          <td>{o.outletId == null ? <Status value="Missing" /> : o.matchedBy === 'auto' ? <span className="fn-muted">otomatis — cek</span> : <span className="fn-muted">dipilih Finance</span>}</td></tr>)}
+          <td>{o.outletId == null ? <Status value="Missing" /> : o.matchedBy === 'auto' ? <span className="fn-muted">otomatis — cek</span> : <span className="fn-muted">dipilih Finance</span>}<MergedWith names={data.outlets.filter(x => x.outletId === o.outletId && x.hdaOutletId !== o.hdaOutletId).map(x => x.hdaOutletName)} show={o.outletId != null} /></td></tr>)}
         {!data.outlets.length && <tr><td colSpan={4}>Belum ada outlet dari HD Attendance. Jalankan sinkron pertama.</td></tr>}
       </tbody></table></div>
     </Panel>}
@@ -170,4 +170,10 @@ export function AccountSettings({ accounts, canEdit, onChanged }: { accounts: Ac
         <td>{canEdit && a.manual ? <Button variant="ghost" disabled={busy} onClick={() => save(() => financeWrite(`${MANAGE}/accounts/${encodeURIComponent(a.code)}`, 'PATCH', { isActive: !a.isActive }))}>{a.isActive ? 'Aktif · nonaktifkan' : 'Nonaktif · aktifkan'}</Button> : a.isActive ? 'Aktif' : 'Nonaktif'}</td></tr>)}
     </tbody></table></div>
   </Panel>;
+}
+
+// Several source outlets may book into one Warehouse outlet (CSK 1 and CSK 2 into Cisalak).
+function MergedWith({ names, show }: { names: string[]; show: boolean }) {
+  if (!show || !names.length) return null;
+  return <span className="fn-muted" style={{ display: 'block' }}>digabung dengan {names.join(', ')}</span>;
 }

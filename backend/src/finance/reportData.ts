@@ -128,8 +128,12 @@ export async function loadReportInput(db: SelectExecutor, filter: Filter, option
       for (const outletId of scopeOutlets) coverage.push({ unit: { type: 'OUTLET', outletId }, metrics: [...hdMetrics], status: 'Missing', reason: `${outletName(outletId)}: ${reason}` });
     } else {
       const mappingRows = await db.select('SELECT hd_outlet_id AS hdOutletId, hd_outlet_name AS hdOutletName, outlet_id AS outletId FROM hdoutlet_outlet_mappings', []);
-      const hdOf = new Map<number, number>(), mappedHd = new Set<number>();
-      for (const r of mappingRows) if (r.outletId != null) { hdOf.set(id(r.outletId), id(r.hdOutletId)); mappedHd.add(id(r.hdOutletId)); }
+      // A Warehouse outlet may take several HD Outlet outlets (CSK 1 and CSK 2 into Cisalak).
+      const hdOf = new Map<number, { id: number; name: string }[]>(), mappedHd = new Set<number>();
+      for (const r of mappingRows) if (r.outletId != null) {
+        hdOf.set(id(r.outletId), [...(hdOf.get(id(r.outletId)) ?? []), { id: id(r.hdOutletId), name: String(r.hdOutletName) }]);
+        mappedHd.add(id(r.hdOutletId));
+      }
       const expenseRows = await db.select(`SELECT m.expense_key AS \`key\`, m.expense_name AS name, m.status, m.account_code AS accountCode, a.metric
         FROM hdoutlet_expense_mappings m LEFT JOIN finance_accounts a ON a.code = m.account_code`, []);
       const mappings = new Map<string, ExpenseMapping>(expenseRows.map(r => [String(r.key), { key: String(r.key), name: String(r.name), status: r.status as ExpenseMapping['status'], accountCode: r.accountCode == null ? null : String(r.accountCode) }]));
@@ -140,13 +144,24 @@ export async function loadReportInput(db: SelectExecutor, filter: Filter, option
       const end = filter.endDate < options.today ? filter.endDate : options.today;
       const expected = filter.startDate <= end ? days(filter.startDate, end) : [];
       for (const outletId of scopeOutlets) {
-        const unit = { type: 'OUTLET' as const, outletId }, name = outletName(outletId), hd = hdOf.get(outletId);
-        if (hd === undefined) { coverage.push({ unit, metrics: [...hdMetrics], status: 'Missing', reason: `${name}: belum dipetakan ke outlet HD Outlet (Pengaturan Finance → Mapping outlet).` }); continue; }
-        const own = reports.filter(r => r.hdOutletId != null && id(r.hdOutletId) === hd);
-        const have = new Set(own.map(r => String(r.date)));
-        const missingDays = expected.filter(day => !have.has(day));
-        if (expected.length && missingDays.length === expected.length) coverage.push({ unit, metrics: [...hdMetrics], status: 'Missing', reason: `${name}: laporan harian HD Outlet belum masuk untuk periode ini.` });
-        else if (missingDays.length) coverage.push({ unit, metrics: [...hdMetrics], status: 'Partial', reason: `${name}: data outlet belum lengkap — laporan harian belum masuk untuk ${missingDays.length} tanggal (${shortDates(missingDays)}).` });
+        const unit = { type: 'OUTLET' as const, outletId }, name = outletName(outletId), sources = hdOf.get(outletId) ?? [];
+        if (!sources.length) { coverage.push({ unit, metrics: [...hdMetrics], status: 'Missing', reason: `${name}: belum dipetakan ke outlet HD Outlet (Pengaturan Finance → Mapping outlet).` }); continue; }
+        const sourceIds = new Set(sources.map(source => source.id));
+        const own = reports.filter(r => r.hdOutletId != null && sourceIds.has(id(r.hdOutletId)));
+        // Each merged source sends its own daily report; a missing one is named.
+        // Missing only when no source sent anything; otherwise Partial.
+        const gaps = sources.map(source => {
+          const have = new Set(own.filter(r => id(r.hdOutletId) === source.id).map(r => String(r.date)));
+          return { label: sources.length > 1 ? `${name} (HD Outlet "${source.name}")` : name, missingDays: expected.filter(day => !have.has(day)) };
+        });
+        if (expected.length && !own.length) coverage.push({ unit, metrics: [...hdMetrics], status: 'Missing', reason: `${name}: laporan harian HD Outlet belum masuk untuk periode ini.` });
+        else for (const gap of gaps) {
+          if (!gap.missingDays.length) continue;
+          const reason = gap.missingDays.length === expected.length
+            ? `${gap.label}: laporan harian HD Outlet belum masuk untuk periode ini.`
+            : `${gap.label}: data outlet belum lengkap — laporan harian belum masuk untuk ${gap.missingDays.length} tanggal (${shortDates(gap.missingDays)}).`;
+          coverage.push({ unit, metrics: [...hdMetrics], status: 'Partial', reason });
+        }
         const pending = new Map<string, bigint>();
         for (const r of own) for (const p of deriveEntries({ id: id(r.id), totalIncome: String(r.totalIncome), totalLoss: String(r.totalLoss), expenses: JSON.parse(String(r.expenses)) }, mappings).pending) {
           pending.set(p.key, (pending.get(p.key) ?? 0n) + decimal(p.amount));
