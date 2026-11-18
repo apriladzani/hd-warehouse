@@ -16,6 +16,9 @@ function HdOutletState({ report }: { report: Report }) {
   return <p className="fn-muted">HD Outlet: {hd.enabled ? 'aktif' : 'nonaktif'}{last ? ` · sinkron terakhir ${last.finishedAt ? new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }).format(new Date(last.finishedAt)) : ''} (${last.status})` : ' · belum pernah sinkron'}</p>;
 }
 
+// Dashboard summary per unit, in the order Finance reads it.
+const DASHBOARD_UNIT_KEYS: Metric[] = ['SI', 'CI', 'COGS', 'CM', 'DC', 'EBIT', 'EBITDA'];
+
 export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User; pathname: string }) {
   const page = financePage(pathname);
   const [filter, setFilter] = useState(initialFilter);
@@ -75,7 +78,7 @@ export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User;
     {report && page === 'dashboard' && <>
       <section className="fn-kpis" aria-label="Ringkasan Finance">{(['CI', 'DC', 'EBITDA', 'EBIT'] as Metric[]).map(key => { const value = report.metrics[key]; return <button key={key} onClick={() => open(key)}><span>{LABELS[key]}</span><strong>{valueText(value)}</strong><Status value={value.status} /></button>; })}</section>
       <MissingInputs report={report} keys={[...DC, ...DA]} />
-      <Panel title="Ringkasan per unit"><UnitTable report={report} onDetail={open} /></Panel>
+      <Panel title="Ringkasan per unit"><UnitTable report={report} keys={DASHBOARD_UNIT_KEYS} onDetail={open} /></Panel>
     </>}
     {report && page === 'commercial-income' && <>
       <Panel title="Commercial Income"><MetricTable keys={COMMERCIAL} report={report} onDetail={key => open(key)} /><EliminationNote report={report} /><p className="fn-section-note">Outlet: SI dan SH dari laporan harian HD Outlet; COGS = barang yang di-approve Warehouse untuk outlet (qty disetujui × harga di request). Warehouse: SI = penjualan ke outlet (qty disetujui × harga); COGS = HPP saat approve. Request yang dibatalkan tidak dihitung. OI dari input Finance.</p></Panel>
