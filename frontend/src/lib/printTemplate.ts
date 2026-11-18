@@ -13,7 +13,12 @@ export type DeliveryOrderTemplate = {
   table: { showPrices: boolean; showTerbilang: boolean };
   notes: string[];
   signatures: SignatureColumn[];
+  // The shop-style receipt (struk) for thermal printers. It reuses the brand,
+  // address and hotline of the header.
+  receipt: ReceiptSettings;
 };
+export type ReceiptSettings = { paperWidth: 58 | 80; showPrices: boolean; showApprovedBy: boolean; footer: string };
+export const RECEIPT_PAPER_WIDTHS = [58, 80] as const;
 
 export const MAX_NOTES = 10;
 export const MAX_SIGNATURES = 4;
@@ -46,6 +51,7 @@ export const DEFAULT_DELIVERY_ORDER_TEMPLATE: DeliveryOrderTemplate = {
     { label: 'Diterima & Diperiksa (Staff Gudang)', name: 'Staff Gudang HD', useOutletName: false },
     { label: 'Mengetahui & Verifikasi (SPV / Manager)', name: 'Kepala Logistik & Gudang', useOutletName: false },
   ],
+  receipt: { paperWidth: 58, showPrices: true, showApprovedBy: true, footer: 'Terima kasih. Simpan struk ini sebagai bukti serah terima barang.' },
 };
 
 export const cloneTemplate = (template: DeliveryOrderTemplate): DeliveryOrderTemplate => JSON.parse(JSON.stringify(template));

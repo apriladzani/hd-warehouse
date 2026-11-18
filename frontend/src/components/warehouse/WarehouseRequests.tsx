@@ -5,10 +5,12 @@ import { StatusBadge } from '../common/StatusBadge.tsx';
 import { formatDateIndo } from '../../lib/format.ts';
 import { RequestTransaction } from '../../types.ts';
 import { WarehouseRequestDetailModal } from '../modals/WarehouseRequestDetailModal.tsx';
-import { Store, Check, Printer, PackageX } from 'lucide-react';
+import { Store, Check, PackageX } from 'lucide-react';
 import { CancelRequestDialog } from '../modals/CancelRequestDialog.tsx';
 import { canCancelRequest } from '../../lib/requestCancel.ts';
 import { PrintableTransactionA4 } from '../modals/PrintableTransactionA4.tsx';
+import { PrintableReceipt } from '../modals/PrintableReceipt.tsx';
+import { PrintMenu, type PrintFormat } from '../common/PrintMenu.tsx';
 import { buildApprovedRequestPrintData, canPrintApprovedRequest } from '../../lib/requestPrint.ts';
 
 interface WarehouseRequestsProps {
@@ -25,7 +27,7 @@ export const WarehouseRequests: React.FC<WarehouseRequestsProps> = ({ requestDet
   const [outlets, setOutlets] = useState<Array<{ id: number; code: string; name: string }>>([]);
   const [selectedRequestId, setSelectedRequestId] = useState<number | null>(requestDetailId);
   const [quickLoadingId, setQuickLoadingId] = useState<number | null>(null);
-  const [printData, setPrintData] = useState<any | null>(null);
+  const [printData, setPrintData] = useState<{ format: PrintFormat; data: any } | null>(null);
   const [cancelTarget, setCancelTarget] = useState<RequestTransaction | null>(null);
 
   const fetchRequests = async (start = startDate, end = endDate) => {
@@ -68,7 +70,7 @@ export const WarehouseRequests: React.FC<WarehouseRequestsProps> = ({ requestDet
     }
   };
 
-  const handlePrintRequest = async (reqId: number) => {
+  const handlePrintRequest = async (reqId: number, format: PrintFormat) => {
     try {
       const response = await fetch(`/api/requests/${reqId}`);
       const data = await response.json();
@@ -76,7 +78,7 @@ export const WarehouseRequests: React.FC<WarehouseRequestsProps> = ({ requestDet
         alert('Request hanya dapat dicetak setelah seluruh item selesai diproses dan ada barang yang disetujui.');
         return;
       }
-      setPrintData(buildApprovedRequestPrintData(data.request));
+      setPrintData({ format, data: buildApprovedRequestPrintData(data.request) });
     } catch (err: any) {
       alert(err.message || 'Gagal memuat data cetak request.');
     }
@@ -206,18 +208,7 @@ export const WarehouseRequests: React.FC<WarehouseRequestsProps> = ({ requestDet
 
                 <div className="flex items-center justify-end space-x-2">
                   {canPrintApprovedRequest(req) && (
-                    <button
-                      id={`btn-print-request-${req.id}`}
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handlePrintRequest(req.id);
-                      }}
-                      className="hd-button hd-button--secondary !min-h-[30px] !px-2.5 !py-1 !text-[11px]"
-                    >
-                      <Printer className="h-3.5 w-3.5" />
-                      <span>Cetak A4</span>
-                    </button>
+                    <PrintMenu id={`btn-print-request-${req.id}`} onSelect={(format) => void handlePrintRequest(req.id, format)} />
                   )}
                   {canCancelRequest(req.status) && (
                     <button
@@ -286,14 +277,15 @@ export const WarehouseRequests: React.FC<WarehouseRequestsProps> = ({ requestDet
         />
       )}
 
-      {printData && (
+      {printData?.format === 'a4' && (
         <PrintableTransactionA4
-          isOpen={!!printData}
+          isOpen
           onClose={() => setPrintData(null)}
           type="outgoing"
-          data={printData}
+          data={printData.data}
         />
       )}
+      {printData?.format === 'receipt' && <PrintableReceipt isOpen onClose={() => setPrintData(null)} data={printData.data} />}
     </div>
   );
 };

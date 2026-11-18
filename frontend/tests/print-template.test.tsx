@@ -113,3 +113,30 @@ test('the frontend fallback equals the backend default, so a failed load prints 
   const backend = await import('../../backend/src/printTemplate.ts');
   assert.deepEqual(DEFAULT_DELIVERY_ORDER_TEMPLATE, backend.DEFAULT_DELIVERY_ORDER_TEMPLATE);
 });
+
+// --- Struk belanja (receipt) ---------------------------------------------------
+import { ReceiptDocument, receiptContentWidth } from '../src/components/modals/PrintableReceipt.tsx';
+const receipt = (template: DeliveryOrderTemplate, data: any = SAMPLE_DELIVERY_ORDER) =>
+  renderToStaticMarkup(<ReceiptDocument data={data} template={template} printTimestamp="14 Nov 2026 10.00" />).replace(/&amp;/g, '&');
+
+test('struk: the default receipt is 58 mm with the header, the lines, the total and the closing text', () => {
+  const html = receipt(DEFAULT_DELIVERY_ORDER_TEMPLATE);
+  assert.ok(html.includes('data-paper-width="58"'));
+  assert.ok(html.includes(`width:${receiptContentWidth(58)}mm`));
+  for (const text of ['HD FriedChicken', 'Telp: (021) 555-0192', 'REQ-CONTOH-0001', 'Outlet Contoh Sudirman', 'Staff Gudang HD',
+    'Ayam Mentah (kg)', '20 x ', 'TOTAL', '35 pcs', 'Terima kasih.', 'Dicetak 14 Nov 2026 10.00']) assert.ok(html.includes(text), text);
+  assert.ok(html.includes('id="printable-receipt"'));
+});
+
+test('struk: 80 mm paper, hidden prices and approver, and an empty closing text are respected', () => {
+  const html = receipt(edit((t) => { t.receipt = { paperWidth: 80, showPrices: false, showApprovedBy: false, footer: '' }; }));
+  assert.ok(html.includes('data-paper-width="80"'));
+  for (const text of ['TOTAL', 'Rp', 'Disetujui', 'Terima kasih']) assert.ok(!html.includes(text), text);
+  assert.ok(html.includes('20 pcs') && html.includes('Box Nasi (pack/10)'), 'quantities and items stay');
+});
+
+test('struk: a template saved before the receipt existed still prints with the default receipt', () => {
+  const old: any = cloneTemplate(DEFAULT_DELIVERY_ORDER_TEMPLATE); delete old.receipt;
+  assert.ok(receipt(old).includes('data-paper-width="58"'));
+  assert.ok(!renderToStaticMarkup(<ReceiptDocument preview data={SAMPLE_DELIVERY_ORDER} template={old} />).includes('printable-receipt'), 'the preview is never printed');
+});

@@ -8,12 +8,13 @@ import {
   AlertCircle,
   Plus,
   Minus,
-  Printer,
 } from 'lucide-react';
 import { RequestTransaction, RequestItem } from '../../types.ts';
 import { StatusBadge } from '../common/StatusBadge.tsx';
 import { formatDateIndo, formatRupiah } from '../../lib/format.ts';
 import { PrintableTransactionA4 } from './PrintableTransactionA4.tsx';
+import { PrintableReceipt } from './PrintableReceipt.tsx';
+import { PrintMenu, type PrintFormat } from '../common/PrintMenu.tsx';
 import { buildApprovedRequestPrintData, canPrintApprovedRequest } from '../../lib/requestPrint.ts';
 import { cancellationSummary } from '../../lib/requestCancel.ts';
 
@@ -37,7 +38,7 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
   const [quantities, setQuantities] = useState<Record<number, number>>({});
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [showPrintA4, setShowPrintA4] = useState(false);
+  const [printFormat, setPrintFormat] = useState<PrintFormat | null>(null);
 
   const fetchDetail = async () => {
     if (!requestId) return;
@@ -201,13 +202,8 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
 
         {canPrintApprovedRequest(request) && (
           <div className="px-3 sm:px-6 pt-3">
-            <button
-              type="button"
-              onClick={() => setShowPrintA4(true)}
-              className="inline-flex items-center gap-1.5 rounded-[9px] bg-[#1E293B] px-3 py-2 text-xs font-bold text-white transition-colors hover:bg-[#263653]"
-            >
-              <Printer className="h-3.5 w-3.5" /> Cetak A4
-            </button>
+            <PrintMenu onSelect={setPrintFormat} className="[&_[role=menu]]:left-0 [&_[role=menu]]:right-auto"
+              buttonClassName="inline-flex items-center gap-1.5 rounded-[9px] bg-[#1E293B] px-3 py-2 text-xs font-bold text-white transition-colors hover:bg-[#263653]" />
           </div>
         )}
 
@@ -517,10 +513,13 @@ export const WarehouseRequestDetailModal: React.FC<WarehouseRequestDetailModalPr
           </button>
         </div>
       </div>
-      {showPrintA4 && canPrintApprovedRequest(request) && (
+      {printFormat === 'receipt' && canPrintApprovedRequest(request) && (
+        <PrintableReceipt isOpen onClose={() => setPrintFormat(null)} data={buildApprovedRequestPrintData(request)} />
+      )}
+      {printFormat === 'a4' && canPrintApprovedRequest(request) && (
         <PrintableTransactionA4
-          isOpen={showPrintA4}
-          onClose={() => setShowPrintA4(false)}
+          isOpen
+          onClose={() => setPrintFormat(null)}
           type="outgoing"
           data={buildApprovedRequestPrintData(request)}
         />

@@ -743,6 +743,8 @@ test('Pengaturan cetak: invalid input is refused with a reason and nothing is sa
       ['foreign logo', broken((t) => { t.header.logoUrl = 'https://example.com/logo.png'; }), /logo tidak valid/],
       ['too long address', broken((t) => { t.header.address = 'x'.repeat(201); }), /Alamat maksimal 200/],
       ['flag as text', broken((t) => { t.table.showPrices = 'yes'; }), /harga/],
+      ['receipt paper 70 mm', broken((t) => { t.receipt.paperWidth = 70; }), /58 mm atau 80 mm/],
+      ['receipt footer too long', broken((t) => { t.receipt.footer = 'x'.repeat(201); }), /penutup struk maksimal 200/],
     ];
     for (const [name, body, message] of cases) {
       const result = await admin.call('PUT', PRINT, body);
@@ -751,6 +753,22 @@ test('Pengaturan cetak: invalid input is refused with a reason and nothing is sa
     }
     const [rows]: any = await connection.query("SELECT 1 FROM system_settings WHERE setting_key = 'print_template_delivery_order'");
     assert.equal(rows.length, 0);
+  });
+});
+
+test('Pengaturan cetak: the struk settings are saved, and a template stored before them reads with the default struk', async () => {
+  await withApi(async ({ warehouse, connection, base }) => {
+    const admin = await adminClient(connection, base);
+    const { DEFAULT_DELIVERY_ORDER_TEMPLATE } = await import('../src/printTemplate.ts');
+    const old: any = structuredClone(DEFAULT_DELIVERY_ORDER_TEMPLATE); delete old.receipt; old.header.address = 'Alamat lama';
+    await connection.query("INSERT INTO system_settings (setting_key, setting_value) VALUES ('print_template_delivery_order', ?)", [JSON.stringify(old)]);
+    const read = (await warehouse.call('GET', '/api/print-templates/delivery-order')).body.template;
+    assert.equal(read.header.address, 'Alamat lama');
+    assert.deepEqual(read.receipt, DEFAULT_DELIVERY_ORDER_TEMPLATE.receipt);
+
+    const saved = await admin.call('PUT', PRINT, { ...read, receipt: { paperWidth: 80, showPrices: false, showApprovedBy: true, footer: 'Cek barang sebelum tanda tangan.' } });
+    assert.equal(saved.status, 200);
+    assert.deepEqual((await warehouse.call('GET', '/api/print-templates/delivery-order')).body.template.receipt, { paperWidth: 80, showPrices: false, showApprovedBy: true, footer: 'Cek barang sebelum tanda tangan.' });
   });
 });
 

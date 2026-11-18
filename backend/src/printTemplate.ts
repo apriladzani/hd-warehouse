@@ -20,7 +20,12 @@ export type DeliveryOrderTemplate = {
   table: { showPrices: boolean; showTerbilang: boolean };
   notes: string[];
   signatures: SignatureColumn[];
+  // The shop-style receipt (struk) for thermal printers. It reuses the brand,
+  // address and hotline of the header.
+  receipt: ReceiptSettings;
 };
+export type ReceiptSettings = { paperWidth: 58 | 80; showPrices: boolean; showApprovedBy: boolean; footer: string };
+export const RECEIPT_PAPER_WIDTHS = [58, 80] as const;
 
 export const DEFAULT_DELIVERY_ORDER_TEMPLATE: DeliveryOrderTemplate = {
   header: {
@@ -48,6 +53,7 @@ export const DEFAULT_DELIVERY_ORDER_TEMPLATE: DeliveryOrderTemplate = {
     { label: 'Diterima & Diperiksa (Staff Gudang)', name: 'Staff Gudang HD', useOutletName: false },
     { label: 'Mengetahui & Verifikasi (SPV / Manager)', name: 'Kepala Logistik & Gudang', useOutletName: false },
   ],
+  receipt: { paperWidth: 58, showPrices: true, showApprovedBy: true, footer: 'Terima kasih. Simpan struk ini sebagai bukti serah terima barang.' },
 };
 
 export class PrintTemplateError extends Error {}
@@ -90,6 +96,10 @@ export function validateDeliveryOrderTemplate(input: unknown): DeliveryOrderTemp
   });
 
   const showPrices = flag(table.showPrices, 'Tampilkan kolom harga');
+  // A template saved before the receipt existed has no receipt part: it gets the defaults.
+  const receipt = { ...DEFAULT_DELIVERY_ORDER_TEMPLATE.receipt, ...object(body.receipt) };
+  const paperWidth = Number(receipt.paperWidth);
+  if (!RECEIPT_PAPER_WIDTHS.includes(paperWidth as 58 | 80)) throw new PrintTemplateError('Lebar kertas struk harus 58 mm atau 80 mm');
   return {
     header: {
       brandName: text(header.brandName, 'Nama brand', 80, true),
@@ -112,6 +122,12 @@ export function validateDeliveryOrderTemplate(input: unknown): DeliveryOrderTemp
     table: { showPrices, showTerbilang: showPrices && flag(table.showTerbilang, 'Tampilkan Terbilang') },
     notes,
     signatures,
+    receipt: {
+      paperWidth: paperWidth as 58 | 80,
+      showPrices: flag(receipt.showPrices, 'Tampilkan harga di struk'),
+      showApprovedBy: flag(receipt.showApprovedBy, 'Tampilkan Disetujui Oleh di struk'),
+      footer: text(receipt.footer, 'Teks penutup struk', 200),
+    },
   };
 }
 
@@ -128,6 +144,7 @@ export function resolveDeliveryOrderTemplate(stored: unknown): DeliveryOrderTemp
     table: { ...DEFAULT_DELIVERY_ORDER_TEMPLATE.table, ...object(value.table) },
     notes: Array.isArray(value.notes) ? value.notes : DEFAULT_DELIVERY_ORDER_TEMPLATE.notes,
     signatures: Array.isArray(value.signatures) ? value.signatures : DEFAULT_DELIVERY_ORDER_TEMPLATE.signatures,
+    receipt: { ...DEFAULT_DELIVERY_ORDER_TEMPLATE.receipt, ...object(value.receipt) },
   };
   try { return validateDeliveryOrderTemplate(merged); }
   catch { return structuredClone(DEFAULT_DELIVERY_ORDER_TEMPLATE); }

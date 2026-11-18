@@ -2,8 +2,9 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { ArrowDown, ArrowUp, ImagePlus, Plus, Printer, RotateCcw, Save, Trash2, X } from 'lucide-react';
 import { StateMessage } from '../common/UI.tsx';
 import { PrintableTransactionA4, TransactionDocument } from '../modals/PrintableTransactionA4.tsx';
+import { PrintableReceipt, ReceiptDocument } from '../modals/PrintableReceipt.tsx';
 import {
-  DEFAULT_DELIVERY_ORDER_TEMPLATE, LOGO_MAX_BYTES, MAX_NOTES, MAX_SIGNATURES, SAMPLE_DELIVERY_ORDER,
+  DEFAULT_DELIVERY_ORDER_TEMPLATE, LOGO_MAX_BYTES, RECEIPT_PAPER_WIDTHS, MAX_NOTES, MAX_SIGNATURES, SAMPLE_DELIVERY_ORDER,
   announceTemplateUpdated, cloneTemplate, type DeliveryOrderTemplate,
 } from '../../lib/printTemplate.ts';
 
@@ -31,6 +32,7 @@ export const PrintTemplateSettings: React.FC = () => {
   const [feedback, setFeedback] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [testPrint, setTestPrint] = useState(false);
+  const [testReceipt, setTestReceipt] = useState(false);
 
   const apply = (result: { template: DeliveryOrderTemplate; isDefault: boolean }) => {
     setSaved(result.template); setForm(cloneTemplate(result.template)); setIsDefault(result.isDefault); setLogoFile(null);
@@ -76,7 +78,7 @@ export const PrintTemplateSettings: React.FC = () => {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Gagal menyimpan pengaturan cetak.');
       apply(result); announceTemplateUpdated();
-      setFeedback({ tone: 'ok', text: 'Pengaturan cetak disimpan. Cetakan Surat Jalan berikutnya memakai teks ini.' });
+      setFeedback({ tone: 'ok', text: 'Pengaturan cetak disimpan. Cetakan Surat Jalan dan struk berikutnya memakai pengaturan ini.' });
     } catch (reason) {
       setFeedback({ tone: 'error', text: reason instanceof Error ? reason.message : 'Gagal menyimpan pengaturan cetak.' });
     } finally { setBusy(false); }
@@ -100,6 +102,7 @@ export const PrintTemplateSettings: React.FC = () => {
   if (!saved) return <StateMessage kind="loading">Memuat pengaturan cetak...</StateMessage>;
 
   const { header, title, info, table, notes, signatures } = form;
+  const receipt = form.receipt ?? DEFAULT_DELIVERY_ORDER_TEMPLATE.receipt;
   const setNote = (index: number, value: string) => setForm((old) => ({ ...old, notes: old.notes.map((note, i) => (i === index ? value : note)) }));
   const setSignature = (index: number, patch: Partial<DeliveryOrderTemplate['signatures'][number]>) =>
     setForm((old) => ({ ...old, signatures: old.signatures.map((column, i) => (i === index ? { ...column, ...patch } : column)) }));
@@ -115,7 +118,8 @@ export const PrintTemplateSettings: React.FC = () => {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={() => setTestPrint(true)} className="hd-button hd-button--secondary"><Printer size={14} />Coba cetak</button>
+          <button type="button" onClick={() => setTestPrint(true)} className="hd-button hd-button--secondary"><Printer size={14} />Coba cetak A4</button>
+          <button type="button" onClick={() => setTestReceipt(true)} className="hd-button hd-button--secondary"><Printer size={14} />Coba cetak struk</button>
           <button type="button" onClick={() => void reset()} disabled={busy || isDefault} className="hd-button hd-button--secondary"><RotateCcw size={14} />Reset ke default</button>
           <button type="button" onClick={() => void save()} disabled={busy || !dirty} className="hd-button hd-button--primary"><Save size={14} />{busy ? 'Menyimpan…' : 'Simpan'}</button>
         </div>
@@ -211,6 +215,22 @@ export const PrintTemplateSettings: React.FC = () => {
               ))}
             </ol>
           </Section>
+
+          <Section title="7. Struk belanja">
+            <p className="mb-2 text-[11px] text-[#64748B]">Untuk printer struk (thermal). Nama brand, logo, alamat, dan hotline diambil dari Kop / Header.</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="block text-xs font-medium text-[#475569]">Lebar kertas
+                <select className="hd-input mt-1" value={receipt.paperWidth} onChange={(event) => set('receipt', { paperWidth: Number(event.target.value) as 58 | 80 })}>
+                  {RECEIPT_PAPER_WIDTHS.map((width) => <option key={width} value={width}>{width} mm</option>)}
+                </select>
+              </label>
+              <div className="grid gap-1.5">
+                <Toggle label="harga dan total" checked={receipt.showPrices} onChange={(showPrices) => set('receipt', { showPrices })} />
+                <Toggle label="Disetujui Oleh" checked={receipt.showApprovedBy} onChange={(showApprovedBy) => set('receipt', { showApprovedBy })} />
+              </div>
+              <Field className="sm:col-span-2" label="Teks penutup (kosongkan bila tidak perlu)" value={receipt.footer} max={200} onChange={(footer) => set('receipt', { footer })} />
+            </div>
+          </Section>
         </div>
 
         <div className="min-w-0">
@@ -220,10 +240,15 @@ export const PrintTemplateSettings: React.FC = () => {
               <span className="text-[11px] text-[#64748B]">Contoh data transaksi · {dirty ? 'belum disimpan' : 'tersimpan'}</span>
             </div>
             <ScaledPreview template={previewTemplate} />
+            <h2 className="mb-2 mt-4">Preview struk ({receipt.paperWidth} mm)</h2>
+            <div className="flex justify-center rounded-lg border border-[#E2E8F0] bg-[#E2E8F0]/50 p-3" aria-label="Preview struk">
+              <div className="shadow-md"><ReceiptDocument preview data={SAMPLE_DELIVERY_ORDER} template={previewTemplate} /></div>
+            </div>
           </section>
         </div>
       </div>
 
+      <PrintableReceipt isOpen={testReceipt} onClose={() => setTestReceipt(false)} data={SAMPLE_DELIVERY_ORDER} template={previewTemplate} />
       <PrintableTransactionA4 isOpen={testPrint} onClose={() => setTestPrint(false)} type="outgoing" data={SAMPLE_DELIVERY_ORDER} template={previewTemplate} />
     </div>
   );
