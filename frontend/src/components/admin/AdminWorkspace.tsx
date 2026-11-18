@@ -324,6 +324,9 @@ function OutletManagementPanel({ outlets, headers, onRefresh }: { outlets: Manag
   const [deleting, setDeleting] = useState<ManagedOutlet | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState('');
+  const [revoking, setRevoking] = useState<{ outlet: ManagedOutlet; user: ManagedOutlet['users'][number] } | null>(null);
+  const [revokeBusy, setRevokeBusy] = useState(false);
+  const [revokeError, setRevokeError] = useState('');
   useEffect(() => {
     const next: Record<number, OutletDraft> = {};
     outlets.forEach((outlet) => { next[outlet.id] = { code: outlet.code, name: outlet.name, address: outlet.address || '', isActive: Boolean(outlet.isActive) }; });
@@ -363,6 +366,18 @@ function OutletManagementPanel({ outlets, headers, onRefresh }: { outlets: Manag
     } catch (reason) { setDeleteError(reason instanceof Error ? reason.message : 'Gagal menghapus outlet.'); }
     finally { setDeleteBusy(false); }
   };
+  // Takes the account out of this outlet only; its requests stay as they are.
+  const revokeUser = async () => {
+    if (!revoking) return;
+    setRevokeBusy(true); setRevokeError(''); setFeedback('');
+    try {
+      const response = await fetch(`/api/admin/outlets/${revoking.outlet.id}/users/${revoking.user.id}`, { method: 'DELETE', headers });
+      const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Gagal mencabut pengguna dari outlet.');
+      setFeedback(`${revoking.user.name} tidak lagi ditempatkan di ${revoking.outlet.name}. Request yang sudah ada tetap tersimpan.`);
+      setRevoking(null); onRefresh();
+    } catch (reason) { setRevokeError(reason instanceof Error ? reason.message : 'Gagal mencabut pengguna dari outlet.'); }
+    finally { setRevokeBusy(false); }
+  };
   return <section className="hd-surface overflow-hidden">
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E2E8F0] px-3 py-2.5 sm:px-4"><div><h2>Outlet Management</h2><p className="mt-0.5 text-[11px] text-[#64748B]">{outlets.length} outlet · outlet bertransaksi dipertahankan untuk riwayat.</p></div><button type="button" onClick={() => setShowCreate((value) => !value)} className="hd-button hd-button--primary"><Plus size={15} />Tambah Outlet</button></div>
     {showCreate && <form onSubmit={createOutlet} className="grid gap-2 border-b border-[#E2E8F0] bg-[#F8FAFC] p-3 sm:grid-cols-2 lg:grid-cols-4"><input required value={createForm.code} onChange={(event) => setCreateForm((old) => ({ ...old, code: event.target.value }))} placeholder="Kode outlet (OTL-001)" className="hd-input" /><input required value={createForm.name} onChange={(event) => setCreateForm((old) => ({ ...old, name: event.target.value }))} placeholder="Nama outlet" className="hd-input" /><input value={createForm.address} onChange={(event) => setCreateForm((old) => ({ ...old, address: event.target.value }))} placeholder="Alamat" className="hd-input" /><button disabled={savingNew} className="hd-button hd-button--primary">{savingNew ? 'Menyimpan…' : 'Simpan Outlet'}</button></form>}
@@ -383,9 +398,20 @@ function OutletManagementPanel({ outlets, headers, onRefresh }: { outlets: Manag
             ? <button type="button" disabled className="hd-button hd-button--secondary" title="Outlet nonaktif yang punya riwayat transaksi tidak bisa dihapus permanen" aria-label={`Hapus ${outlet.name} tidak tersedia`}><Trash2 size={14} />Hapus</button>
             : <button type="button" onClick={() => { setDeleteError(''); setDeleting(outlet); }} className="hd-button hd-button--secondary text-rose-700" aria-label={`Hapus ${outlet.name}`}><Trash2 size={14} />Hapus</button>}
         </div></td>
-      </tr>{expandedId === outlet.id && <tr><td colSpan={6} className="bg-[#F8FAFC] px-4 py-2.5"><p className="mb-1 text-[11px] font-semibold text-[#64748B]">Pengguna yang ditempatkan</p>{outlet.users.length ? <div className="flex flex-wrap gap-2">{outlet.users.map((user) => <span key={user.id} className="hd-badge">{user.name} · {user.email}{user.isActive ? '' : ' · Nonaktif'}</span>)}</div> : <span className="text-xs text-[#64748B]">Belum ada pengguna yang ditempatkan.</span>}</td></tr>}</React.Fragment>;
+      </tr>{expandedId === outlet.id && <tr><td colSpan={6} className="bg-[#F8FAFC] px-4 py-2.5"><p className="mb-1 text-[11px] font-semibold text-[#64748B]">Pengguna yang ditempatkan</p>{outlet.users.length ? <div className="flex flex-wrap gap-2">{outlet.users.map((user) => <span key={user.id} className="hd-badge inline-flex items-center gap-1.5">{user.name} · {user.email}{user.isActive ? '' : ' · Nonaktif'}<button type="button" onClick={() => { setRevokeError(''); setRevoking({ outlet, user }); }} className="rounded px-1 font-bold text-[#D80027] hover:bg-[#FEE2E2]" title={`Cabut ${user.name} dari ${outlet.name}`} aria-label={`Cabut ${user.name} dari ${outlet.name}`}>×</button></span>)}</div> : <span className="text-xs text-[#64748B]">Belum ada pengguna yang ditempatkan.</span>}</td></tr>}</React.Fragment>;
     })}</tbody></table></div> : <StateMessage>Tidak ada outlet yang cocok dengan filter.</StateMessage>}
     {deleting && <DeleteOutletDialog outlet={deleting} busy={deleteBusy} error={deleteError} onCancel={() => setDeleting(null)} onConfirm={() => void deleteOutlet(deleting)} />}
+    {revoking && <div className="fixed inset-0 z-[110] grid place-items-center bg-slate-950/45 p-3" onMouseDown={(event) => { if (!revokeBusy && event.target === event.currentTarget) setRevoking(null); }}>
+      <section role="alertdialog" aria-modal="true" aria-labelledby="revoke-outlet-user-title" className="hd-surface w-full max-w-md p-4 shadow-xl">
+        <h2 id="revoke-outlet-user-title">Cabut pengguna dari outlet?</h2>
+        <p className="mt-1 text-xs leading-5 text-[#64748B]"><strong className="text-[#1E293B]">{revoking.user.name}</strong> tidak bisa lagi membuat atau melihat request untuk <strong className="text-[#1E293B]">{revoking.outlet.name}</strong>. Request yang sudah pernah dibuat tetap tersimpan dan tetap tampil di Warehouse. Akunnya sendiri tidak dihapus; outlet lain yang dipegangnya tetap.</p>
+        {revokeError && <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">{revokeError}</p>}
+        <footer className="mt-4 flex justify-end gap-2">
+          <button type="button" disabled={revokeBusy} onClick={() => setRevoking(null)} className="hd-button hd-button--secondary">Batal</button>
+          <button type="button" disabled={revokeBusy} onClick={() => void revokeUser()} className="hd-button hd-button--primary">{revokeBusy ? 'Memproses…' : 'Cabut dari outlet'}</button>
+        </footer>
+      </section>
+    </div>}
   </section>;
 }
 
@@ -398,7 +424,7 @@ export function deleteOutletPlan(outlet: Pick<ManagedOutlet, 'name' | 'requestCo
   };
   if (outlet.assignedUsers > 0) return {
     kind: 'blocked' as const, confirm: 'Hapus outlet',
-    text: `Masih ada ${outlet.assignedUsers} akun yang ditempatkan di outlet ${outlet.name}. Pindahkan penempatannya dulu di User Management, lalu hapus outlet ini.`,
+    text: `Masih ada ${outlet.assignedUsers} akun yang ditempatkan di outlet ${outlet.name}. Cabut dulu dengan tombol × di daftar pengguna outlet (klik jumlah pengguna) atau pindahkan di User Management, lalu hapus outlet ini.`,
   };
   return { kind: 'delete' as const, confirm: 'Hapus outlet', text: `Outlet ${outlet.name} belum pernah dipakai dan akan dihapus permanen.` };
 }

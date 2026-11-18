@@ -22,6 +22,7 @@ import {
   getOutletMaster,
   createManagedOutlet,
   updateManagedOutlet,
+  removeUserFromOutlet,
   deleteManagedOutlet,
   OutletDeleteError,
   getAccountOutlets,
@@ -1312,6 +1313,21 @@ app.patch('/api/admin/outlets/:id', async (req: Request, res: Response) => {
     res.json({ outlet });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Gagal menyimpan outlet' });
+  }
+});
+
+// Revokes one account's access to one outlet; requests stay as they are.
+app.delete('/api/admin/outlets/:id/users/:userId', async (req: Request, res: Response) => {
+  const actor = await getAdminUser(req, res);
+  if (!actor) return;
+  try {
+    const result = await removeUserFromOutlet(Number(req.params.id), Number(req.params.userId), actor.id);
+    await logOutletChange(actor, result.user, result.change);
+    res.json({ userId: result.user.id, remainingOutlets: result.remaining });
+  } catch (err: any) {
+    if (err instanceof OutletDeleteError) return res.status(err.status).json({ error: err.message });
+    console.error('[remove-outlet-user] gagal:', err?.message);
+    res.status(500).json({ error: 'Pengguna gagal dicabut dari outlet. Tidak ada data yang berubah.' });
   }
 });
 

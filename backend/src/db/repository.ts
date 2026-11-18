@@ -994,7 +994,7 @@ export async function deleteManagedOutlet(id: number) {
     const [placedRows] = await connection.query('SELECT user_id AS userId FROM user_outlets WHERE outlet_id = ?', [id]);
     const [legacyRows] = await connection.query('SELECT id AS userId FROM users WHERE outlet_id = ?', [id]);
     const placedCount = new Set([...(placedRows as any[]), ...(legacyRows as any[])].map((row) => Number(row.userId))).size;
-    if (placedCount > 0) throw new OutletDeleteError(`Masih ada ${placedCount} akun yang ditempatkan di outlet ${outlet.name}. Pindahkan penempatannya dulu di User Management.`, 409);
+    if (placedCount > 0) throw new OutletDeleteError(`Masih ada ${placedCount} akun yang ditempatkan di outlet ${outlet.name}. Cabut dulu dari daftar pengguna outlet ini atau pindahkan di User Management.`, 409);
 
     await connection.query('DELETE FROM outlets WHERE id = ?', [id]);
     await connection.commit();
@@ -1028,6 +1028,30 @@ export async function updateManagedOutlet(id: number, input: { code: string; nam
     if (error?.code === 'ER_DUP_ENTRY') throw new Error('Kode atau nama outlet sudah digunakan');
     throw error;
   } finally { connection.release(); }
+}
+
+// Takes one account out of one outlet (Outlet Management). Only the placement
+// goes: the account keeps its other outlets (another becomes the default when
+// needed), and requests already made keep their outlet and requester.
+export async function removeUserFromOutlet(outletId: number, userId: number, actorId: number) {
+  if (!Number.isInteger(outletId) || outletId <= 0 || !Number.isInteger(userId) || userId <= 0) throw new OutletDeleteError('ID outlet atau pengguna tidak valid', 400);
+  await ensureUserOutletSchema();
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.query('SELECT id, name, email, role FROM users WHERE id = ? LIMIT 1 FOR UPDATE', [userId]);
+    const user = (rows as any[])[0];
+    if (!user) throw new OutletDeleteError('Pengguna tidak ditemukan', 404);
+    const held = await getUserOutlets(userId, connection);
+    if (!held.some((outlet) => outlet.id === outletId)) throw new OutletDeleteError('Pengguna ini tidak ditempatkan di outlet tersebut', 404);
+    const role = String(user.role).toUpperCase();
+    const remaining = role === 'OUTLET' ? held.filter((outlet) => outlet.id !== outletId).map((outlet) => outlet.id) : [];
+    const keptDefault = held.find((outlet) => outlet.isDefault && outlet.id !== outletId)?.id ?? null;
+    const change = await replaceUserOutlets(connection, userId, role, { outletIds: remaining, defaultOutletId: keptDefault }, actorId);
+    await connection.commit();
+    return { user: { id: Number(user.id), name: String(user.name), email: String(user.email) }, change, remaining: remaining.length };
+  } catch (error) { await connection.rollback(); throw error; }
+  finally { connection.release(); }
 }
 
 // Every account with its outlets (user_outlets). outletId/outletName stay for
