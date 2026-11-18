@@ -1,8 +1,10 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Printer, X, Receipt } from 'lucide-react';
+import { Bluetooth, Printer, X, Receipt } from 'lucide-react';
 import { formatRupiah, formatDateIndo } from '../../lib/format.ts';
 import { DEFAULT_DELIVERY_ORDER_TEMPLATE, useDeliveryOrderTemplate, type DeliveryOrderTemplate } from '../../lib/printTemplate.ts';
+import { receiptEscPos, receiptLines, receiptTotal } from '../../lib/escpos.ts';
+import { ReceiptPrinterError, forgetPrinter, isAndroid, isIos, printViaBluetooth, printViaRawbt, printViaSerial, savedPrinterKind, savedPrinterName, supportsBluetooth, supportsSerial } from '../../lib/receiptPrinter.ts';
 
 // Shop-style receipt (struk) of an approved outlet request, for 58 mm or 80 mm
 // thermal printers. The wording comes from the "Struk belanja" part of the
@@ -41,12 +43,6 @@ const printCss = (paperWidth: number) => `
   }
 `;
 
-const receiptLines = (data: any) => (data.items || data.approvedItems || []).map((line: any) => {
-  const quantity = Number(line.approvedQuantity ?? line.quantity ?? 0);
-  const price = Number(line.price || 0);
-  return { name: line.itemName || `Barang #${line.itemId}`, quantity, price, subtotal: Number(line.subtotal ?? quantity * price) };
-});
-
 const Divider = () => <div className="my-1.5 border-t border-dashed border-black" />;
 const Row: React.FC<{ left: React.ReactNode; right: React.ReactNode; strong?: boolean }> = ({ left, right, strong }) => (
   <div className={`flex justify-between gap-2 ${strong ? 'font-bold' : ''}`}><span className="min-w-0 break-words">{left}</span><span className="shrink-0 text-right">{right}</span></div>
@@ -57,7 +53,7 @@ export const ReceiptDocument: React.FC<{ data: any; template: DeliveryOrderTempl
   const { header } = template;
   const lines = receiptLines(data);
   const totalQty = lines.reduce((sum: number, line: { quantity: number }) => sum + line.quantity, 0);
-  const total = Number(data.totalApprovedAmount ?? lines.reduce((sum: number, line: { subtotal: number }) => sum + line.subtotal, 0));
+  const total = receiptTotal(data, lines);
   const timestamp = printTimestamp || new Date().toLocaleString('id-ID', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   const width = receiptContentWidth(settings.paperWidth);
   const small = settings.paperWidth === 58;
@@ -121,6 +117,7 @@ export const PrintableReceipt: React.FC<PrintableReceiptProps> = ({ isOpen, onCl
 
   if (!isOpen || !data) return null;
   const handlePrint = () => { if (ready) window.print(); };
+  const bytes = () => receiptEscPos(data, activeTemplate || DEFAULT_DELIVERY_ORDER_TEMPLATE);
 
   return createPortal(
     <div className="hd-print-root">
@@ -139,13 +136,14 @@ export const PrintableReceipt: React.FC<PrintableReceiptProps> = ({ isOpen, onCl
               <ReceiptDocument data={data} template={activeTemplate || DEFAULT_DELIVERY_ORDER_TEMPLATE} />
             </div>
           </div>
+          <DirectPrint ready={ready} bytes={bytes} />
           <div className="no-print p-3 bg-[#F8FAFC] border-t border-[#DDE5F0] flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[11px] text-[#60708C]">Pilih printer struk dan ukuran kertas {paperWidth} mm di dialog cetak.</p>
+            <p className="text-[11px] text-[#60708C]">Cetak lewat dialog browser: pilih printer struk dan kertas {paperWidth} mm.</p>
             <div className="flex items-center gap-2">
               <button onClick={onClose} className="hd-button hd-button--secondary">Tutup</button>
-              <button id="btn-print-receipt" onClick={handlePrint} disabled={!ready} className="hd-button hd-button--primary">
+              <button id="btn-print-receipt" onClick={handlePrint} disabled={!ready} className="hd-button hd-button--secondary">
                 <Printer className="w-3.5 h-3.5" />
-                <span>{ready ? 'Cetak Struk' : 'Memuat pengaturan…'}</span>
+                <span>{ready ? 'Cetak via dialog' : 'Memuat pengaturan…'}</span>
               </button>
             </div>
           </div>
@@ -153,5 +151,45 @@ export const PrintableReceipt: React.FC<PrintableReceiptProps> = ({ isOpen, onCl
       </div>
     </div>,
     document.body,
+  );
+};
+
+// Straight to a thermal printer: Bluetooth LE, a COM port on a computer, or the
+// RawBT app on Android. The first print asks which printer; later prints reuse it.
+const DirectPrint: React.FC<{ ready: boolean; bytes: () => Uint8Array }> = ({ ready, bytes }) => {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+  const [printer, setPrinter] = useState<string | null>(() => savedPrinterName());
+  const bluetooth = supportsBluetooth(), serial = supportsSerial() && !isAndroid(), android = isAndroid();
+
+  const send = async (how: 'bluetooth' | 'serial', choose = false) => {
+    setBusy(true); setMessage(null);
+    try {
+      const name = how === 'bluetooth' ? await printViaBluetooth(bytes(), choose) : await printViaSerial(bytes(), choose);
+      setPrinter(name); setMessage({ tone: 'ok', text: `Struk terkirim ke ${name}.` });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof ReceiptPrinterError ? error.message : 'Struk gagal dikirim ke printer. Coba lagi.' });
+    } finally { setBusy(false); }
+  };
+  const change = () => { forgetPrinter(); setPrinter(null); setMessage(null); };
+
+  return (
+    <div className="no-print border-t border-[#DDE5F0] bg-white p-3 space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button id="btn-print-receipt-bluetooth" type="button" onClick={() => void send(serial && savedPrinterKind() === 'serial' ? 'serial' : 'bluetooth')} disabled={!ready || busy || (!bluetooth && !(serial && savedPrinterKind() === 'serial'))} className="hd-button hd-button--primary">
+          <Bluetooth className="w-3.5 h-3.5" />
+          <span>{busy ? 'Mengirim…' : 'Cetak langsung'}{!busy && <span className="hidden sm:inline"> (Bluetooth)</span>}</span>
+        </button>
+        {serial && <button type="button" onClick={() => void send('serial')} disabled={!ready || busy} className="hd-button hd-button--secondary">Lewat port COM (PC)</button>}
+        {android && <button type="button" onClick={() => printViaRawbt(bytes())} disabled={!ready || busy} className="hd-button hd-button--secondary">Lewat aplikasi RawBT</button>}
+      </div>
+      <p className="text-[11px] text-[#60708C]">
+        {printer ? <>Printer: <strong>{printer}</strong> · <button type="button" className="underline" onClick={change}>Ganti printer</button></>
+          : bluetooth ? 'Pertama kali: nyalakan printer dan Bluetooth, lalu pilih printernya dari daftar.'
+          : isIos() ? 'iPhone/iPad: buka hdhub di browser Bluefy untuk cetak langsung lewat Bluetooth.'
+          : 'Browser ini tidak mendukung Bluetooth. Pakai Chrome atau Edge.'}
+      </p>
+      {message && <p role={message.tone === 'error' ? 'alert' : 'status'} className={`text-xs ${message.tone === 'error' ? 'text-rose-700' : 'text-[#1B9357]'}`}>{message.text}</p>}
+    </div>
   );
 };
