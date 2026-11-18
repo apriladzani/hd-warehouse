@@ -585,6 +585,21 @@ async function adminClient(connection: any, base: string) {
 }
 const outletRow = async (connection: any, id: number) => (await connection.query('SELECT id, is_active FROM outlets WHERE id = ?', [id]))[0][0];
 
+test('Outlet management: the outlet code keeps the upper and lower case the admin typed', async () => {
+  await withApi(async ({ connection, base }) => {
+    const admin = await adminClient(connection, base);
+    const created = await admin.call('POST', '/api/admin/outlets', { code: ' Tsm-01 ', name: 'Tamansari Baru' });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.outlet.code, 'Tsm-01');
+    const id = created.body.outlet.id;
+    const updated = await admin.call('PATCH', `/api/admin/outlets/${id}`, { code: 'tsm-Baru', name: 'Tamansari Baru', isActive: true });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.body.outlet.code, 'tsm-Baru');
+    const [rows]: any = await connection.query('SELECT outlet_code FROM outlets WHERE id = ?', [id]);
+    assert.equal(rows[0].outlet_code, 'tsm-Baru');
+  });
+});
+
 test('Hapus outlet: an unused outlet is deleted for good, and the deletion is logged', async () => {
   await withApi(async ({ connection, base }) => {
     const admin = await adminClient(connection, base);

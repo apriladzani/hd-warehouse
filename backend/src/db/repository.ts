@@ -920,7 +920,8 @@ export async function getOutletMaster(activeOnly = true) {
 
 export async function createManagedOutlet(input: { code: string; name: string; address?: string }) {
   await ensureAdminOutletSchema();
-  const code = String(input.code || '').trim().toUpperCase();
+  // Kept as typed: upper and lower case are the admin's choice.
+  const code = String(input.code || '').trim();
   const name = String(input.name || '').trim();
   const address = String(input.address || '').trim() || null;
   if (!code || !name) throw new Error('Kode dan nama outlet wajib diisi');
@@ -1007,7 +1008,8 @@ export async function deleteManagedOutlet(id: number) {
 export async function updateManagedOutlet(id: number, input: { code: string; name: string; address?: string; isActive: boolean }) {
   await ensureAdminOutletSchema();
   if (!Number.isInteger(id) || id <= 0) throw new Error('ID outlet tidak valid');
-  const code = String(input.code || '').trim().toUpperCase();
+  // Kept as typed: upper and lower case are the admin's choice.
+  const code = String(input.code || '').trim();
   const name = String(input.name || '').trim();
   const address = String(input.address || '').trim() || null;
   if (!code || !name) throw new Error('Kode dan nama outlet wajib diisi');
