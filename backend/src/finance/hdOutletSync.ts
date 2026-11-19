@@ -393,7 +393,7 @@ export async function setExpenseMapping(key: string, input: { status?: unknown; 
     accountCode = String(input.accountCode ?? '');
     const [accounts] = await pool.query('SELECT group_code AS groupCode, is_active AS isActive FROM finance_accounts WHERE code = ?', [accountCode]);
     const account = (accounts as any[])[0];
-    if (!account || Number(account.isActive) !== 1 || ACCOUNT_GROUPS[account.groupCode]?.class !== 'DC') throw new MappingError('Pilih kode biaya Distribution Cost yang aktif.');
+    if (!account || Number(account.isActive) !== 1 || !ACCOUNT_GROUPS[account.groupCode]) throw new MappingError('Pilih kode akun yang aktif.');
   }
   await pool.query('UPDATE hdoutlet_expense_mappings SET status = ?, account_code = ?, updated_by = ? WHERE expense_key = ?', [status, accountCode, actor.id, key]);
   await logAdminActivity({ actorId: actor.id, actorName: actor.name || `user#${actor.id}`, action: 'FINANCE_HDOUTLET_EXPENSE_MAPPING', targetType: 'hdoutlet_expense', targetId: key, details: { name: before.name, before: { status: before.status, accountCode: before.accountCode }, after: { status, accountCode } } }).catch(() => {});

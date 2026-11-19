@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { pool } from '../db/index.ts';
 import { logAdminActivity } from '../db/repository.ts';
-import { AccountError, createAccount, updateAccount } from './accounts.ts';
+import { AccountError, createAccount, deleteAccount, updateAccount } from './accounts.ts';
 import { ensureFinanceTransactionSchema } from './transactionRepository.ts';
 import { financeWriteGuard, type Actor } from './transactionApi.ts';
 import { hdOutletOverview, MappingError, setExpenseMapping, setOutletMapping, syncHdOutlet } from './hdOutletSync.ts';
@@ -42,6 +42,16 @@ export function createFinanceManageRouter(authenticate: (req: Request) => Promis
       await logAdminActivity({ actorId: actor.id, actorName: actor.name || `user#${actor.id}`, action: 'FINANCE_ACCOUNT_UPDATE', targetType: 'finance_account', targetId: account.code, details: { name: account.name, isActive: account.isActive } }).catch(() => {});
       res.json({ account });
     } catch (error) { fail(res, error, 'Kode akun gagal diubah.'); }
+  });
+
+  router.delete('/accounts/:code', async (req, res) => {
+    try {
+      await ensureFinanceTransactionSchema();
+      const account = await deleteAccount(pool, req.params.code);
+      const actor = actorOf(res);
+      await logAdminActivity({ actorId: actor.id, actorName: actor.name || `user#${actor.id}`, action: 'FINANCE_ACCOUNT_DELETE', targetType: 'finance_account', targetId: account.code, details: { name: account.name, groupCode: account.groupCode } }).catch(() => {});
+      res.json({ deleted: account.code });
+    } catch (error) { fail(res, error, 'Kode akun gagal dihapus.'); }
   });
 
   router.get('/hdoutlet', async (_req, res) => {

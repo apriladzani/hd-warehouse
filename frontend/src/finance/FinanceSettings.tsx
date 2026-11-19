@@ -1,7 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, RefreshCw } from 'lucide-react';
+import { Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { Button, StateMessage } from '../components/common/UI.tsx';
-import { Panel, Status } from './components.tsx';
+import { Modal, Panel, Status } from './components.tsx';
+
+const COGS_GROUPS = ['CRW', 'CSM', 'CPM'];
+// HD Outlet expenses may book to any active code, grouped like the P&L.
+export function accountOptions(accounts: Accounts['accounts']) {
+  const active = accounts.filter(a => a.isActive);
+  const sections: [string, Accounts['accounts']][] = [
+    ['Distribution Cost (DC)', active.filter(a => a.classCode === 'DC')],
+    ['Depreciation & Amortization (DA)', active.filter(a => a.classCode === 'DA')],
+    ['Income (SI / OI / SH)', active.filter(a => a.classCode === 'CI' && !COGS_GROUPS.includes(a.groupCode))],
+    ['COGS', active.filter(a => COGS_GROUPS.includes(a.groupCode))],
+  ];
+  return sections.filter(([, list]) => list.length).map(([label, list]) => <optgroup key={label} label={label}>{list.map(a => <option key={a.code} value={a.code}>{a.code} – {a.name}</option>)}</optgroup>);
+}
 import { financeGet, financeWrite } from './api.ts';
 import { formatMoney, type AccountGroup, type Accounts, type Filter, type OutletOption } from './model.ts';
 
@@ -30,7 +43,7 @@ export function HdOutletSettings({ filter, accounts, outlets, onChanged }: { fil
     catch (e) { setError(e instanceof Error ? e.message : 'Gagal.'); }
     finally { setBusy(''); }
   };
-  const dcCodes = (accounts?.accounts ?? []).filter(a => a.isActive && a.classCode === 'DC');
+  const codes = accounts?.accounts ?? [];
   const pending = data?.expenses.filter(e => e.status === 'pending') ?? [];
   const sync = () => act('sync', () => financeWrite(`${MANAGE}/hdoutlet/sync`, 'POST', { startDate: filter.startDate, endDate: filter.endDate }).catch(e => { throw e; }), r =>
     `Sinkron ${r.status === 'success' ? 'berhasil' : r.status === 'partial' ? 'selesai sebagian' : 'gagal'}: ${r.reportsFetched} laporan · ${r.created} entri baru · ${r.updated} diperbarui · ${r.voided} dihapus.${r.messages?.length ? ' ' + r.messages.join(' ') : ''}`);
@@ -53,7 +66,7 @@ export function HdOutletSettings({ filter, accounts, outlets, onChanged }: { fil
     {data && <Panel title={`Pengeluaran belum dipetakan (${pending.length})`}>
       <p className="fn-section-note">Pengeluaran laporan harian yang belum punya kode biaya belum dihitung ke Distribution Cost. Pilih kodenya; laporan yang sudah tersinkron langsung dihitung ulang.</p>
       <div className="fn-table-wrap"><table className="fn-table"><thead><tr><th>Pengeluaran HD Outlet</th><th>Status</th><th className="fn-right">Nilai tersinkron</th><th>Kode biaya</th><th></th></tr></thead><tbody>
-        {data.expenses.map(e => <ExpenseRow key={e.key} expense={e} codes={dcCodes} busy={!!busy} onSave={(status, accountCode) => act(`exp:${e.key}`, () => financeWrite(`${MANAGE}/hdoutlet/expenses/${encodeURIComponent(e.key)}`, 'PUT', { status, accountCode }), applied)} />)}
+        {data.expenses.map(e => <ExpenseRow key={e.key} expense={e} codes={codes} busy={!!busy} onSave={(status, accountCode) => act(`exp:${e.key}`, () => financeWrite(`${MANAGE}/hdoutlet/expenses/${encodeURIComponent(e.key)}`, 'PUT', { status, accountCode }), applied)} />)}
       </tbody></table></div>
     </Panel>}
 
@@ -143,17 +156,18 @@ function ExpenseRow({ expense, codes, busy, onSave }: { expense: HdOutletOvervie
   return <tr><td>{expense.name} <span className="fn-muted">({expense.key})</span></td>
     <td>{expense.status === 'mapped' ? <Status value="Available" /> : expense.status === 'ignored' ? <span className="fn-muted">diabaikan</span> : <Status value="Partial" />}</td>
     <td className="fn-money">{formatMoney(expense.amount)} <span className="fn-muted">· {expense.reportCount} laporan</span></td>
-    <td><select className="hd-input" value={code} disabled={busy} onChange={e => setCode(e.target.value)}><option value="">Pilih kode biaya</option>{codes.map(a => <option key={a.code} value={a.code}>{a.code} – {a.name}</option>)}</select></td>
+    <td><select className="hd-input" value={code} disabled={busy} onChange={e => setCode(e.target.value)}><option value="">Pilih kode</option>{accountOptions(codes)}</select></td>
     <td><div className="fn-actions"><Button disabled={busy || !code || (expense.status === 'mapped' && code === expense.accountCode)} onClick={() => onSave('mapped', code)}>Simpan</Button>{expense.status !== 'ignored' && <Button variant="ghost" disabled={busy} title="Bukan biaya (tidak dihitung)" onClick={() => onSave('ignored', null)}>Abaikan</Button>}</div></td></tr>;
 }
 
 // Chart of accounts (master kode biaya): add a code to a group, rename, (de)activate.
 export function AccountSettings({ accounts, canEdit, onChanged }: { accounts: Accounts | null; canEdit: boolean; onChanged: () => void }) {
   const [form, setForm] = useState({ groupCode: '', code: '', name: '' }), [error, setError] = useState(''), [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState<{ code: string; name: string } | null>(null);
+  const [removing, setRemoving] = useState<Accounts['accounts'][number] | null>(null);
   if (!accounts) return <Panel title="Master kode biaya"><p className="fn-section-note">Memuat…</p></Panel>;
   const extensible = accounts.groups.filter(g => g.extensible);
   // Dropdown sections: costs, income, COGS, in the order of the P&L.
-  const COGS_GROUPS = ['CRW', 'CSM', 'CPM'];
   const sections: [string, AccountGroup[]][] = [
     ['Distribution Cost', extensible.filter(g => g.classCode === 'DC')],
     ['Income (SI / OI)', extensible.filter(g => g.classCode === 'CI' && !COGS_GROUPS.includes(g.code))],
@@ -168,6 +182,7 @@ export function AccountSettings({ accounts, canEdit, onChanged }: { accounts: Ac
     setBusy(true); setError('');
     try { await action(); after?.(); onChanged(); } catch (e) { setError(e instanceof Error ? e.message : 'Gagal.'); } finally { setBusy(false); }
   };
+  const path = (code: string) => `${MANAGE}/accounts/${encodeURIComponent(code)}`;
   return <Panel title="Master kode biaya">
     {canEdit && <form className="fn-account-form" onSubmit={e => { e.preventDefault(); save(() => financeWrite(`${MANAGE}/accounts`, 'POST', form), () => setForm({ groupCode: form.groupCode, code: '', name: '' })); }}>
       <label>Klasifikasi<select className="hd-input" value={form.groupCode} onChange={e => setForm({ ...form, groupCode: e.target.value })}><option value="">Pilih</option>{sections.filter(([, list]) => list.length).map(([label, list]) => <optgroup key={label} label={label}>{list.map(g => <option key={g.code} value={g.code}>{g.code} – {g.name}</option>)}</optgroup>)}</select></label>
@@ -175,13 +190,25 @@ export function AccountSettings({ accounts, canEdit, onChanged }: { accounts: Ac
       <label>Nama<input className="hd-input" maxLength={100} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
       <Button type="submit" disabled={busy || !form.groupCode || !form.code || !form.name.trim()}><Plus size={14} />Tambah kode</Button>
     </form>}
-    {canEdit && <p className="fn-section-note">Kode baru di SI atau COGS (contoh SI01, CRW01) diisi manual oleh Finance di halaman Commercial Income dan ikut dijumlah ke SI/COGS. Kode SI, SH, CRW, CSM, CPM tetap dari HD Outlet / Warehouse.</p>}
+    {canEdit && <p className="fn-section-note">Kode baru di SI atau COGS (contoh SI01, CRW01) diisi manual oleh Finance di halaman Commercial Income dan ikut dijumlah ke SI/COGS. Kode SI, SH, CRW, CSM, CPM tetap dari HD Outlet / Warehouse. Kode yang sudah dipakai entri tidak bisa dihapus, cukup nonaktifkan.</p>}
     {error && <p className="fn-section-note fn-error" role="alert">{error}</p>}
-    <div className="fn-table-wrap"><table className="fn-table"><thead><tr><th>Kelas</th><th>Klasifikasi</th><th>Kode</th><th>Nama</th><th>Input</th><th>Status</th></tr></thead><tbody>
-      {accounts.accounts.map(a => <tr key={a.code} className={a.isActive ? undefined : 'fn-row-void'}><td>{a.classCode}</td><td>{a.groupCode} – {a.groupName}</td><th scope="row">{a.code}</th><td>{a.name}</td>
+    <div className="fn-table-wrap"><table className="fn-table"><thead><tr><th>Kelas</th><th>Klasifikasi</th><th>Kode</th><th>Nama</th><th>Input</th><th>Status</th>{canEdit && <th>Aksi</th>}</tr></thead><tbody>
+      {accounts.accounts.map(a => <tr key={a.code} className={a.isActive ? undefined : 'fn-row-void'}><td>{a.classCode}</td><td>{a.groupCode} – {a.groupName}</td><th scope="row">{a.code}</th>
+        <td>{editing?.code === a.code
+          ? <form className="fn-actions" onSubmit={e => { e.preventDefault(); save(() => financeWrite(path(a.code), 'PATCH', { name: editing.name }), () => setEditing(null)); }}><input className="hd-input" aria-label={`Nama ${a.code}`} maxLength={100} autoFocus value={editing.name} onChange={e => setEditing({ code: a.code, name: e.target.value })} /><Button type="submit" disabled={busy || !editing.name.trim() || editing.name.trim() === a.name}>Simpan</Button><Button type="button" variant="ghost" onClick={() => setEditing(null)}>Batal</Button></form>
+          : a.name}</td>
         <td>{a.code === 'LC01' ? 'Finance manual + HD Attendance API' : a.manual ? 'Finance manual' : a.groupCode === 'SI' || a.groupCode === 'SH' ? 'HD Outlet API' : 'Warehouse'}</td>
-        <td>{canEdit && a.manual ? <Button variant="ghost" disabled={busy} onClick={() => save(() => financeWrite(`${MANAGE}/accounts/${encodeURIComponent(a.code)}`, 'PATCH', { isActive: !a.isActive }))}>{a.isActive ? 'Aktif · nonaktifkan' : 'Nonaktif · aktifkan'}</Button> : a.isActive ? 'Aktif' : 'Nonaktif'}</td></tr>)}
+        <td>{canEdit && a.manual ? <Button variant="ghost" disabled={busy} onClick={() => save(() => financeWrite(path(a.code), 'PATCH', { isActive: !a.isActive }))}>{a.isActive ? 'Aktif · nonaktifkan' : 'Nonaktif · aktifkan'}</Button> : a.isActive ? 'Aktif' : 'Nonaktif'}</td>
+        {canEdit && <td><div className="fn-actions">
+          <Button variant="ghost" aria-label={`Ubah nama ${a.code}`} title="Ubah nama" disabled={busy} onClick={() => { setError(''); setEditing({ code: a.code, name: a.name }); }}><Pencil size={14} /></Button>
+          {!a.builtIn && <Button variant="ghost" aria-label={`Hapus ${a.code}`} title="Hapus kode" disabled={busy} onClick={() => { setError(''); setRemoving(a); }}><Trash2 size={14} /></Button>}
+        </div></td>}</tr>)}
     </tbody></table></div>
+    {removing && <Modal title={`Hapus kode ${removing.code}?`} onClose={() => setRemoving(null)}>
+      <p>Kode <strong>{removing.code} – {removing.name}</strong> ({removing.groupCode} – {removing.groupName}) akan dihapus dari master kode. Kode yang sudah dipakai entri atau mapping tidak bisa dihapus; nonaktifkan saja.</p>
+      {error && <p className="fn-error" role="alert">{error}</p>}
+      <div className="fn-actions fn-actions--end"><Button variant="ghost" onClick={() => setRemoving(null)}>Batal</Button><Button disabled={busy} onClick={() => save(() => financeWrite(path(removing.code), 'DELETE'), () => setRemoving(null))}><Trash2 size={14} />Hapus kode</Button></div>
+    </Modal>}
   </Panel>;
 }
 

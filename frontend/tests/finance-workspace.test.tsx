@@ -7,7 +7,7 @@ import type { Fact } from '../../backend/src/finance/domain.ts';
 import { createFinanceClient, FinanceApiError, validateReport } from '../src/finance/api.ts';
 import { DetailView, MetricTable, MissingInputs, UnitTable, Issues } from '../src/finance/components.tsx';
 import { EntryManager, draftProblem, toEntryRow, type EntryGateway } from '../src/finance/EntryManager.tsx';
-import { AccountSettings } from '../src/finance/FinanceSettings.tsx';
+import { AccountSettings, accountOptions } from '../src/finance/FinanceSettings.tsx';
 import { COMMERCIAL, DC, PL, PROFIT_LOSS, reportCsv, valueText, type Accounts, type Filter } from '../src/finance/model.ts';
 import { FinanceReportDocument, UNITS_PER_TABLE, chunk } from '../src/finance/PrintableFinanceReport.tsx';
 
@@ -32,9 +32,9 @@ const accounts: Accounts = {
   persistenceEnabled: true,
   groups: [{ code: 'UC', name: 'Utility Cost', classCode: 'DC', className: 'Distribution Cost', manual: true, extensible: true }, { code: 'LC', name: 'Labour Cost', classCode: 'DC', className: 'Distribution Cost', manual: true, extensible: true },
     { code: 'SI', name: 'Sales Income', classCode: 'CI', className: 'Commercial Income', manual: false, extensible: false }],
-  accounts: [{ code: 'UC01', name: 'Electrical', metric: 'UC', groupCode: 'UC', groupName: 'Utility Cost', classCode: 'DC', className: 'Distribution Cost', isActive: true, manual: true },
-    { code: 'UC02', name: 'Water/PAM', metric: 'UC', groupCode: 'UC', groupName: 'Utility Cost', classCode: 'DC', className: 'Distribution Cost', isActive: false, manual: true },
-    { code: 'SI', name: 'Sales Income', metric: 'SI', groupCode: 'SI', groupName: 'Sales Income', classCode: 'CI', className: 'Commercial Income', isActive: true, manual: false }],
+  accounts: [{ code: 'UC01', name: 'Electrical', metric: 'UC', groupCode: 'UC', groupName: 'Utility Cost', classCode: 'DC', className: 'Distribution Cost', isActive: true, manual: true, builtIn: true },
+    { code: 'UC02', name: 'Water/PAM', metric: 'UC', groupCode: 'UC', groupName: 'Utility Cost', classCode: 'DC', className: 'Distribution Cost', isActive: false, manual: true, builtIn: true },
+    { code: 'SI', name: 'Sales Income', metric: 'SI', groupCode: 'SI', groupName: 'Sales Income', classCode: 'CI', className: 'Commercial Income', isActive: true, manual: false, builtIn: true }],
 };
 
 test('Commercial Income, Distribution Cost and P&L show the backend numbers with their real sources', () => {
@@ -62,7 +62,7 @@ test('printed P&L: total layout lists every component; per-unit layout adds unit
 });
 
 test('SI and COGS codes added by Finance can be typed in; the synced SI code cannot', () => {
-  const withSi01: Accounts = { ...accounts, accounts: [...accounts.accounts, { code: 'SI01', name: 'Penjualan B2B', metric: 'SI', groupCode: 'SI', groupName: 'Sales Income', classCode: 'CI', className: 'Commercial Income', isActive: true, manual: true }] };
+  const withSi01: Accounts = { ...accounts, accounts: [...accounts.accounts, { code: 'SI01', name: 'Penjualan B2B', metric: 'SI', groupCode: 'SI', groupName: 'Sales Income', classCode: 'CI', className: 'Commercial Income', isActive: true, manual: true, builtIn: false }] };
   const html = renderToStaticMarkup(<EntryManager classes={['CI']} accounts={withSi01} outlets={[{ id: 3, name: 'Cisalak' }]} filter={filter} canEdit onChanged={() => {}} gateway={{ list: async () => [] } as unknown as EntryGateway} />);
   assert.ok(html.includes('SI – Sales Income'), 'SI is offered once it has a Finance code');
 });
@@ -145,6 +145,20 @@ test('chart of accounts: add a code to a classification, synced codes cannot be 
   const extensible: Accounts = { ...accounts, groups: [...accounts.groups.filter(g => g.code !== 'SI'), { code: 'SI', name: 'Sales Income', classCode: 'CI', className: 'Commercial Income', manual: false, extensible: true }, { code: 'CRW', name: 'COGS Raw Material', classCode: 'CI', className: 'Commercial Income', manual: false, extensible: true }] };
   const choices = renderToStaticMarkup(<AccountSettings accounts={extensible} canEdit onChanged={() => {}} />);
   for (const text of ['label="Income (SI / OI)"', 'label="COGS"', 'SI – Sales Income', 'CRW – COGS Raw Material']) assert.ok(choices.includes(text), text);
+  const withOwn: Accounts = { ...accounts, accounts: [...accounts.accounts, { code: 'OI01', name: 'Other Income', metric: 'OI', groupCode: 'OI', groupName: 'Other Income', classCode: 'CI', className: 'Commercial Income', isActive: true, manual: true, builtIn: false }] };
+  const crud = renderToStaticMarkup(<AccountSettings accounts={withOwn} canEdit onChanged={() => {}} />);
+  assert.ok(crud.includes('aria-label="Ubah nama UC01"') && crud.includes('aria-label="Ubah nama OI01"'), 'every code can be renamed');
+  assert.ok(crud.includes('aria-label="Hapus OI01"'), 'a code Finance added can be deleted');
+  assert.ok(!crud.includes('aria-label="Hapus UC01"') && !crud.includes('aria-label="Hapus SI"'), 'built-in codes are not deleted');
+  assert.ok(!renderToStaticMarkup(<AccountSettings accounts={withOwn} canEdit={false} onChanged={() => {}} />).includes('Hapus OI01'), 'read only for other roles');
+});
+
+test('HD Outlet expenses can be mapped to every active code, SI and OI included', () => {
+  const list: Accounts['accounts'] = [...accounts.accounts, { code: 'OI01', name: 'Other Income', metric: 'OI', groupCode: 'OI', groupName: 'Other Income', classCode: 'CI', className: 'Commercial Income', isActive: true, manual: true, builtIn: false },
+    { code: 'CRW', name: 'COGS Raw Material', metric: 'CRW', groupCode: 'CRW', groupName: 'COGS Raw Material', classCode: 'CI', className: 'Commercial Income', isActive: true, manual: false, builtIn: true }];
+  const html = renderToStaticMarkup(<select>{accountOptions(list)}</select>);
+  for (const text of ['UC01 – Electrical', 'SI – Sales Income', 'OI01 – Other Income', 'CRW – COGS Raw Material', 'label="COGS"']) assert.ok(html.includes(text), text);
+  assert.ok(!html.includes('UC02'), 'inactive codes are not offered');
 });
 
 test('CSV carries the period, unit, status and the real sources', () => {

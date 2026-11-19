@@ -1326,6 +1326,42 @@ async function withCisalak(connection: any) {
 const cisalakReport_ = (finance: ReturnType<typeof client>) => finance.call('GET', `/api/finance/v2/report?mode=OUTLET&startDate=${CISALAK_DAY}&endDate=${CISALAK_DAY}&outletIds=3`);
 const amountOf = (report: any, metric: string) => report.metrics[metric].amount;
 
+test('master kode CRUD: rename any code, delete only an unused Finance code; HD Outlet expense maps to OI or SI', async () => {
+  await withApi(async ({ connection, base }) => {
+    const { syncHdOutlet } = await import('../src/finance/hdOutletSync.ts');
+    await withCisalak(connection);
+    const finance = await financeClient(connection, base);
+    assert.equal((await manageCall(finance, base, 'POST', '/accounts', { groupCode: 'OI', code: 'OI01', name: 'Sewa titip' })).status, 201);
+    assert.equal((await manageCall(finance, base, 'POST', '/accounts', { groupCode: 'UC', code: 'UC09', name: 'Salah ketik' })).status, 201);
+    const renamed = await manageCall(finance, base, 'PATCH', '/accounts/OI01', { name: 'Pendapatan titip jual' });
+    assert.deepEqual([renamed.status, renamed.body.account.name], [200, 'Pendapatan titip jual']);
+    assert.equal((await manageCall(finance, base, 'PATCH', '/accounts/LC01', { name: 'Gaji pokok' })).status, 200, 'a built-in code can be renamed');
+    const accounts = (await finance.call('GET', '/api/finance/v2/accounts')).body.accounts;
+    assert.deepEqual([accounts.find((a: any) => a.code === 'OI01').builtIn, accounts.find((a: any) => a.code === 'LC01').builtIn], [false, true]);
+
+    const builtIn = await manageCall(finance, base, 'DELETE', '/accounts/UC01');
+    assert.equal(builtIn.status, 400); assert.match(builtIn.body.error, /bawaan/);
+    assert.equal((await manageCall(finance, base, 'DELETE', '/accounts/UC09')).status, 200, 'unused code is deleted');
+    assert.equal((await manageCall(finance, base, 'DELETE', '/accounts/UC09')).status, 400, 'already gone');
+    const [[gone]] = await connection.query("SELECT COUNT(*) AS n FROM finance_accounts WHERE code = 'UC09'");
+    assert.equal(Number(gone.n), 0);
+
+    // An HD Outlet expense booked to OI01 is income, and OI01 can then no longer be deleted.
+    const day = await syncHdOutlet({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: fakeHdOutlet(() => [cisalakReport({ expenses: { gas: '7000.00', meal: '13000.00', bonus: '10000.00' } })]) });
+    assert.equal(day.status, 'success', day.messages.join(' | '));
+    const mapped = await manageCall(finance, base, 'PUT', '/hdoutlet/expenses/gas', { status: 'mapped', accountCode: 'OI01' });
+    assert.equal(mapped.status, 200, JSON.stringify(mapped.body));
+    let report = (await cisalakReport_(finance)).body;
+    assert.equal(amountOf(report, 'OI'), '7000.000000');
+    const inUse = await manageCall(finance, base, 'DELETE', '/accounts/OI01');
+    assert.equal(inUse.status, 400); assert.match(inUse.body.error, /entri|mapping/);
+    assert.equal((await manageCall(finance, base, 'PUT', '/hdoutlet/expenses/gas', { status: 'mapped', accountCode: 'SI' })).status, 200, 'SI is offered too');
+    report = (await cisalakReport_(finance)).body;
+    assert.deepEqual([amountOf(report, 'OI'), amountOf(report, 'SI')], ['0.000000', '898500.000000']);
+    assert.equal((await manageCall(finance, base, 'PUT', '/hdoutlet/expenses/gas', { status: 'mapped', accountCode: 'XX01' })).status, 400);
+  });
+});
+
 test('Cisalak 17 Nov: HD Outlet + manual Listrik + Warehouse COGS give CI, DC, EBITDA, EBIT; re-sync does not double', async () => {
   await withApi(async ({ connection, base }) => {
     const { syncHdOutlet } = await import('../src/finance/hdOutletSync.ts');

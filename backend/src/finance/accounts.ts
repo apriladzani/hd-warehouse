@@ -14,7 +14,7 @@ export const FINANCE_ACCOUNT_COLUMNS = `
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   UNIQUE KEY uq_finance_account_code (code)`;
 
-export type Account = { code: string; name: string; metric: string; groupCode: string; groupName: string; classCode: AccountClass; className: string; isActive: boolean; manual: boolean };
+export type Account = { code: string; name: string; metric: string; groupCode: string; groupName: string; classCode: AccountClass; className: string; isActive: boolean; manual: boolean; builtIn: boolean };
 type Query = { query: (sql: string, values?: unknown[]) => Promise<any> };
 
 // Columns added after the first release, for tables created before them.
@@ -39,11 +39,13 @@ export async function seedFinanceAccounts(executor: Query) {
   await executor.query("UPDATE finance_accounts SET name = 'Bonus/Insentif' WHERE code = 'LC03' AND name = 'Bonus/Incentive'");
 }
 
+// Seed codes are part of the formulas and syncs: renamed or switched off, never deleted.
+const BUILT_IN = new Set(DEFAULT_ACCOUNTS.map(([code]) => code));
 function toAccount(row: any): Account {
   const group = ACCOUNT_GROUPS[row.groupCode];
   const classCode = (row.classCode || group?.class) as AccountClass;
   return { code: row.code, name: row.name, metric: row.metric, groupCode: row.groupCode, groupName: row.groupName || group?.name || row.groupCode,
-    classCode, className: ACCOUNT_CLASSES[classCode] ?? classCode, isActive: Number(row.isActive) === 1, manual: manualAccount(row.code, row.groupCode) };
+    classCode, className: ACCOUNT_CLASSES[classCode] ?? classCode, isActive: Number(row.isActive) === 1, manual: manualAccount(row.code, row.groupCode), builtIn: BUILT_IN.has(row.code) };
 }
 const SELECT_ACCOUNTS = `SELECT code, name, metric, group_code AS groupCode, group_name AS groupName, class_code AS classCode, is_active AS isActive
   FROM finance_accounts ORDER BY FIELD(class_code, 'CI', 'DC', 'DA'), group_code, code`;
@@ -78,4 +80,26 @@ export async function updateAccount(executor: Query, code: string, input: { name
   if (!isActive && !manualAccount(before.code, before.groupCode)) throw new AccountError(`Kode ${code} dipakai sinkronisasi/rumus dan tidak dapat dinonaktifkan.`);
   await executor.query('UPDATE finance_accounts SET name = ?, is_active = ? WHERE code = ?', [name, isActive ? 1 : 0, code]);
   return toAccount({ ...before, name, isActive: isActive ? 1 : 0 });
+}
+
+// Deletes a code Finance added that nothing uses yet. A code with entries (even
+// voided ones) or an HD Outlet expense mapping is switched off instead, so the
+// history keeps its code.
+export async function deleteAccount(executor: Query, code: string): Promise<Account> {
+  const [rows] = await executor.query(`SELECT id, code, name, metric, group_code AS groupCode, group_name AS groupName, class_code AS classCode, is_active AS isActive FROM finance_accounts WHERE code = ? LIMIT 1`, [code]);
+  const account = (rows as any[])[0];
+  if (!account) throw new AccountError('Kode akun tidak ditemukan.');
+  if (BUILT_IN.has(account.code)) throw new AccountError(`Kode ${code} bawaan sistem (dipakai rumus/sinkronisasi) dan tidak dapat dihapus. Ubah namanya atau nonaktifkan saja.`);
+  const count = async (sql: string, values: unknown[]) => {
+    try { const [[row]] = await executor.query(sql, values); return Number(row?.n ?? 0); }
+    catch (error: any) { if (error?.code === 'ER_NO_SUCH_TABLE') return 0; throw error; }
+  };
+  const entries = await count('SELECT COUNT(*) AS n FROM finance_transactions WHERE account_id = ?', [account.id]);
+  if (entries) throw new AccountError(`Kode ${code} sudah dipakai ${entries} entri. Nonaktifkan saja agar riwayatnya tetap ada.`);
+  const mappings = await count('SELECT COUNT(*) AS n FROM hdoutlet_expense_mappings WHERE account_code = ?', [code]);
+  if (mappings) throw new AccountError(`Kode ${code} dipakai mapping pengeluaran HD Outlet. Ganti mapping-nya dulu.`);
+  const legacy = await count('SELECT COUNT(*) AS n FROM manual_finance_entries WHERE account_code = ?', [code]);
+  if (legacy) throw new AccountError(`Kode ${code} dipakai ${legacy} entri lama. Nonaktifkan saja.`);
+  await executor.query('DELETE FROM finance_accounts WHERE id = ?', [account.id]);
+  return toAccount(account);
 }
