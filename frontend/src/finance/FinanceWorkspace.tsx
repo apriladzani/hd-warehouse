@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Download, Info, RefreshCw } from 'lucide-react';
+import { Info, RefreshCw } from 'lucide-react';
 import type { User } from '../types.ts';
 import { Button, StateMessage } from '../components/common/UI.tsx';
 import { ApiState, DetailView, EliminationNote, Filters, Issues, MetricTable, MissingInputs, Modal, Panel, Status, UnitTable } from './components.tsx';
 import { EntryManager } from './EntryManager.tsx';
 import { AccountSettings, HdAttendanceSettings, HdOutletSettings } from './FinanceSettings.tsx';
 import { createFinanceClient } from './api.ts';
+import { PrintableFinanceReport, ReportMenu, type ReportLayout } from './PrintableFinanceReport.tsx';
 import { useFinance } from './hooks.ts';
-import { COMMERCIAL, DA, DC, LABELS, PAGES, PL, PROFIT_LOSS, financePage, initialFilter, modeLabel, reportCsv, unavailableValue, unitLabel, valueText, type Detail, type Metric, type OutletOption, type Report, type Unit } from './model.ts';
+import { COMMERCIAL, DA, DC, LABELS, PAGES, PL, SUMMARY, financePage, initialFilter, modeLabel, reportCsv, unavailableValue, unitLabel, valueText, type Detail, type Metric, type OutletOption, type Report, type Unit } from './model.ts';
 
 function HdOutletState({ report }: { report: Report }) {
   const hd = report.hdOutlet;
@@ -16,8 +17,10 @@ function HdOutletState({ report }: { report: Report }) {
   return <p className="fn-muted">HD Outlet: {hd.enabled ? 'aktif' : 'nonaktif'}{last ? ` · sinkron terakhir ${last.finishedAt ? new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }).format(new Date(last.finishedAt)) : ''} (${last.status})` : ' · belum pernah sinkron'}</p>;
 }
 
-// Dashboard summary per unit, in the order Finance reads it.
-const DASHBOARD_UNIT_KEYS: Metric[] = ['SI', 'CI', 'COGS', 'CM', 'DC', 'EBIT', 'EBITDA'];
+// Dashboard summary per unit and the Total keseluruhan cards of Profit & Loss,
+// in the order Finance reads them.
+const DASHBOARD_UNIT_KEYS: Metric[] = SUMMARY;
+const PL_TOTAL_KEYS: Metric[] = SUMMARY;
 
 export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User; pathname: string }) {
   const page = financePage(pathname);
@@ -27,12 +30,13 @@ export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User;
   const canEdit = currentUser.role === 'FINANCE';
   const client = useMemo(() => createFinanceClient(currentUser), [currentUser.email, currentUser.role]);
   const [outlets, setOutlets] = useState<OutletOption[]>([]);
+  const [printLayout, setPrintLayout] = useState<ReportLayout | null>(null);
   useEffect(() => { if (report?.outlets) setOutlets(report.outlets.map(o => ({ id: o.id, name: o.name, isActive: o.isActive }))); }, [report]);
 
   // Drill-down of a component (optionally one unit): sub-codes and entries.
   const [selected, setSelected] = useState<{ key: Metric; unit: Unit | null } | null>(null);
   const [detail, setDetail] = useState<{ data: Detail | null; loading: boolean; error: string | null }>({ data: null, loading: false, error: null });
-  useEffect(() => setSelected(null), [pathname, filter]);
+  useEffect(() => { setSelected(null); setPrintLayout(null); }, [pathname, filter]);
   useEffect(() => {
     if (!selected) return;
     const controller = new AbortController();
@@ -58,7 +62,7 @@ export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User;
   // Input panels for each page. Finance sees them right under the filter card;
   // other roles see the note at the bottom of the page.
   const INPUTS: Partial<Record<typeof page, [string, ('DC' | 'DA' | 'CI')[]]>> = {
-    'commercial-income': ['Other Income (input Finance)', ['CI']],
+    'commercial-income': ['Input Finance (OI / SI / COGS)', ['CI']],
     'distribution-cost': ['Entri biaya', ['DC']],
     'depreciation-amortization': ['Entri DA', ['DA']],
   };
@@ -97,12 +101,10 @@ export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User;
       {!canEdit && inputPanel}
     </>}
     {report && page === 'profit-loss' && <>
-      <Panel title={`Profit & Loss · ${modeLabel(filter.mode)}`}><MetricTable keys={PROFIT_LOSS} report={report} onDetail={key => open(key)} /><EliminationNote report={report} /></Panel>
-      <Panel title="Per unit"><UnitTable report={report} keys={PROFIT_LOSS} onDetail={open} /></Panel>
-    </>}
-    {report && page === 'reports' && <>
-      <Panel title={`Laporan ${modeLabel(filter.mode)}`} action={<Button disabled={remote.loading} onClick={exportCsv}><Download size={14} />Export CSV</Button>}><MetricTable keys={PL} report={report} onDetail={key => open(key)} /><EliminationNote report={report} /></Panel>
-      <Panel title="Perbandingan unit"><UnitTable report={report} onDetail={open} /></Panel>
+      <section className="fn-kpis fn-kpis--grid" aria-label="Total keseluruhan">{PL_TOTAL_KEYS.map(key => { const value = report.metrics[key]; return <button key={key} onClick={() => open(key)}><span>{key} · {LABELS[key]}</span><strong>{valueText(value)}</strong><Status value={value.status} /></button>; })}</section>
+      <Panel title={`Profit & Loss · ${modeLabel(filter.mode)}`} action={<ReportMenu disabled={remote.loading} onPrint={setPrintLayout} onExport={exportCsv} />}><MetricTable keys={PL} report={report} onDetail={key => open(key)} /><EliminationNote report={report} /></Panel>
+      <Panel title="Per unit · total keseluruhan"><UnitTable report={report} keys={PL} onDetail={open} total /></Panel>
+      {printLayout && <PrintableFinanceReport report={report} keys={PL} layout={printLayout} onClose={() => setPrintLayout(null)} />}
     </>}
     {page === 'settings' && (canEdit
       ? <><HdOutletSettings filter={filter} accounts={accounts.data} outlets={outlets} onChanged={reload} /><HdAttendanceSettings filter={filter} outlets={outlets} onChanged={reload} /><AccountSettings accounts={accounts.data} canEdit={canEdit} onChanged={reload} /></>

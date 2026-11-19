@@ -8,7 +8,8 @@ import { createFinanceClient, FinanceApiError, validateReport } from '../src/fin
 import { DetailView, MetricTable, MissingInputs, UnitTable, Issues } from '../src/finance/components.tsx';
 import { EntryManager, draftProblem, toEntryRow, type EntryGateway } from '../src/finance/EntryManager.tsx';
 import { AccountSettings } from '../src/finance/FinanceSettings.tsx';
-import { COMMERCIAL, DC, PROFIT_LOSS, reportCsv, valueText, type Accounts, type Filter } from '../src/finance/model.ts';
+import { COMMERCIAL, DC, PL, PROFIT_LOSS, reportCsv, valueText, type Accounts, type Filter } from '../src/finance/model.ts';
+import { FinanceReportDocument, UNITS_PER_TABLE, chunk } from '../src/finance/PrintableFinanceReport.tsx';
 
 // The Finance pages show what the backend computed (FinanceReportService):
 // a real report for Outlet Cisalak, 17 Nov 2026, from the brief.
@@ -45,6 +46,25 @@ test('Commercial Income, Distribution Cost and P&L show the backend numbers with
   const pl = renderToStaticMarkup(<MetricTable keys={PROFIT_LOSS} report={r} onDetail={() => {}} />);
   for (const text of ['Rp58.500', 'CI − (DC + DA)']) assert.ok(pl.includes(text), text);
   assert.ok(renderToStaticMarkup(<UnitTable report={r} onDetail={() => {}} />).includes('Cisalak'), 'units by outlet name');
+  const withTotal = renderToStaticMarkup(<UnitTable report={r} keys={PL} onDetail={() => {}} total />);
+  for (const text of ['Total keseluruhan', 'CM', 'COGS', 'SI']) assert.ok(withTotal.includes(text), text);
+  assert.ok(!renderToStaticMarkup(<UnitTable report={r} onDetail={() => {}} />).includes('Total keseluruhan'));
+});
+
+test('printed P&L: total layout lists every component; per-unit layout adds unit columns and the grand total', () => {
+  const r = report();
+  const total = renderToStaticMarkup(<FinanceReportDocument report={r} keys={PL} layout="total" printedAt={new Date('2026-11-18T03:00:00Z')} />);
+  for (const text of ['Laporan Profit &amp; Loss', 'Periode 2026-11-17 s.d. 2026-11-17', 'SI · Sales Income', 'CM · Commercial Margin', 'COGS · Total COGS', 'EBIT · EBIT', 'Rp891.500', 'Rp510.000', 'Total keseluruhan']) assert.ok(total.includes(text), text);
+  assert.ok(!total.includes('<th class="fr-num">Cisalak</th>'));
+  const unit = renderToStaticMarkup(<FinanceReportDocument report={r} keys={PL} layout="unit" />);
+  assert.ok(unit.includes('<th class="fr-num">Cisalak</th>')); assert.ok(unit.includes('Total keseluruhan'));
+  assert.deepEqual(chunk([1, 2, 3, 4, 5, 6, 7], UNITS_PER_TABLE).map(part => part.length), [6, 1], 'many outlets continue in a second table');
+});
+
+test('SI and COGS codes added by Finance can be typed in; the synced SI code cannot', () => {
+  const withSi01: Accounts = { ...accounts, accounts: [...accounts.accounts, { code: 'SI01', name: 'Penjualan B2B', metric: 'SI', groupCode: 'SI', groupName: 'Sales Income', classCode: 'CI', className: 'Commercial Income', isActive: true, manual: true }] };
+  const html = renderToStaticMarkup(<EntryManager classes={['CI']} accounts={withSi01} outlets={[{ id: 3, name: 'Cisalak' }]} filter={filter} canEdit onChanged={() => {}} gateway={{ list: async () => [] } as unknown as EntryGateway} />);
+  assert.ok(html.includes('SI – Sales Income'), 'SI is offered once it has a Finance code');
 });
 
 test('Partial shows the known sum with its status; Missing shows no number', () => {
@@ -122,6 +142,9 @@ test('chart of accounts: add a code to a classification, synced codes cannot be 
   const html = renderToStaticMarkup(<AccountSettings accounts={accounts} canEdit onChanged={() => {}} />);
   assert.ok(html.includes('Tambah kode')); assert.ok(html.includes('UC01')); assert.ok(html.includes('Nonaktif · aktifkan'), 'UC02 inactive, can be re-activated');
   assert.ok(html.includes('HD Outlet API'), 'SI is fed by HD Outlet');
+  const extensible: Accounts = { ...accounts, groups: [...accounts.groups.filter(g => g.code !== 'SI'), { code: 'SI', name: 'Sales Income', classCode: 'CI', className: 'Commercial Income', manual: false, extensible: true }, { code: 'CRW', name: 'COGS Raw Material', classCode: 'CI', className: 'Commercial Income', manual: false, extensible: true }] };
+  const choices = renderToStaticMarkup(<AccountSettings accounts={extensible} canEdit onChanged={() => {}} />);
+  for (const text of ['label="Income (SI / OI)"', 'label="COGS"', 'SI – Sales Income', 'CRW – COGS Raw Material']) assert.ok(choices.includes(text), text);
 });
 
 test('CSV carries the period, unit, status and the real sources', () => {

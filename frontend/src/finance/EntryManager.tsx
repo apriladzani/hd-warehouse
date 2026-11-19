@@ -60,10 +60,13 @@ export const toEntryRow = (draft: Draft): EntryRow => ({ date: draft.date, unit:
 // from HD Outlet are read-only: they are corrected in HD Outlet and synced again.
 export function EntryManager({ classes, accounts, outlets, filter, canEdit, onChanged, gateway }: { classes: ('DC' | 'DA' | 'CI')[]; accounts: Accounts | null; outlets: OutletOption[]; filter: Filter; canEdit: boolean; onChanged?: () => void; gateway?: EntryGateway }) {
   const api = useMemo(() => gateway ?? createEntryGateway(), [gateway]);
-  const groups = (accounts?.groups ?? []).filter(g => g.manual && classes.includes(g.classCode));
+  // Groups with codes Finance types in: the cost groups, OI, and SI/COGS once
+  // Finance added its own code there (SI01, CRW01 …).
+  const manualCodes = (accounts?.accounts ?? []).filter(a => a.manual);
+  const groups = (accounts?.groups ?? []).filter(g => classes.includes(g.classCode) && manualCodes.some(a => a.groupCode === g.code));
   const groupOf = (code: string) => accounts?.accounts.find(a => a.code === code)?.groupCode ?? '';
   const nameOf = (code: string) => accounts?.accounts.find(a => a.code === code)?.name ?? '';
-  const codesOf = (group: string) => (accounts?.accounts ?? []).filter(a => a.groupCode === group && a.isActive);
+  const codesOf = (group: string) => manualCodes.filter(a => a.groupCode === group && a.isActive);
   const activeOutlets = outlets.filter(o => o.isActive !== false);
   const defaultUnit = filter.mode === 'WAREHOUSE' ? 'WAREHOUSE' : filter.outletIds?.length === 1 ? String(filter.outletIds[0]) : '';
   const blank = (): Draft => ({ key: newKey(), group: groups.length === 1 ? groups[0].code : '', accountCode: '', unit: defaultUnit, date: filter.endDate, amountText: '', notes: '', attachment: null, attachmentName: '' });
@@ -86,7 +89,8 @@ export function EntryManager({ classes, accounts, outlets, filter, canEdit, onCh
   }, [api, filterKey, revision]);
   const refresh = () => { setRevision(v => v + 1); onChanged?.(); };
   const allowed = new Set(groups.map(g => g.code));
-  const shown = rows.filter(r => r.status !== 'void' && allowed.has(groupOf(r.accountCode)) && (!groupFilter || groupOf(r.accountCode) === groupFilter) && (!unitFilter || unitValue(r.unit) === unitFilter));
+  const manualSet = new Set(manualCodes.map(a => a.code));
+  const shown = rows.filter(r => r.status !== 'void' && allowed.has(groupOf(r.accountCode)) && manualSet.has(r.accountCode) && (!groupFilter || groupOf(r.accountCode) === groupFilter) && (!unitFilter || unitValue(r.unit) === unitFilter));
   const total = shown.filter(r => r.status === 'posted').reduce((sum, r) => sum + Number(r.amount), 0);
 
   const run = async (action: () => Promise<void>, done: () => void) => {

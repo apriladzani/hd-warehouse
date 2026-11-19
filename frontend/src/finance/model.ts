@@ -15,12 +15,14 @@ export type OutletOption = { id: number; name: string; isActive?: boolean };
 export const PAGES = [
   ['dashboard', 'Dashboard Finance'], ['commercial-income', 'Commercial Income'],
   ['distribution-cost', 'Distribution Cost'], ['depreciation-amortization', 'Depreciation & Amortization'],
-  ['profit-loss', 'Profit & Loss'], ['reports', 'Laporan Keuangan'], ['settings', 'Pengaturan Finance'],
+  ['profit-loss', 'Profit & Loss'], ['settings', 'Pengaturan Finance'],
 ] as const;
 export type FinancePage = typeof PAGES[number][0];
 export const financePath = (page: FinancePage) => `/warehouse/finance/${page}`;
-export const isFinancePath = (path: string) => path === '/warehouse/finance' || PAGES.some(([page]) => path === financePath(page));
-export function financePage(path: string): FinancePage { return PAGES.find(([page]) => path === financePath(page))?.[0] ?? 'dashboard'; }
+// Laporan Keuangan now lives in Profit & Loss; its old link still opens there.
+const MOVED: Record<string, FinancePage> = { '/warehouse/finance/reports': 'profit-loss' };
+export const isFinancePath = (path: string) => path === '/warehouse/finance' || Object.hasOwn(MOVED, path) || PAGES.some(([page]) => path === financePath(page));
+export function financePage(path: string): FinancePage { return MOVED[path] ?? PAGES.find(([page]) => path === financePath(page))?.[0] ?? 'dashboard'; }
 
 export const LABELS: Record<Metric, string> = {
   SI: 'Sales Income', OI: 'Other Income', SH: 'Shrinkage', CM: 'Commercial Margin',
@@ -31,7 +33,9 @@ export const LABELS: Record<Metric, string> = {
 export const COMMERCIAL: Metric[] = ['SI', 'OI', 'SH', 'CM', 'CRW', 'CSM', 'CPM', 'COGS', 'CI'];
 export const DC: Metric[] = ['LC', 'UC', 'MC', 'TC', 'AC', 'LP', 'TX'];
 export const DA: Metric[] = ['DA01', 'DA02'];
-export const PROFIT_LOSS: Metric[] = ['CI', 'DC', 'EBITDA', 'DA', 'EBIT'];
+// Summary order used across Finance: SI → CM → COGS → CI → DC → DA → EBITDA → EBIT.
+export const SUMMARY: Metric[] = ['SI', 'CM', 'COGS', 'CI', 'DC', 'DA', 'EBITDA', 'EBIT'];
+export const PROFIT_LOSS: Metric[] = SUMMARY;
 export const PL: Metric[] = [...COMMERCIAL, ...DC, 'DC', ...DA, 'DA', 'EBITDA', 'EBIT'];
 export const TOTAL_ROWS: Metric[] = ['CM', 'COGS', 'CI', 'DC', 'DA', 'EBITDA', 'EBIT'];
 export const FORMULA_TEXT: Partial<Record<Metric, string>> = {

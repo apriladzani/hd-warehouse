@@ -1,4 +1,4 @@
-import { ACCOUNT_CLASSES, ACCOUNT_CODE, ACCOUNT_GROUPS, DEFAULT_ACCOUNTS, accountMetric, type AccountClass } from './validation.ts';
+import { ACCOUNT_CLASSES, ACCOUNT_CODE, ACCOUNT_GROUPS, DEFAULT_ACCOUNTS, accountMetric, manualAccount, type AccountClass } from './validation.ts';
 import type { SelectExecutor } from './selectExecutor.ts';
 
 // Chart of accounts (master kode biaya). Each code belongs to a group (LC, UC …)
@@ -43,7 +43,7 @@ function toAccount(row: any): Account {
   const group = ACCOUNT_GROUPS[row.groupCode];
   const classCode = (row.classCode || group?.class) as AccountClass;
   return { code: row.code, name: row.name, metric: row.metric, groupCode: row.groupCode, groupName: row.groupName || group?.name || row.groupCode,
-    classCode, className: ACCOUNT_CLASSES[classCode] ?? classCode, isActive: Number(row.isActive) === 1, manual: Boolean(group?.manual) };
+    classCode, className: ACCOUNT_CLASSES[classCode] ?? classCode, isActive: Number(row.isActive) === 1, manual: manualAccount(row.code, row.groupCode) };
 }
 const SELECT_ACCOUNTS = `SELECT code, name, metric, group_code AS groupCode, group_name AS groupName, class_code AS classCode, is_active AS isActive
   FROM finance_accounts ORDER BY FIELD(class_code, 'CI', 'DC', 'DA'), group_code, code`;
@@ -58,7 +58,7 @@ export async function createAccount(executor: Query, input: { code?: unknown; na
   const group = ACCOUNT_GROUPS[groupCode];
   if (!group) throw new AccountError('Klasifikasi tidak dikenal.');
   if (!group.extensible) throw new AccountError(`Klasifikasi ${groupCode} tidak dapat ditambah kode baru (dipakai langsung oleh rumus).`);
-  if (!ACCOUNT_CODE.test(code) || !code.startsWith(groupCode) || code === groupCode) throw new AccountError(`Kode harus diawali ${groupCode} lalu nomor, contoh ${groupCode}07.`);
+  if (!ACCOUNT_CODE.test(code) || !code.startsWith(groupCode) || !/^\d+$/.test(code.slice(groupCode.length))) throw new AccountError(`Kode harus diawali ${groupCode} lalu nomor, contoh ${groupCode}07.`);
   if (!name || name.length > 100) throw new AccountError('Nama kode wajib diisi (maksimal 100 karakter).');
   const [existing] = await executor.query('SELECT id FROM finance_accounts WHERE code = ? LIMIT 1', [code]);
   if ((existing as any[]).length) throw new AccountError(`Kode ${code} sudah ada.`);
@@ -75,7 +75,7 @@ export async function updateAccount(executor: Query, code: string, input: { name
   if (!name || name.length > 100) throw new AccountError('Nama kode wajib diisi (maksimal 100 karakter).');
   if (input.isActive !== undefined && typeof input.isActive !== 'boolean') throw new AccountError('Status aktif tidak valid.');
   const isActive = input.isActive === undefined ? Number(before.isActive) === 1 : input.isActive;
-  if (!isActive && !ACCOUNT_GROUPS[before.groupCode]?.manual) throw new AccountError(`Kode ${code} dipakai sinkronisasi/rumus dan tidak dapat dinonaktifkan.`);
+  if (!isActive && !manualAccount(before.code, before.groupCode)) throw new AccountError(`Kode ${code} dipakai sinkronisasi/rumus dan tidak dapat dinonaktifkan.`);
   await executor.query('UPDATE finance_accounts SET name = ?, is_active = ? WHERE code = ?', [name, isActive ? 1 : 0, code]);
   return toAccount({ ...before, name, isActive: isActive ? 1 : 0 });
 }

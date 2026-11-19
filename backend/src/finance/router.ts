@@ -1,6 +1,6 @@
 import { Router, type Request } from 'express';
 import { ALL_METRICS, parseUnitKey, type Metric } from './domain.ts';
-import { ACCOUNT_CLASSES, ACCOUNT_GROUPS, DEFAULT_ACCOUNTS, accountMetric, parseFilter } from './validation.ts';
+import { ACCOUNT_CLASSES, ACCOUNT_GROUPS, DEFAULT_ACCOUNTS, accountMetric, manualAccount, parseFilter } from './validation.ts';
 import { canReadMultiSourceFinance } from './access.ts';
 import { buildDetail, buildReport } from './FinanceReportService.ts';
 import { loadReportInput } from './reportData.ts';
@@ -38,7 +38,7 @@ export function createFinanceRouter(deps: FinanceRouterDependencies) {
     let accounts;
     // Before the first write the table may not exist yet: show the seed.
     try { accounts = await listAccounts(deps.db); }
-    catch { accounts = DEFAULT_ACCOUNTS.map(([code, name, group]) => ({ code, name, metric: accountMetric(code, group), groupCode: group, groupName: ACCOUNT_GROUPS[group].name, classCode: ACCOUNT_GROUPS[group].class, className: ACCOUNT_CLASSES[ACCOUNT_GROUPS[group].class], isActive: true, manual: ACCOUNT_GROUPS[group].manual })); }
+    catch { accounts = DEFAULT_ACCOUNTS.map(([code, name, group]) => ({ code, name, metric: accountMetric(code, group), groupCode: group, groupName: ACCOUNT_GROUPS[group].name, classCode: ACCOUNT_GROUPS[group].class, className: ACCOUNT_CLASSES[ACCOUNT_GROUPS[group].class], isActive: true, manual: manualAccount(code, group) })); }
     res.json({
       accounts, persistenceEnabled: deps.persistenceEnabled ?? false,
       groups: Object.entries(ACCOUNT_GROUPS).map(([code, g]) => ({ code, name: g.name, classCode: g.class, className: ACCOUNT_CLASSES[g.class], manual: g.manual, extensible: g.extensible })),

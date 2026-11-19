@@ -1,7 +1,7 @@
 import { pool } from '../db/index.ts';
 import { closedPeriodChecker, logAdminActivity } from '../db/repository.ts';
 import { FINANCE_ACCOUNT_COLUMNS, migrateFinanceAccounts, seedFinanceAccounts } from './accounts.ts';
-import { ACCOUNT_GROUPS, validateTransaction } from './validation.ts';
+import { manualAccount, validateTransaction } from './validation.ts';
 import type { Filter, Unit } from './domain.ts';
 import { TransactionRuleError, type AuditPlan, type TransactionRecord } from './transactionPlan.ts';
 import type { TransactionRepository, TransactionChange } from './transactionApi.ts';
@@ -167,7 +167,7 @@ export function createFinanceTransactionRepository(options: { periodCheck?: () =
           const account = (accounts as any[])[0];
           if (!account) throw new TransactionRuleError(`${row}Kode akun ${record.accountCode} tidak dikenal.`);
           const accountChanged = !before || before.accountCode !== record.accountCode;
-          if (accountChanged && (Number(account.isActive) !== 1 || !ACCOUNT_GROUPS[account.groupCode]?.manual)) throw new TransactionRuleError(`${row}Kode akun ${record.accountCode} tidak aktif atau tidak untuk input manual.`);
+          if (accountChanged && (Number(account.isActive) !== 1 || !manualAccount(record.accountCode, account.groupCode))) throw new TransactionRuleError(`${row}Kode akun ${record.accountCode} tidak aktif atau tidak untuk input manual.`);
           if (!before || JSON.stringify(before.unit) !== JSON.stringify(record.unit)) {
             for (const unit of [record.unit, record.counterparty]) {
               if (unit?.type !== 'OUTLET') continue;

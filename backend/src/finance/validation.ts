@@ -22,7 +22,9 @@ export function parseFilter(input: Record<string, unknown>): Filter {
 // Finance adds codes there); these rows are only its initial seed.
 //   class: DC Distribution Cost · DA Depreciation & Amortization · CI Commercial Income
 //   manual: Finance may type entries for it (SI/SH come from HD Outlet, COGS from Warehouse)
-//   extensible: new codes may be added to the group (DA has exactly DA01 + DA02 in the formula)
+//   extensible: new codes may be added to the group (DA has exactly DA01 + DA02 in the formula).
+//     A code added to SI or a COGS group (SI01, CRW01 …) is typed in by Finance;
+//     the group's own code (SI, CRW …) stays with its sync.
 export type AccountClass = 'DC' | 'DA' | 'CI';
 export const ACCOUNT_CLASSES: Record<AccountClass, string> = { DC: 'Distribution Cost', DA: 'Depreciation & Amortization', CI: 'Commercial Income' };
 export const ACCOUNT_GROUPS: Record<string, { name: string; class: AccountClass; manual: boolean; extensible: boolean }> = {
@@ -34,12 +36,12 @@ export const ACCOUNT_GROUPS: Record<string, { name: string; class: AccountClass;
   LP: { name: 'Leased Property', class: 'DC', manual: true, extensible: true },
   TX: { name: 'Tax', class: 'DC', manual: true, extensible: true },
   DA: { name: 'Depreciation & Amortization', class: 'DA', manual: true, extensible: false },
-  SI: { name: 'Sales Income', class: 'CI', manual: false, extensible: false },
+  SI: { name: 'Sales Income', class: 'CI', manual: false, extensible: true },
   OI: { name: 'Other Income', class: 'CI', manual: true, extensible: true },
   SH: { name: 'Shrinkage', class: 'CI', manual: false, extensible: false },
-  CRW: { name: 'COGS Raw Material', class: 'CI', manual: false, extensible: false },
-  CSM: { name: 'COGS Support Material', class: 'CI', manual: false, extensible: false },
-  CPM: { name: 'COGS Packaging', class: 'CI', manual: false, extensible: false },
+  CRW: { name: 'COGS Raw Material', class: 'CI', manual: false, extensible: true },
+  CSM: { name: 'COGS Support Material', class: 'CI', manual: false, extensible: true },
+  CPM: { name: 'COGS Packaging', class: 'CI', manual: false, extensible: true },
 };
 export const DEFAULT_ACCOUNTS: [code: string, name: string, group: string][] = [
   ['LC01', 'Salary', 'LC'], ['LC02', 'Overtime', 'LC'], ['LC03', 'Bonus/Insentif', 'LC'], ['LC04', 'Meal', 'LC'], ['LC05', 'THR', 'LC'], ['LC06', 'Uniform', 'LC'],
@@ -53,6 +55,11 @@ export const DEFAULT_ACCOUNTS: [code: string, name: string, group: string][] = [
   ['CRW', 'COGS Raw Material', 'CRW'], ['CSM', 'COGS Support Material', 'CSM'], ['CPM', 'COGS Packaging', 'CPM'],
 ];
 export const ACCOUNT_CODE = /^[A-Z]{2,3}\d{0,3}$/;
+// Whether Finance may type entries for an account.
+export const manualAccount = (code: string, group: string) => {
+  const g = Object.hasOwn(ACCOUNT_GROUPS, group) ? ACCOUNT_GROUPS[group] : undefined;
+  return Boolean(g && (g.manual || (g.extensible && code !== group)));
+};
 // The formula component an account rolls into: its group, except each DA code
 // which is its own component (DA = DA01 + DA02).
 export function accountMetric(code: string, group: string): BaseMetric {

@@ -14,13 +14,16 @@ const filter: Filter = { mode: 'WAREHOUSE', startDate: '2026-10-01', endDate: '2
 const user = { id: 99, name: 'Test Fixture', email: 'fixture@example.invalid', role: 'FINANCE' as const };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
-test('seven Finance deep links resolve and unknown/cross-role paths are excluded', () => {
-  assert.equal(PAGES.length, 7);
+test('six Finance deep links resolve and unknown/cross-role paths are excluded', () => {
+  assert.equal(PAGES.length, 6);
+  assert.ok(!PAGES.some(([page]) => (page as string) === 'reports'), 'Laporan Keuangan lives in Profit & Loss');
+  assert.equal(isFinancePath('/warehouse/finance/reports'), true); assert.equal(financePage('/warehouse/finance/reports'), 'profit-loss');
+  assert.equal(isFinancePath('/warehouse/finance/toString'), false);
   for (const [page] of PAGES) { assert.equal(isFinancePath(financePath(page)), true); assert.equal(financePage(financePath(page)), page); }
   assert.equal(isFinancePath('/warehouse/finance'), true);
   for (const path of ['/admin/finance', '/outlet/finance', '/warehouse/finance/fake', '/warehouse/finance/settings/extra']) assert.equal(isFinancePath(path), false);
 });
-test('all seven pages server-render without making a data request or showing fixture money', () => {
+test('all six pages server-render without making a data request or showing fixture money', () => {
   for (const [page, label] of PAGES) {
     const html = renderToStaticMarkup(<FinanceWorkspace currentUser={user} pathname={financePath(page)} />);
     assert.ok(html.includes(label.replace(/&/g, '&amp;')));
@@ -47,7 +50,7 @@ test('Finance entry withholds Warehouse content until existing gate verifies and
   assert.ok(renderRole('FINANCE').includes('Commercial Income')); 
   for (const role of ['ADMIN', 'OUTLET'] as const) { assert.ok(renderRole(role).includes('role="alert"')); assert.ok(!renderRole(role).includes('Commercial Income')); }
 });
-test('sidebar exposes seven Finance pages only for Finance role', () => {
+test('sidebar exposes six Finance pages only for Finance role', () => {
   const render = (role: User['role'], activeNav: string) => renderToStaticMarkup(<Navbar currentUser={{ ...user, role }} activeNav={activeNav} onNavigate={() => {}} onLogout={() => {}}>Content</Navbar>);
   for (const role of ['FINANCE'] as const) {
     const html = render(role, 'finance-commercial-income');

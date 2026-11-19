@@ -3,7 +3,7 @@ import { Plus, RefreshCw } from 'lucide-react';
 import { Button, StateMessage } from '../components/common/UI.tsx';
 import { Panel, Status } from './components.tsx';
 import { financeGet, financeWrite } from './api.ts';
-import { formatMoney, type Accounts, type Filter, type OutletOption } from './model.ts';
+import { formatMoney, type AccountGroup, type Accounts, type Filter, type OutletOption } from './model.ts';
 
 // Shape of GET /api/finance/v2/manage/hdoutlet (backend hdOutletOverview).
 export type HdOutletOverview = {
@@ -152,17 +152,30 @@ export function AccountSettings({ accounts, canEdit, onChanged }: { accounts: Ac
   const [form, setForm] = useState({ groupCode: '', code: '', name: '' }), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   if (!accounts) return <Panel title="Master kode biaya"><p className="fn-section-note">Memuat…</p></Panel>;
   const extensible = accounts.groups.filter(g => g.extensible);
+  // Dropdown sections: costs, income, COGS, in the order of the P&L.
+  const COGS_GROUPS = ['CRW', 'CSM', 'CPM'];
+  const sections: [string, AccountGroup[]][] = [
+    ['Distribution Cost', extensible.filter(g => g.classCode === 'DC')],
+    ['Income (SI / OI)', extensible.filter(g => g.classCode === 'CI' && !COGS_GROUPS.includes(g.code))],
+    ['COGS', extensible.filter(g => COGS_GROUPS.includes(g.code))],
+    ['Lainnya', extensible.filter(g => g.classCode !== 'DC' && g.classCode !== 'CI')],
+  ];
+  const nextCode = (group: string) => {
+    const numbers = accounts.accounts.filter(a => a.groupCode === group && /^\d+$/.test(a.code.slice(group.length))).map(a => Number(a.code.slice(group.length)));
+    return `${group}${String((numbers.length ? Math.max(...numbers) : 0) + 1).padStart(2, '0')}`;
+  };
   const save = async (action: () => Promise<any>, after?: () => void) => {
     setBusy(true); setError('');
     try { await action(); after?.(); onChanged(); } catch (e) { setError(e instanceof Error ? e.message : 'Gagal.'); } finally { setBusy(false); }
   };
   return <Panel title="Master kode biaya">
     {canEdit && <form className="fn-account-form" onSubmit={e => { e.preventDefault(); save(() => financeWrite(`${MANAGE}/accounts`, 'POST', form), () => setForm({ groupCode: form.groupCode, code: '', name: '' })); }}>
-      <label>Klasifikasi<select className="hd-input" value={form.groupCode} onChange={e => setForm({ ...form, groupCode: e.target.value })}><option value="">Pilih</option>{extensible.map(g => <option key={g.code} value={g.code}>{g.code} – {g.name}</option>)}</select></label>
-      <label>Kode baru<input className="hd-input" placeholder={form.groupCode ? `${form.groupCode}07` : 'LC07'} value={form.code} onChange={e => setForm({ ...form, code: e.target.value.toUpperCase() })} /></label>
+      <label>Klasifikasi<select className="hd-input" value={form.groupCode} onChange={e => setForm({ ...form, groupCode: e.target.value })}><option value="">Pilih</option>{sections.filter(([, list]) => list.length).map(([label, list]) => <optgroup key={label} label={label}>{list.map(g => <option key={g.code} value={g.code}>{g.code} – {g.name}</option>)}</optgroup>)}</select></label>
+      <label>Kode baru<input className="hd-input" placeholder={form.groupCode ? nextCode(form.groupCode) : 'LC07'} value={form.code} onChange={e => setForm({ ...form, code: e.target.value.toUpperCase() })} /></label>
       <label>Nama<input className="hd-input" maxLength={100} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
       <Button type="submit" disabled={busy || !form.groupCode || !form.code || !form.name.trim()}><Plus size={14} />Tambah kode</Button>
     </form>}
+    {canEdit && <p className="fn-section-note">Kode baru di SI atau COGS (contoh SI01, CRW01) diisi manual oleh Finance di halaman Commercial Income dan ikut dijumlah ke SI/COGS. Kode SI, SH, CRW, CSM, CPM tetap dari HD Outlet / Warehouse.</p>}
     {error && <p className="fn-section-note fn-error" role="alert">{error}</p>}
     <div className="fn-table-wrap"><table className="fn-table"><thead><tr><th>Kelas</th><th>Klasifikasi</th><th>Kode</th><th>Nama</th><th>Input</th><th>Status</th></tr></thead><tbody>
       {accounts.accounts.map(a => <tr key={a.code} className={a.isActive ? undefined : 'fn-row-void'}><td>{a.classCode}</td><td>{a.groupCode} – {a.groupName}</td><th scope="row">{a.code}</th><td>{a.name}</td>

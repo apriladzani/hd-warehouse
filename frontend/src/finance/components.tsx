@@ -63,12 +63,15 @@ export function MetricTable({ keys, report, onDetail }: { keys: Metric[]; report
     return <tr key={key} className={TOTAL_ROWS.includes(key) ? 'fn-total-row' : ''}><th scope="row">{key}</th><td>{LABELS[key]}{FORMULA_TEXT[key] && <span className="fn-formula"> = {FORMULA_TEXT[key]}</span>}</td><td className="fn-money">{valueText(value)}</td><td><Status value={value.status} /></td><td>{sourceText(report?.sources[key])}</td><td><Button variant="ghost" aria-label={`Detail ${key}`} onClick={() => onDetail(key)}><ChevronRight size={14} /></Button></td></tr>;
   })}</tbody></table></div>;
 }
-export function UnitTable({ report, keys = ['SI', 'CI', 'DC', 'EBITDA', 'EBIT'], onDetail }: { report: Report | null; keys?: Metric[]; onDetail: (key: Metric, unit: Unit) => void }) {
+// `total` adds the Total keseluruhan column: the filter's total, the same
+// number as the component tables (Keseluruhan leaves internal sales out).
+export function UnitTable({ report, keys = ['SI', 'CI', 'DC', 'EBITDA', 'EBIT'], onDetail, total = false }: { report: Report | null; keys?: Metric[]; onDetail: (key: Metric, unit: Unit | null) => void; total?: boolean }) {
   if (!report?.byUnit.length) return <StateMessage>Tidak ada unit pada filter ini.</StateMessage>;
   // Codes run down the rows, units run across the columns.
   const units = report.byUnit.map(row => ({ row, name: unitLabel(row.unit, report.outlets) }));
-  return <div className="fn-table-wrap"><table className="fn-table fn-pivot"><thead><tr><th>Kode</th>{units.map(({ name }) => <th key={name} className="fn-right">{name}</th>)}</tr></thead><tbody>{keys.map(key =>
-    <tr key={key} className={TOTAL_ROWS.includes(key) ? 'fn-total-row' : ''}><th scope="row" title={LABELS[key]}>{key} <span className="fn-formula">{LABELS[key]}</span></th>{units.map(({ row, name }) => <td className="fn-right" key={name}><button className="fn-value-link" onClick={() => onDetail(key, row.unit)} aria-label={`${key} ${name}`}><span>{valueText(row.metrics[key])}</span>{row.metrics[key].status !== 'Available' && <Status value={row.metrics[key].status} />}</button></td>)}</tr>
+  const cell = (key: Metric, value: Value | undefined, unit: Unit | null, name: string) => { const v = value ?? unavailableValue; return <button className="fn-value-link" onClick={() => onDetail(key, unit)} aria-label={`${key} ${name}`}><span>{valueText(v)}</span>{v.status !== 'Available' && <Status value={v.status} />}</button>; };
+  return <div className="fn-table-wrap"><table className="fn-table fn-pivot"><thead><tr><th>Kode</th>{units.map(({ name }) => <th key={name} className="fn-right">{name}</th>)}{total && <th className="fn-right fn-grand">Total keseluruhan</th>}</tr></thead><tbody>{keys.map(key =>
+    <tr key={key} className={TOTAL_ROWS.includes(key) ? 'fn-total-row' : ''}><th scope="row" title={LABELS[key]}>{key} <span className="fn-formula">{LABELS[key]}</span></th>{units.map(({ row, name }) => <td className="fn-right" key={name}>{cell(key, row.metrics[key], row.unit, name)}</td>)}{total && <td className="fn-right fn-grand">{cell(key, report.metrics[key], null, 'Total keseluruhan')}</td>}</tr>
   )}</tbody></table></div>;
 }
 

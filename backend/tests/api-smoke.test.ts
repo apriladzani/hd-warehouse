@@ -1275,6 +1275,34 @@ test('Finance ledger: only Finance writes, same origin only, valid outlet, no du
   });
 });
 
+const manageCall = (who: ReturnType<typeof client>, base: string, method: string, path: string, body?: unknown) => fetch(`${base}/api/finance/v2/manage${path}`, {
+  method, body: body === undefined ? undefined : JSON.stringify(body),
+  headers: { 'content-type': 'application/json', origin: base, cookie: [...who.cookies].map(([k, v]) => `${k}=${v}`).join('; ') },
+}).then(async (r) => ({ status: r.status, body: await r.json() }));
+
+test('master kode: Finance adds SI01 and CRW01, types entries on them, and they roll into SI and COGS; SI and CRW stay with their sync', async () => {
+  await withApi(async ({ connection, base }) => {
+    const finance = await financeClient(connection, base);
+    assert.equal((await manageCall(finance, base, 'POST', '/accounts', { groupCode: 'SI', code: 'SI01', name: 'Penjualan B2B' })).status, 201);
+    assert.equal((await manageCall(finance, base, 'POST', '/accounts', { groupCode: 'CRW', code: 'CRW01', name: 'Bahan baku beli langsung' })).status, 201);
+    for (const [groupCode, code] of [['SI', 'SIX'], ['SI', 'SI'], ['SH', 'SH01'], ['DA', 'DA03']]) {
+      assert.equal((await manageCall(finance, base, 'POST', '/accounts', { groupCode, code, name: 'x' })).status, 400, `${groupCode} ${code}`);
+    }
+    const { accounts } = (await finance.call('GET', '/api/finance/v2/accounts')).body;
+    const byCode = (code: string) => accounts.find((a: any) => a.code === code);
+    assert.deepEqual([byCode('SI01').manual, byCode('SI01').metric, byCode('CRW01').manual, byCode('CRW01').metric], [true, 'SI', true, 'CRW']);
+    assert.deepEqual([byCode('SI').manual, byCode('CRW').manual], [false, false], 'the synced codes are not typed in');
+
+    const rows = [{ date: CISALAK_DAY, unit: { type: 'WAREHOUSE' }, accountCode: 'SI01', amount: '200000', notes: 'B2B' }, { date: CISALAK_DAY, unit: { type: 'WAREHOUSE' }, accountCode: 'CRW01', amount: '50000', notes: 'Beli langsung' }];
+    assert.equal((await ledgerPost(finance, base, '/batch', { batchKey: 'si01-crw01-batch-0001', rows })).status, 201);
+    assert.equal((await ledgerPost(finance, base, '/batch', { batchKey: 'si-synced-batch-00001', rows: [{ ...rows[0], accountCode: 'SI' }] })).status, 400, 'SI itself comes from HD Outlet');
+    const report = (await finance.call('GET', `/api/finance/v2/report?mode=WAREHOUSE&startDate=${CISALAK_DAY}&endDate=${CISALAK_DAY}`)).body;
+    assert.deepEqual([report.metrics.SI.amount, report.metrics.CRW.amount, report.metrics.COGS.amount, report.metrics.CI.amount], ['200000.000000', '50000.000000', '50000.000000', '150000.000000']);
+    assert.equal((await manageCall(finance, base, 'PATCH', '/accounts/SI01', { isActive: false })).status, 200, 'a Finance code can be switched off');
+    assert.equal((await manageCall(finance, base, 'PATCH', '/accounts/SI', { isActive: false })).status, 400);
+  });
+});
+
 // Brief scenario: HD Outlet daily report of Outlet Cisalak, 17 Nov 2026.
 const CISALAK_DAY = '2026-11-17';
 const cisalakReport = (extra: Record<string, unknown> = {}) => ({
