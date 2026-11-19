@@ -7,7 +7,7 @@ import type { Fact } from '../../backend/src/finance/domain.ts';
 import { createFinanceClient, FinanceApiError, validateReport } from '../src/finance/api.ts';
 import { DetailView, MetricTable, MissingInputs, UnitTable, Issues } from '../src/finance/components.tsx';
 import { EntryManager, draftProblem, toEntryRow, type EntryGateway } from '../src/finance/EntryManager.tsx';
-import { AccountSettings, accountOptions } from '../src/finance/FinanceSettings.tsx';
+import { AccountSettings, OutletDisplaySettings, accountOptions } from '../src/finance/FinanceSettings.tsx';
 import { COMMERCIAL, DC, PL, PROFIT_LOSS, reportCsv, valueText, type Accounts, type Filter } from '../src/finance/model.ts';
 import { FinanceReportDocument, UNITS_PER_TABLE, chunk } from '../src/finance/PrintableFinanceReport.tsx';
 
@@ -176,4 +176,14 @@ test('Keseluruhan names the internal Warehouse → Outlet sale removed from SI a
   const html = renderToStaticMarkup(<EliminationNote report={{ ...r, hdOutlet: undefined }} />);
   assert.ok(html.includes('Rp510.000')); assert.ok(html.includes('CI, EBITDA, dan EBIT tidak berubah'));
   assert.equal(renderToStaticMarkup(<EliminationNote report={{ ...buildReport(filter, { outlets: [], facts: [], coverage: [], issues: [] }), hdOutlet: undefined }} />), '', 'not shown outside Keseluruhan');
+});
+
+test('outlet di laporan: mapped outlets show, others only with data, a merged outlet names its target', () => {
+  const html = renderToStaticMarkup(<OutletDisplaySettings onChanged={() => {}} initial={[
+    { id: 3, name: 'Cisalak', isActive: true, mergedInto: null, hdOutlet: ['Cisalak', 'CSK 2 Cisalak'], hdAttendance: ['Cisalak'], requestCount: 1 },
+    { id: 27, name: 'Cisalak Pagi', isActive: false, mergedInto: 3, hdOutlet: [], hdAttendance: [], requestCount: 6 },
+    { id: 538, name: 'Indihiang', isActive: true, mergedInto: null, hdOutlet: [], hdAttendance: [], requestCount: 0 },
+  ]} />);
+  for (const text of ['Outlet di laporan Finance', 'Cisalak, CSK 2 Cisalak', 'Digabung ke Cisalak', 'Hanya bila ada data', 'Tampil', 'aria-label="Gabung Cisalak Pagi ke"']) assert.ok(html.includes(text), text);
+  assert.match(html, /aria-label="Gabung Cisalak ke"[^>]*disabled/, 'an outlet others joined cannot join another');
 });

@@ -23,11 +23,15 @@ const selector = (filter: Filter) => (unit: Unit) => unit.type === 'WAREHOUSE'
 
 // The units a report covers: Warehouse (unless Outlet only) and the selected
 // outlets, or every active outlet, plus any outlet that has data in the period.
+// Once outlets are mapped to HD Outlet / HD Attendance, an active outlet
+// without a mapping shows only when it has data; a merged outlet never shows
+// (its data is already under the outlet it joined).
 function reportUnits(filter: Filter, input: ReportInput, facts: Fact[]) {
   const units = new Map<string, Unit>();
   if (filter.mode !== 'OUTLET') units.set('WAREHOUSE', { type: 'WAREHOUSE' });
   if (filter.mode !== 'WAREHOUSE') {
-    const ids = filter.outletIds ?? input.outlets.filter(o => o.isActive).map(o => o.id);
+    const anyMapped = input.outlets.some(o => o.mapped);
+    const ids = filter.outletIds ?? input.outlets.filter(o => o.isActive && o.mergedInto == null && (!anyMapped || o.mapped)).map(o => o.id);
     for (const id of ids) units.set(`OUTLET:${id}`, { type: 'OUTLET', outletId: id });
   }
   for (const fact of facts) units.set(unitKey(fact.unit), fact.unit);

@@ -9,6 +9,7 @@ import { HdOutletError } from './hdOutletClient.ts';
 import { hdAttendanceOverview, setHdaOutletMapping, syncHdAttendance } from './hdAttendanceSync.ts';
 import { HdAttendanceError } from './hdAttendanceClient.ts';
 import { date } from './validation.ts';
+import { outletDisplayOverview, setOutletMerge } from './outletMerge.ts';
 
 // Finance administration, FINANCE role only (mounted at /api/finance/v2/manage):
 // chart of accounts, HD Outlet and HD Attendance mappings, sync logs and
@@ -52,6 +53,14 @@ export function createFinanceManageRouter(authenticate: (req: Request) => Promis
       await logAdminActivity({ actorId: actor.id, actorName: actor.name || `user#${actor.id}`, action: 'FINANCE_ACCOUNT_DELETE', targetType: 'finance_account', targetId: account.code, details: { name: account.name, groupCode: account.groupCode } }).catch(() => {});
       res.json({ deleted: account.code });
     } catch (error) { fail(res, error, 'Kode akun gagal dihapus.'); }
+  });
+
+  // Warehouse outlets in Finance: merge an old outlet into another.
+  router.get('/outlets', async (_req, res) => {
+    try { res.json(await outletDisplayOverview()); } catch (error) { fail(res, error, 'Daftar outlet tidak dapat dibaca.'); }
+  });
+  router.put('/outlets/:id/merge', async (req, res) => {
+    try { res.json(await setOutletMerge(Number(req.params.id), req.body ?? {}, actorOf(res))); } catch (error) { fail(res, error, 'Gabungan outlet gagal disimpan.'); }
   });
 
   router.get('/hdoutlet', async (_req, res) => {

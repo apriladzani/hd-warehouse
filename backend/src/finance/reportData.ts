@@ -35,12 +35,21 @@ export async function loadReportInput(db: SelectExecutor, filter: Filter, option
   // table, also connection-local ones in tests, unlike information_schema).
   const probe = async (sql: string) => { try { await db.select(sql, []); return true; } catch { return false; } };
   const tables = new Set<string>();
-  for (const table of ['finance_transactions', 'finance_accounts', 'hdoutlet_reports', 'hdoutlet_outlet_mappings', 'hdoutlet_expense_mappings', 'hdoutlet_sync_runs']) {
+  for (const table of ['finance_transactions', 'finance_accounts', 'hdoutlet_reports', 'hdoutlet_outlet_mappings', 'hdoutlet_expense_mappings', 'hdoutlet_sync_runs', 'finance_outlet_merges', 'hdattendance_outlet_mappings']) {
     if (await probe(`SELECT 1 FROM \`${table}\` LIMIT 0`)) tables.add(table);
   }
+  // Outlets Finance merged into another (Cisalak Pagi → Cisalak): read with the
+  // target, reported under it.
+  const mergedInto = new Map<number, number>();
+  if (tables.has('finance_outlet_merges')) for (const r of await db.select('SELECT outlet_id AS outletId, target_outlet_id AS targetId FROM finance_outlet_merges', [])) mergedInto.set(id(r.outletId), id(r.targetId));
+  const resolve = (outletId: number) => mergedInto.get(outletId) ?? outletId;
+  const mapped = new Set<number>();
+  for (const table of ['hdoutlet_outlet_mappings', 'hdattendance_outlet_mappings']) if (tables.has(table)) for (const r of await db.select(`SELECT DISTINCT outlet_id AS outletId FROM \`${table}\` WHERE outlet_id IS NOT NULL`, [])) mapped.add(id(r.outletId));
+  for (const outlet of outlets) { outlet.mergedInto = mergedInto.get(outlet.id) ?? null; outlet.mapped = mapped.has(outlet.id); }
+  const selectedIds = filter.outletIds ? [...new Set([...filter.outletIds, ...[...mergedInto].filter(([, target]) => filter.outletIds!.includes(target)).map(([source]) => source)])] : null;
   const facts: Fact[] = [], coverage: Coverage[] = [], issues: Issue[] = [];
   const outletScope = filter.mode !== 'WAREHOUSE';
-  const scopeOutlets = outletScope ? (filter.outletIds ?? outlets.filter(o => o.isActive).map(o => o.id)) : [];
+  const scopeOutlets = outletScope ? (filter.outletIds ?? outlets.filter(o => o.isActive && !mergedInto.has(o.id)).map(o => o.id)) : [];
 
   // Ledger: Finance manual entries and entries synced from HD Outlet, posted only.
   if (tables.has('finance_transactions') && tables.has('finance_accounts')) {
@@ -50,7 +59,7 @@ export async function loadReportInput(db: SelectExecutor, filter: Filter, option
     const params: unknown[] = [filter.startDate, filter.endDate];
     if (filter.mode === 'WAREHOUSE') conditions.push("t.unit_type = 'WAREHOUSE'");
     else if (filter.mode === 'OUTLET') conditions.push("t.unit_type = 'OUTLET'");
-    if (outletScope && filter.outletIds) { conditions.push(`(t.unit_type = 'WAREHOUSE' OR t.outlet_id IN (${filter.outletIds.map(() => '?').join(',')}))`); params.push(...filter.outletIds); }
+    if (outletScope && selectedIds) { conditions.push(`(t.unit_type = 'WAREHOUSE' OR t.outlet_id IN (${selectedIds.map(() => '?').join(',')}))`); params.push(...selectedIds); }
     const rows = await db.select(`SELECT CAST(t.id AS CHAR) AS id, a.code AS accountCode, a.name AS accountName, a.metric, t.unit_type AS unitType, t.outlet_id AS outletId,
       CAST(t.amount AS CHAR) AS amount, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS date, t.notes, t.evidence_reference AS reference,
       ${columns.has('source') ? 't.source' : "'manual'"} AS source, ${columns.has('attachment_path') ? 't.attachment_path' : 'NULL'} AS attachment
@@ -77,8 +86,8 @@ export async function loadReportInput(db: SelectExecutor, filter: Filter, option
   const warehouseScope = filter.mode !== 'OUTLET';
   if (outletScope || warehouseScope) {
     const params: unknown[] = [filter.startDate, filter.endDate];
-    const outletClause = filter.outletIds ? ` AND r.outlet_id IN (${filter.outletIds.map(() => '?').join(',')})` : '';
-    if (filter.outletIds) params.push(...filter.outletIds);
+    const outletClause = selectedIds ? ` AND r.outlet_id IN (${selectedIds.map(() => '?').join(',')})` : '';
+    if (selectedIds) params.push(...selectedIds);
     const snapshots = warehouseScope && await probe('SELECT request_item_id, unit_cost FROM inventory_cost_snapshots LIMIT 0');
     const snapshotCost = warehouseScope && await probe('SELECT unit_cost_snapshot FROM request_items LIMIT 0');
     const costSql = [snapshots ? 's.unit_cost' : null, snapshotCost ? 'ri.unit_cost_snapshot' : null].filter(Boolean);
@@ -207,5 +216,7 @@ export async function loadReportInput(db: SelectExecutor, filter: Filter, option
       if (last?.status === 'failed') issues.push({ metrics: ['LC'], status: 'Partial', reason: `Sinkron HD Attendance terakhir gagal; data gaji lama tetap dipakai. ${String(last.message ?? '').split('\n')[0]}` });
     }
   }
-  return { outlets, facts, coverage, issues, hdOutlet: status };
+  // Merged outlets are reported under their target.
+  const moved = <T extends { unit: Fact['unit'] }>(row: T): T => row.unit.type === 'OUTLET' && mergedInto.has(row.unit.outletId) ? { ...row, unit: { type: 'OUTLET', outletId: resolve(row.unit.outletId) } } : row;
+  return { outlets, facts: facts.map(moved), coverage: coverage.map(moved), issues, hdOutlet: status };
 }

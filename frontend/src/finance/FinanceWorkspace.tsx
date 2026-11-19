@@ -4,7 +4,7 @@ import type { User } from '../types.ts';
 import { Button, StateMessage } from '../components/common/UI.tsx';
 import { ApiState, DetailView, EliminationNote, Filters, Issues, MetricTable, MissingInputs, Modal, Panel, Status, UnitTable } from './components.tsx';
 import { EntryManager } from './EntryManager.tsx';
-import { AccountSettings, HdAttendanceSettings, HdOutletSettings } from './FinanceSettings.tsx';
+import { AccountSettings, HdAttendanceSettings, HdOutletSettings, OutletDisplaySettings } from './FinanceSettings.tsx';
 import { createFinanceClient } from './api.ts';
 import { PrintableFinanceReport, ReportMenu, type ReportLayout } from './PrintableFinanceReport.tsx';
 import { useFinance } from './hooks.ts';
@@ -31,7 +31,8 @@ export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User;
   const client = useMemo(() => createFinanceClient(currentUser), [currentUser.email, currentUser.role]);
   const [outlets, setOutlets] = useState<OutletOption[]>([]);
   const [printLayout, setPrintLayout] = useState<ReportLayout | null>(null);
-  useEffect(() => { if (report?.outlets) setOutlets(report.outlets.map(o => ({ id: o.id, name: o.name, isActive: o.isActive }))); }, [report]);
+  // An outlet merged into another is chosen through that outlet.
+  useEffect(() => { if (report?.outlets) setOutlets(report.outlets.filter(o => o.mergedInto == null).map(o => ({ id: o.id, name: o.name, isActive: o.isActive }))); }, [report]);
 
   // Drill-down of a component (optionally one unit): sub-codes and entries.
   const [selected, setSelected] = useState<{ key: Metric; unit: Unit | null } | null>(null);
@@ -107,7 +108,7 @@ export function FinanceWorkspace({ currentUser, pathname }: { currentUser: User;
       {printLayout && <PrintableFinanceReport report={report} keys={PL} layout={printLayout} onClose={() => setPrintLayout(null)} />}
     </>}
     {page === 'settings' && (canEdit
-      ? <><HdOutletSettings filter={filter} accounts={accounts.data} outlets={outlets} onChanged={reload} /><HdAttendanceSettings filter={filter} outlets={outlets} onChanged={reload} /><AccountSettings accounts={accounts.data} canEdit={canEdit} onChanged={reload} /></>
+      ? <><HdOutletSettings filter={filter} accounts={accounts.data} outlets={outlets} onChanged={reload} /><HdAttendanceSettings filter={filter} outlets={outlets} onChanged={reload} /><OutletDisplaySettings onChanged={reload} /><AccountSettings accounts={accounts.data} canEdit={canEdit} onChanged={reload} /></>
       : <><StateMessage>Pengaturan integrasi dan master kode hanya untuk role Finance.</StateMessage><AccountSettings accounts={accounts.data} canEdit={false} onChanged={reload} /></>)}
 
     {report && selected && <Modal wide title={`Detail ${selected.key} · ${LABELS[selected.key]}`} onClose={() => setSelected(null)}>

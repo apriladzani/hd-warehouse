@@ -217,3 +217,34 @@ function MergedWith({ names, show }: { names: string[]; show: boolean }) {
   if (!show || !names.length) return null;
   return <span className="fn-muted" style={{ display: 'block' }}>digabung dengan {names.join(', ')}</span>;
 }
+
+// Shape of GET /api/finance/v2/manage/outlets (backend outletDisplayOverview).
+export type OutletDisplay = { id: number; name: string; isActive: boolean; mergedInto: number | null; hdOutlet: string[]; hdAttendance: string[]; requestCount: number };
+// Warehouse outlets shown in Finance: which are mapped (shown), and old ones
+// merged into another outlet (Cisalak Pagi, Cisalak Malam → Cisalak).
+export function OutletDisplaySettings({ onChanged, initial }: { onChanged: () => void; initial?: OutletDisplay[] }) {
+  const [list, setList] = useState<OutletDisplay[] | null>(initial ?? null), [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(0), [revision, setRevision] = useState(0);
+  useEffect(() => { if (initial) return; let active = true; financeGet(`${MANAGE}/outlets`).then(d => { if (active) { setList(d.outlets); setError(''); } }).catch(e => { if (active) setError(e.message); }); return () => { active = false; }; }, [revision]);
+  const anyMapped = list?.some(o => o.hdOutlet.length || o.hdAttendance.length) ?? false;
+  const nameOf = (id: number | null) => list?.find(o => o.id === id)?.name ?? `Outlet #${id}`;
+  const merge = async (outlet: OutletDisplay, target: string) => {
+    setBusy(outlet.id); setError(''); setMessage('');
+    try {
+      await financeWrite(`${MANAGE}/outlets/${outlet.id}/merge`, 'PUT', { targetOutletId: target ? Number(target) : null });
+      setMessage(target ? `${outlet.name} sekarang dihitung sebagai ${nameOf(Number(target))} di laporan Finance.` : `${outlet.name} tidak lagi digabung.`);
+      setRevision(v => v + 1); onChanged();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Gagal.'); } finally { setBusy(0); }
+  };
+  const shown = (o: OutletDisplay) => o.mergedInto != null ? `Digabung ke ${nameOf(o.mergedInto)}` : !o.isActive ? 'Hanya bila ada data' : !anyMapped || o.hdOutlet.length || o.hdAttendance.length ? 'Tampil' : 'Hanya bila ada data';
+  return <Panel title="Outlet di laporan Finance" action={<Button onClick={() => setRevision(v => v + 1)}><RefreshCw size={14} />Muat ulang</Button>}>
+    <p className="fn-section-note">Kolom outlet di laporan Finance hanya berisi outlet yang di-mapping ke HD Outlet / HD Attendance. Outlet lain (belum di-mapping atau nonaktif) hanya muncul kalau punya data pada periode itu, supaya total tetap sama dengan jumlah kolomnya. Outlet lama bisa <strong>digabung</strong> ke outlet lain: angkanya dihitung di outlet tujuan. Data Warehouse (request, stok) tidak berubah.</p>
+    {error && <p className="fn-section-note fn-error" role="alert">{error}</p>}
+    {message && <p className="fn-section-note" role="status">{message}</p>}
+    {!list ? <p className="fn-section-note">Memuat…</p> : <div className="fn-table-wrap"><table className="fn-table"><thead><tr><th>Outlet Warehouse</th><th>Status</th><th>HD Outlet</th><th>HD Attendance</th><th className="fn-right">Request</th><th>Di laporan</th><th>Gabung ke</th></tr></thead><tbody>
+      {list.map(o => <tr key={o.id} className={o.mergedInto != null ? 'fn-row-void' : undefined}><th scope="row">{o.name}</th><td>{o.isActive ? 'Aktif' : 'Nonaktif'}</td><td>{o.hdOutlet.join(', ') || '—'}</td><td>{o.hdAttendance.join(', ') || '—'}</td><td className="fn-right">{o.requestCount}</td><td>{shown(o)}</td>
+        <td><select className="hd-input" aria-label={`Gabung ${o.name} ke`} value={o.mergedInto ?? ''} disabled={busy === o.id || list.some(x => x.mergedInto === o.id)} title={list.some(x => x.mergedInto === o.id) ? 'Outlet lain digabung ke outlet ini' : undefined} onChange={e => merge(o, e.target.value)}>
+          <option value="">Tidak digabung</option>{list.filter(t => t.id !== o.id && t.mergedInto == null).map(t => <option key={t.id} value={t.id}>{t.name}{t.isActive ? '' : ' (nonaktif)'}</option>)}
+        </select></td></tr>)}
+    </tbody></table></div>}
+  </Panel>;
+}

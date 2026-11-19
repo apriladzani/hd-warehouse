@@ -1362,6 +1362,44 @@ test('master kode CRUD: rename any code, delete only an unused Finance code; HD 
   });
 });
 
+test('outlet di laporan Finance: Cisalak Pagi digabung ke Cisalak, outlet tanpa mapping dan tanpa data tidak muncul', async () => {
+  await withApi(async ({ connection, base }) => {
+    const { syncHdOutlet } = await import('../src/finance/hdOutletSync.ts');
+    await withCisalak(connection);
+    await connection.query("INSERT INTO outlets (id, outlet_code, outlet_name, is_active) VALUES (4, 'CSP', 'Cisalak Pagi', 0), (6, 'IDH', 'Indihiang', 1)");
+    // Cisalak Pagi (old outlet) got 2 kg chicken from Warehouse the same day.
+    await connection.query(`INSERT INTO requests (id, request_code, user_id, requester_name, outlet_id, request_date, status, payment_method, total_amount) VALUES (95, 'REQ-CSP-1', 1, 'Cisalak Pagi', 4, ?, 'Approved', 'Transfer', 90000)`, [CISALAK_DAY]);
+    await connection.query(`INSERT INTO request_items (request_id, item_id, requested_quantity, approved_quantity, price, status, approved_at, unit_cost_snapshot) VALUES (95, 1, 2, 2, 45000, 'Approved', ?, 20000)`, [`${CISALAK_DAY} 08:00:00`]);
+    const finance = await financeClient(connection, base);
+    assert.equal((await syncHdOutlet({ startDate: CISALAK_DAY, endDate: CISALAK_DAY, trigger: 'manual', client: fakeHdOutlet(() => [cisalakReport()]) })).status, 'success');
+    const outletReport = () => finance.call('GET', `/api/finance/v2/report?mode=OUTLET&startDate=${CISALAK_DAY}&endDate=${CISALAK_DAY}`).then(r => r.body);
+    const units = (report: any) => report.byUnit.map((u: any) => u.unit.outletId).sort();
+
+    let report = await outletReport();
+    assert.deepEqual(units(report), [3, 4], 'Cisalak is mapped; Cisalak Pagi has data; Indihiang and outlet 1 (no mapping, no data) are left out');
+    const before = report.metrics.CRW.amount;
+
+    const overview = await manageCall(finance, base, 'GET', '/outlets');
+    const pagi = overview.body.outlets.find((o: any) => o.id === 4);
+    assert.deepEqual([pagi.isActive, pagi.mergedInto, pagi.requestCount, overview.body.outlets.find((o: any) => o.id === 3).hdOutlet], [false, null, 1, ['Cisalak']]);
+    assert.equal((await manageCall(finance, base, 'PUT', '/outlets/4/merge', { targetOutletId: 3 })).status, 200);
+
+    report = await outletReport();
+    assert.deepEqual(units(report), [3], 'Cisalak Pagi now counts as Cisalak');
+    assert.equal(report.metrics.CRW.amount, before, 'the total does not change');
+    assert.equal(report.byUnit[0].metrics.CRW.amount, '540000.000000', '10 kg Cisalak + 2 kg Cisalak Pagi at 45.000');
+    assert.equal(report.outlets.find((o: any) => o.id === 4).mergedInto, 3);
+    const only = (await finance.call('GET', `/api/finance/v2/report?mode=OUTLET&startDate=${CISALAK_DAY}&endDate=${CISALAK_DAY}&outletIds=3`)).body;
+    assert.equal(only.byUnit[0].metrics.CRW.amount, '540000.000000', 'filtering Cisalak includes what was merged into it');
+    const [[request]] = await connection.query('SELECT outlet_id FROM requests WHERE id = 95');
+    assert.equal(request.outlet_id, 4, 'Warehouse data is not touched');
+
+    for (const [outletId, target] of [[4, 4], [3, 4], [6, 4], [4, 999]]) assert.equal((await manageCall(finance, base, 'PUT', `/outlets/${outletId}/merge`, { targetOutletId: target })).status, 400, `${outletId} → ${target}`);
+    assert.equal((await manageCall(finance, base, 'PUT', '/outlets/4/merge', { targetOutletId: null })).status, 200);
+    assert.deepEqual(units(await outletReport()), [3, 4], 'unmerged: back on its own');
+  });
+});
+
 test('Cisalak 17 Nov: HD Outlet + manual Listrik + Warehouse COGS give CI, DC, EBITDA, EBIT; re-sync does not double', async () => {
   await withApi(async ({ connection, base }) => {
     const { syncHdOutlet } = await import('../src/finance/hdOutletSync.ts');

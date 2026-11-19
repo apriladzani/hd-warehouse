@@ -37,7 +37,9 @@ export type Coverage = { unit: Unit; metrics: Metric[]; status: Exclude<DataStat
 // A gap that belongs to no selected unit (an unmapped HD Outlet outlet, a request
 // line without outlet): it lowers the totals' status, not a unit's.
 export type Issue = { metrics: Metric[]; status: Exclude<DataStatus, 'Available'>; reason: string };
-export type FinanceOutlet = { id: number; code: string; name: string; isActive: boolean };
+// mergedInto: Finance reports this outlet under another one (outletMerge.ts).
+// mapped: the outlet takes HD Outlet or HD Attendance data.
+export type FinanceOutlet = { id: number; code: string; name: string; isActive: boolean; mergedInto?: number | null; mapped?: boolean };
 
 export const unitKey = (unit: Unit) => unit.type === 'WAREHOUSE' ? 'WAREHOUSE' : `OUTLET:${unit.outletId}`;
 export function parseUnitKey(value: unknown): Unit | null {
